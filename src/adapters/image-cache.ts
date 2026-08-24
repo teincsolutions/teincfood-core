@@ -1,13 +1,25 @@
 /**
  * Image cache stub — no-op in core library.
- * Host apps with file-system access inject real impl.
+ * Host apps with file-system access inject real impl via imageCacheService.
  */
 
+export const imageCacheService: {
+  cacheImageBatch(urls: (string | null | undefined)[], opts?: { skipIfCached?: boolean }): Promise<string[]>;
+  pruneImageCache(urls: (string | null | undefined)[]): Promise<void>;
+} = {
+  async cacheImageBatch() {
+    return [];
+  },
+  async pruneImageCache() {},
+};
+
 export async function cacheImageBatch(
-  _urls: (string | null | undefined)[],
-  _opts?: { skipIfCached?: boolean },
+  urls: (string | null | undefined)[],
+  opts?: { skipIfCached?: boolean },
 ): Promise<string[]> {
-  return [];
+  return imageCacheService.cacheImageBatch(urls, opts);
 }
 
-export async function pruneImageCache(_urls: (string | null | undefined)[]): Promise<void> {}
+export async function pruneImageCache(urls: (string | null | undefined)[]): Promise<void> {
+  return imageCacheService.pruneImageCache(urls);
+}
