@@ -44,6 +44,9 @@ export * from "./adapters/kv";
 export * from "./adapters/connectivity";
 export * from "./adapters/http";
 export * from "./adapters/local-node";
+export * from "./adapters/services";
+export * from "./adapters/devices";
+export * from "./adapters/image-cache";
 
 // ── Init helper ──
 import { setSqliteDriver, type SqliteDriver } from "./adapters/sqlite";

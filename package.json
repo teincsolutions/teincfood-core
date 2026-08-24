@@ -1,6 +1,6 @@
 {
   "name": "@teincfood/core",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "TeincFood shared offline-first core — types, sync engine, local DB, reference data, and repositories for mobile + desktop",
   "type": "module",
   "main": "dist/index.js",
@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./dist/*.js": {
+      "types": "./dist/*.d.ts",
+      "import": "./dist/*.js"
     },
     "./dist/*": {
       "types": "./dist/*.d.ts",
