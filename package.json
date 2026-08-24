@@ -1,6 +1,6 @@
 {
   "name": "@teincfood/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TeincFood shared offline-first core — types, sync engine, local DB, reference data, and repositories for mobile + desktop",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

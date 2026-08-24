@@ -141,6 +141,15 @@ export interface SellerOrder {
   user: OrderUser | null;
   items: OrderItem[];
   inserted_at: string;
+  // Desktop adds rider summary on list endpoint (optional for backwards compat)
+  rider?: {
+    id: string;
+    name: string | null;
+    rider_number: string | null;
+    avatar_url: string | null;
+  } | null;
+  merchant_handover_confirmed_at?: string | null;
+  rider_pickup_confirmed_at?: string | null;
 }
 
 // ─── Detail extras (from serialize_order_detail/1) ───
