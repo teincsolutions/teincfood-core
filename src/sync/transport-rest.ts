@@ -7,7 +7,7 @@
  */
 
 import type { Command, DomainEvent, Transport } from "./types";
-import { posService, sellerService, kioskService } from "../adapters/services";
+import { posService, sellerService, kioskService, menuService } from "../adapters/services";
 import { syncLogger } from "../utils/sync-logger";
 import { generateEventId } from "../utils/uuid";
 import type { POSOrderCreateRequest } from "../types/pos.types";
@@ -112,6 +112,26 @@ export class RestTransport implements Transport {
       case "delivery:confirm_handover": {
         const response = await sellerService.confirmHandover(entity_id!);
         return this.wrapResponse("delivery.status_changed", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
+      }
+
+      case "menu:create_item": {
+        const response = await menuService.createMenuItem(business_id, payload as Record<string, unknown>);
+        return this.wrapResponse("menu.item_created", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
+      }
+
+      case "menu:update_item": {
+        const response = await menuService.updateMenuItem(entity_id!, payload as Record<string, unknown>);
+        return this.wrapResponse("menu.item_updated", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
+      }
+
+      case "menu:delete_item": {
+        const response = await menuService.deleteMenuItem(entity_id!);
+        return this.wrapResponse("menu.item_deleted", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
+      }
+
+      case "menu:create_category": {
+        const response = await menuService.createCategory(business_id, payload as Record<string, unknown>);
+        return this.wrapResponse("menu.category_created", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
       }
 
       default:

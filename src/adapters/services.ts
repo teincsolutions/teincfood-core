@@ -52,13 +52,25 @@ export const kioskService = {
   },
 };
 
-// menu.service etc. for reference fallback
+// menu.service etc. for reference fallback + command dispatch
 export const menuService = {
   fetchBusinessMenuItems: async (_businessId: string, _page: number): Promise<unknown> => {
     notImpl("menuService.fetchBusinessMenuItems");
   },
   fetchBusinessCategories: async (_businessId: string): Promise<unknown> => {
     notImpl("menuService.fetchBusinessCategories");
+  },
+  createMenuItem: async (_businessId: string, _payload: Record<string, unknown>): Promise<unknown> => {
+    notImpl("menuService.createMenuItem");
+  },
+  updateMenuItem: async (_itemId: string, _payload: Record<string, unknown>): Promise<unknown> => {
+    notImpl("menuService.updateMenuItem");
+  },
+  deleteMenuItem: async (_itemId: string): Promise<unknown> => {
+    notImpl("menuService.deleteMenuItem");
+  },
+  createCategory: async (_businessId: string, _payload: Record<string, unknown>): Promise<unknown> => {
+    notImpl("menuService.createCategory");
   },
 };
 

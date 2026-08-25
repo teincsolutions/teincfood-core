@@ -55,6 +55,8 @@ export { localNodeTransport } from "./sync/transport-local-node";
 export * from "./sync/transport-local-node";
 export * from "./sync/order-snapshots.service";
 export { hydratePendingOrders, applyPendingOrderEvent, applyOrderStateChangeEvent } from "./sync/pending-orders.service";
+export { runOfflineCapableMutation } from "./sync/offline-capable";
+export type { OfflineCapableOptions } from "./sync/offline-capable";
 
 // ── Repositories ──
 export { orderRepository } from "./repositories/order.repository";
