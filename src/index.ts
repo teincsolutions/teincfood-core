@@ -15,20 +15,32 @@ export * from "./utils/currency";
 export * from "./utils/error";
 export * from "./utils/uuid";
 export * from "./utils/sync-logger";
+export * from "./utils/phone";
+export * from "./utils/formatCurrency";
+export * from "./utils/formatDate";
+export * from "./utils/validation";
+export * from "./utils/responsive";
+export * from "./utils/copyToClipBoard";
 
 // ── DB ──
 export * from "./db/migrations";
+export * from "./db/operations";
 export * as dbOps from "./db/operations";
 export { openSyncDatabase, getSyncDatabase } from "./db/connection";
 
 // ── Sync ──
 export * from "./sync/types";
-export { SyncEngine } from "./sync/engine";
+export { SyncEngine, syncEngine } from "./sync/engine";
+export * from "./sync/command-builder";
+export * from "./sync/command-queue.service";
 export { commandQueueService } from "./sync/command-queue.service";
 export { buildCommand } from "./sync/command-builder";
 export { generateLocalOrderNumber, generateLocalCalloutNumber, isLocalOrderNumber } from "./sync/order-number";
 export { orderSnapshotsService } from "./sync/order-snapshots.service";
 export * from "./sync/pending-orders.service";
+export * from "./sync/transport-rest";
+export * from "./sync/transport-local-node";
+export * from "./sync/order-snapshots.service";
 
 // ── Repositories ──
 export { orderRepository } from "./repositories/order.repository";
@@ -36,6 +48,9 @@ export { posRepository } from "./repositories/pos.repository";
 
 // ── Reference ──
 export * from "./reference/types";
+export * from "./reference/operations";
+export * from "./reference/events";
+export * from "./reference/service";
 export { referenceSyncService } from "./reference/service";
 
 // ── Adapters (for host apps to supply) ──
