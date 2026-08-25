@@ -15,9 +15,9 @@ export * from "./utils/currency";
 export * from "./utils/error";
 export * from "./utils/uuid";
 export * from "./utils/sync-logger";
-export * from "./utils/phone";
+export { PHONE_COUNTRIES, getDialCodeFromCountry, getCountryOption, normalizePhoneForCountry, isLikelyE164 } from "./utils/phone";
 export * from "./utils/formatCurrency";
-export * from "./utils/formatDate";
+export { formatDate, formatRelativeTime } from "./utils/formatDate";
 export * from "./utils/validation";
 export * from "./utils/responsive";
 export * from "./utils/copyToClipBoard";
@@ -30,6 +30,7 @@ export { openSyncDatabase, getSyncDatabase } from "./db/connection";
 
 // ── Sync ──
 export * from "./sync/types";
+export * from "./sync/use-sync-reconciliation";
 export { SyncEngine, syncEngine } from "./sync/engine";
 export * from "./sync/command-builder";
 export * from "./sync/command-queue.service";
@@ -38,9 +39,12 @@ export { buildCommand } from "./sync/command-builder";
 export { generateLocalOrderNumber, generateLocalCalloutNumber, isLocalOrderNumber } from "./sync/order-number";
 export { orderSnapshotsService } from "./sync/order-snapshots.service";
 export * from "./sync/pending-orders.service";
+export { restTransport } from "./sync/transport-rest";
 export * from "./sync/transport-rest";
+export { localNodeTransport } from "./sync/transport-local-node";
 export * from "./sync/transport-local-node";
 export * from "./sync/order-snapshots.service";
+export { hydratePendingOrders, applyPendingOrderEvent, applyOrderStateChangeEvent } from "./sync/pending-orders.service";
 
 // ── Repositories ──
 export { orderRepository } from "./repositories/order.repository";
@@ -49,6 +53,7 @@ export { posRepository } from "./repositories/pos.repository";
 // ── Reference ──
 export * from "./reference/types";
 export * from "./reference/operations";
+export { emitReferenceChanged, applyReferenceChangeEvent, syncReferenceDataOnReconnect, registerReferenceEventEngine, registerReferenceInvalidator } from "./reference/events";
 export * from "./reference/events";
 export * from "./reference/service";
 export { referenceSyncService } from "./reference/service";
@@ -68,6 +73,7 @@ import { setSqliteDriver, type SqliteDriver } from "./adapters/sqlite";
 import { setKVDriver, type KVDriver } from "./adapters/kv";
 import { setConnectivityState } from "./adapters/connectivity";
 import { setHttpClient, type HttpClient } from "./adapters/http";
+import { API_BASE_URL, WS_BASE_URL, setApiBaseUrl, setWsBaseUrl } from "./utils/constants";
 import { SyncEngine } from "./sync/engine";
 import { restTransport } from "./sync/transport-rest";
 import { localNodeTransport } from "./sync/transport-local-node";
@@ -76,6 +82,8 @@ export interface CoreConfig {
   sqliteDriver?: SqliteDriver;
   kvDriver?: KVDriver;
   httpClient?: HttpClient;
+  apiBaseUrl?: string;
+  wsBaseUrl?: string;
   /** Optional initial connectivity override */
   initialConnectivity?: { isOnline?: boolean; isCloudReachable?: "reachable" | "unreachable" | "unknown" };
 }
@@ -83,10 +91,33 @@ export interface CoreConfig {
 let engine: SyncEngine | null = null;
 
 export function createTeincCore(config: CoreConfig = {}): { engine: SyncEngine } {
+  try {
+    console.debug("[core] createTeincCore called", {
+      hasSqliteDriver: !!config.sqliteDriver,
+      hasKvDriver: !!config.kvDriver,
+      hasHttpClient: !!config.httpClient,
+      apiBaseUrl: config.apiBaseUrl ?? "(default)",
+      wsBaseUrl: config.wsBaseUrl ?? "(default)",
+      initialConnectivity: config.initialConnectivity ?? null,
+    });
+  } catch {}
   if (config.sqliteDriver) setSqliteDriver(config.sqliteDriver);
   if (config.kvDriver) setKVDriver(config.kvDriver);
   if (config.httpClient) setHttpClient(config.httpClient);
+  if (config.apiBaseUrl) setApiBaseUrl(config.apiBaseUrl);
+  else {
+    try { console.debug("[core] apiBaseUrl not provided by app, using default", API_BASE_URL); } catch {}
+  }
+  if (config.wsBaseUrl) setWsBaseUrl(config.wsBaseUrl);
+  else {
+    try { console.debug("[core] wsBaseUrl not provided by app, using default", WS_BASE_URL); } catch {}
+  }
   if (config.initialConnectivity) setConnectivityState(config.initialConnectivity);
+
+  // Debug: confirm env vars as seen by core after injection
+  try {
+    console.debug("[core] final URLs", { API_BASE_URL, WS_BASE_URL });
+  } catch {}
 
   engine = new SyncEngine({ transports: [restTransport, localNodeTransport] });
   return { engine };
