@@ -65,7 +65,8 @@ export type { POSOrderPreviewInput } from "./repositories/pos.repository";
 // ── Reference ──
 export * from "./reference/types";
 export * from "./reference/operations";
-export { fetchReferenceVersions, fetchReferenceData, fetchReferenceChanges } from "./reference/api";
+export { fetchReferenceVersions, fetchReferenceData, fetchReferenceChanges, setReferenceLocalNodeFetcher } from "./reference/api";
+export type { ReferenceLocalNodeFetcher } from "./reference/api";
 export { emitReferenceChanged, applyReferenceChangeEvent, syncReferenceDataOnReconnect, registerReferenceEventEngine, registerReferenceInvalidator } from "./reference/events";
 export * from "./reference/events";
 export * from "./reference/service";
