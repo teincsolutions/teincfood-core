@@ -9,6 +9,15 @@
 export * from "./types/api";
 export * from "./types/pos.types";
 
+// ── Pricing (server-parity) ──
+export {
+  calculatePricing,
+  calculateTaxLines,
+  calculateExclusiveTax,
+  calculateInclusiveTaxShare,
+} from "./pricing/engine";
+export type { PricingInput, PricingResult } from "./pricing/engine";
+
 // ── Utils ──
 export * from "./utils/constants";
 export * from "./utils/currency";
@@ -16,6 +25,7 @@ export * from "./utils/error";
 export * from "./utils/uuid";
 export * from "./utils/sync-logger";
 export { PHONE_COUNTRIES, getDialCodeFromCountry, getCountryOption, normalizePhoneForCountry, isLikelyE164 } from "./utils/phone";
+export type { PhoneCountryOption } from "./utils/phone";
 export * from "./utils/formatCurrency";
 export { formatDate, formatRelativeTime } from "./utils/formatDate";
 export * from "./utils/validation";
@@ -26,7 +36,7 @@ export * from "./utils/copyToClipBoard";
 export * from "./db/migrations";
 export * from "./db/operations";
 export * as dbOps from "./db/operations";
-export { openSyncDatabase, getSyncDatabase } from "./db/connection";
+export { openSyncDatabase, getSyncDatabase, closeSyncDatabase } from "./db/connection";
 
 // ── Sync ──
 export * from "./sync/types";
@@ -48,11 +58,14 @@ export { hydratePendingOrders, applyPendingOrderEvent, applyOrderStateChangeEven
 
 // ── Repositories ──
 export { orderRepository } from "./repositories/order.repository";
+export type { CreateOrderInput, AssignRiderInput, OrderActionInput } from "./repositories/order.repository";
 export { posRepository } from "./repositories/pos.repository";
+export type { POSOrderPreviewInput } from "./repositories/pos.repository";
 
 // ── Reference ──
 export * from "./reference/types";
 export * from "./reference/operations";
+export { fetchReferenceVersions, fetchReferenceData, fetchReferenceChanges } from "./reference/api";
 export { emitReferenceChanged, applyReferenceChangeEvent, syncReferenceDataOnReconnect, registerReferenceEventEngine, registerReferenceInvalidator } from "./reference/events";
 export * from "./reference/events";
 export * from "./reference/service";

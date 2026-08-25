@@ -68,6 +68,7 @@ export interface POSPricing {
   discounted_subtotal_minor: number;
   delivery_fee_minor: number;
   tax_minor: number;
+  exclusive_tax_minor?: number;
   tip_minor: number;
   discount_minor: number;
   total_minor: number;
