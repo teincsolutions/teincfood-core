@@ -40,6 +40,7 @@ const DEFAULT_SYNC_KEYS: ReferenceDataKey[] = [
   "business:profile",
   "operating-hours",
   "subscription:entitlements",
+  "capabilities",
 ];
 
 class ReferenceSyncService {
@@ -241,6 +242,13 @@ class ReferenceSyncService {
       }
       case "operating-hours": {
         const response = await businessService.fetchOperatingHours(businessId);
+        return {
+          payload: response,
+          version: this.hashPayload(response),
+        };
+      }
+      case "capabilities": {
+        const response = await businessService.fetchMyBusinessMembership(businessId);
         return {
           payload: response,
           version: this.hashPayload(response),

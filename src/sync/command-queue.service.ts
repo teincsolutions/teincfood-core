@@ -30,8 +30,36 @@ import type { SyncEngine } from "./engine";
 
 const MAX_RETRIES = 5;
 
+const QUEUED_STATUS_BY_COMMAND: Record<string, string> = {
+  "order:accept": "accepted",
+  "order:reject": "cancelled",
+  "order:start_preparing": "preparing",
+  "order:mark_ready": "ready",
+  "order:complete_pickup": "delivered",
+  "order:cancel": "cancelled",
+  "delivery:assign": "assigned",
+  "delivery:confirm_handover": "delivered",
+};
+
+export function getQueuedStatus(commandType: string): string | null {
+  return QUEUED_STATUS_BY_COMMAND[commandType] ?? null;
+}
+
 function buildOptimisticEvent(command: Command): DomainEvent {
   const payload = command.payload as Record<string, unknown>;
+  if (command.command_type === "order:create") {
+    return {
+      event_id: generateEventId(),
+      event_type: `${command.command_type.replace(":", ".")}_queued`,
+      event_version: "1.0",
+      entity_id: command.entity_id ?? command.command_id,
+      user_id: command.user_id,
+      device_id: command.device_id,
+      payload: buildOptimisticOrder(command, payload),
+      timestamp: new Date().toISOString(),
+    };
+  }
+  const queuedStatus = getQueuedStatus(command.command_type);
   return {
     event_id: generateEventId(),
     event_type: `${command.command_type.replace(":", ".")}_queued`,
@@ -39,14 +67,15 @@ function buildOptimisticEvent(command: Command): DomainEvent {
     entity_id: command.entity_id ?? command.command_id,
     user_id: command.user_id,
     device_id: command.device_id,
-    payload:
-      command.command_type === "order:create"
-        ? buildOptimisticOrder(command, payload)
-        : {
-            ...payload,
-            command_id: command.command_id,
-            status: "pending",
-          },
+    payload: {
+      ...payload,
+      command_id: command.command_id,
+      status: "pending",
+      // Used by offline read-model patching so the list reflects the queued transition.
+      to_status: queuedStatus,
+      order_id: command.entity_id,
+      delivery_id: command.entity_id,
+    },
     timestamp: new Date().toISOString(),
   };
 }
@@ -163,16 +192,16 @@ class CommandQueueService {
       status: (event.payload as Record<string, unknown>).status,
     });
 
-    // Persist the optimistic order so it survives app restarts and can be
-    // rehydrated (and shown) while still offline.
-    if (preparedCommand.command_type === "order:create") {
-      try {
-        await insertEvent(db, { event, origin: "local" });
-      } catch (error) {
-        syncLogger.error("CommandQueueService", "Failed to persist optimistic event", {
-          error: String(error),
-        });
-      }
+    // Persist optimistic events so they survive restarts and can be
+    // rehydrated offline. For order:create this is the full order; for
+    // transitions it carries to_status so the read model can reflect the
+    // queued status immediately.
+    try {
+      await insertEvent(db, { event, origin: "local" });
+    } catch (error) {
+      syncLogger.error("CommandQueueService", "Failed to persist optimistic event", {
+        error: String(error),
+      });
     }
 
     return event;
@@ -224,6 +253,25 @@ class CommandQueueService {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // Distinguish retryable (network/5xx/timeout) vs non-retryable (4xx validation)
+      // so a rejected order does not block the entire outbox.
+      const apiErr = error as { status?: number; name?: string };
+      const isNonRetryable =
+        apiErr?.name === "ApiError" &&
+        typeof apiErr.status === "number" &&
+        apiErr.status >= 400 &&
+        apiErr.status < 500;
+      if (isNonRetryable) {
+        await updateCommandStatus(db, command.command_id, "failed", `permanent:${message}`);
+        syncLogger.warn("CommandQueueService", "Queued command rejected by server (not retrying)", {
+          command_id: command.command_id,
+          command_type: command.command_type,
+          status: apiErr.status,
+          error: message,
+        });
+        // Do not throw — allow replay to continue to next command.
+        return;
+      }
       await updateCommandStatus(db, command.command_id, "failed", message);
       syncLogger.command(parsedCommand, "failed", { error: message });
       throw error;
@@ -256,8 +304,18 @@ class CommandQueueService {
       for (const command of pending) {
         try {
           await this.processCommand(command);
-        } catch {
-          // Stop replay on first failure; retry will happen on next trigger.
+        } catch (e) {
+          const apiErr = e as { status?: number; name?: string };
+          const isNonRetryable =
+            apiErr?.name === "ApiError" &&
+            typeof apiErr.status === "number" &&
+            apiErr.status >= 400 &&
+            apiErr.status < 500;
+          if (isNonRetryable) {
+            // Already marked permanent in processCommand — continue to next.
+            continue;
+          }
+          // Network/5xx — stop to preserve ordering; retry later.
           break;
         }
       }

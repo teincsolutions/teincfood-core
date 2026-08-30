@@ -87,6 +87,9 @@ export const businessService = {
   fetchOperatingHours: async (_businessId: string): Promise<unknown> => {
     notImpl("businessService.fetchOperatingHours");
   },
+  fetchMyBusinessMembership: async (_businessId: string): Promise<unknown> => {
+    notImpl("businessService.fetchMyBusinessMembership");
+  },
 };
 
 export const rolesService = {

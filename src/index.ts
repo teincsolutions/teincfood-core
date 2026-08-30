@@ -73,6 +73,7 @@ export { emitReferenceChanged, applyReferenceChangeEvent, syncReferenceDataOnRec
 export * from "./reference/events";
 export * from "./reference/service";
 export { referenceSyncService } from "./reference/service";
+export * from "./reference/capabilities";
 
 // ── Adapters (for host apps to supply) ──
 export * from "./adapters/sqlite";

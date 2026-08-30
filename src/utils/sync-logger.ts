@@ -43,9 +43,18 @@ class SyncLogger {
 
   constructor() {
     try {
-      this.enabled = typeof __DEV__ !== "undefined" ? __DEV__ : process.env.NODE_ENV !== "production";
+      const isDev = typeof __DEV__ !== "undefined" ? __DEV__ : false;
+      if (typeof isDev !== "undefined") {
+        this.enabled = isDev;
+        return;
+      }
+    } catch {}
+    try {
+      // @ts-ignore
+      const nodeEnv = typeof process !== "undefined" ? (process as unknown as { env?: Record<string, string> })?.env?.NODE_ENV : undefined;
+      this.enabled = nodeEnv !== "production";
     } catch {
-      this.enabled = process.env.NODE_ENV !== "production";
+      this.enabled = true;
     }
   }
 

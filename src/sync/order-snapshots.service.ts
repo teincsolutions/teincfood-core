@@ -70,23 +70,36 @@ class OrderSnapshotsService {
   }
 
   /**
-   * Patch the latest status of a known order inside every list snapshot for the
-   * business, so offline devices see live status changes without a refetch.
+   * Patch the latest status for a queued transition (e.g. accept_queued)
+   * carrying to_status/order_id. Used so offline devices see the new status
+   * immediately and after restart via the durable snapshot.
    */
-  private async applyOrderStatusToReadModel(
-    db: Awaited<ReturnType<typeof openSyncDatabase>>,
+  async applyQueuedStatusEvent(
     event: DomainEvent,
+    origin: "local" | "lan" | "cloud" = "local",
   ): Promise<void> {
     const payload = event.payload as Record<string, unknown> | undefined;
-    const orderId = payload?.order_id as string | undefined;
-    const toStatus =
-      (payload?.to_status as string | undefined) ??
-      (payload?.status as string | undefined);
-
-    if (!orderId || !toStatus || event.event_type !== "order.status_changed") {
-      return;
+    const toStatus = payload?.to_status as string | undefined;
+    const orderId = (payload?.order_id as string | undefined) ?? (event.entity_id as string | undefined);
+    if (!toStatus || !orderId) return;
+    try {
+      const db = await openSyncDatabase();
+      await insertEvent(db, { event, origin });
+      await this.applyOrderStatusToReadModelInternal(db, orderId, toStatus, event);
+    } catch (error) {
+      syncLogger.error("OrderSnapshots", "Failed to apply queued status", {
+        error: String(error),
+        event_type: event.event_type,
+      });
     }
+  }
 
+  private async applyOrderStatusToReadModelInternal(
+    db: Awaited<ReturnType<typeof openSyncDatabase>>,
+    orderId: string,
+    toStatus: string,
+    event: DomainEvent,
+  ): Promise<void> {
     try {
       const lists = await getEntitySnapshotsByType<SellerOrderListSnapshot>(
         db,
@@ -113,6 +126,27 @@ class OrderSnapshotsService {
         error: String(error),
       });
     }
+  }
+
+  /**
+   * Patch the latest status of a known order inside every list snapshot for the
+   * business, so offline devices see live status changes without a refetch.
+   */
+  private async applyOrderStatusToReadModel(
+    db: Awaited<ReturnType<typeof openSyncDatabase>>,
+    event: DomainEvent,
+  ): Promise<void> {
+    const payload = event.payload as Record<string, unknown> | undefined;
+    const orderId = payload?.order_id as string | undefined;
+    const toStatus =
+      (payload?.to_status as string | undefined) ??
+      (payload?.status as string | undefined);
+
+    if (!orderId || !toStatus || event.event_type !== "order.status_changed") {
+      return;
+    }
+
+    await this.applyOrderStatusToReadModelInternal(db, orderId, toStatus, event);
   }
 
   /**

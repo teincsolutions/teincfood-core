@@ -36,6 +36,17 @@ const ORDER_STATE_EVENT_TYPES = new Set([
   "delivery.assigned",
 ]);
 
+const QUEUED_STATUS_EVENT_TYPES = new Set([
+  "order.accept_queued",
+  "order.reject_queued",
+  "order.start_preparing_queued",
+  "order.mark_ready_queued",
+  "order.complete_pickup_queued",
+  "order.cancel_queued",
+  "delivery.assign_queued",
+  "delivery.confirm_handover_queued",
+]);
+
 let invalidator: (() => void) | null = null;
 
 /**
@@ -101,7 +112,8 @@ export async function applyOrderStateChangeEvent(
   origin: "local" | "lan" = "local",
 ): Promise<void> {
   try {
-    if (!ORDER_STATE_EVENT_TYPES.has(event.event_type)) return;
+    const isQueued = QUEUED_STATUS_EVENT_TYPES.has(event.event_type);
+    if (!ORDER_STATE_EVENT_TYPES.has(event.event_type) && !isQueued) return;
     syncLogger.debug("OrderState", "Order state changed", {
       origin,
       event_type: event.event_type,
@@ -109,6 +121,12 @@ export async function applyOrderStateChangeEvent(
     });
     // Persist the event into the durable journal and patch the offline read
     // model so every terminal keeps the same order states after a restart.
+    // Queued transitions carry to_status/order_id so they patch instantly offline.
+    if (isQueued) {
+      await orderSnapshotsService.applyQueuedStatusEvent(event, origin);
+      invalidator?.();
+      return;
+    }
     await orderSnapshotsService.persistOrderEvent(event, origin);
     invalidator?.();
   } catch (error) {
@@ -132,6 +150,15 @@ export async function applyPendingOrderEvent(
 
       const db = await openSyncDatabase();
       await insertEvent(db, { event, origin });
+      return;
+    }
+
+    if (QUEUED_STATUS_EVENT_TYPES.has(event.event_type)) {
+      // Queued transitions: patch the read model so listing reflects new status offline.
+      await orderSnapshotsService.applyQueuedStatusEvent(event, origin);
+      const db = await openSyncDatabase();
+      await insertEvent(db, { event, origin });
+      invalidator?.();
       return;
     }
 

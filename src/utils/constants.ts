@@ -3,17 +3,37 @@
  * Values can be overridden via createTeincCore config (future).
  */
 
-/** Base URL for the API — will be swapped per environment */
-export const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_URL ??
-  process.env.API_URL ??
-  "http://localhost:4000/api/v1";
+/** Base URL for the API — set at runtime via createTeincCore({ apiBaseUrl }) from the host app's .env */
+export let API_BASE_URL = "http://localhost:4000/api/v1";
 
-/** WebSocket URL for Phoenix Channels */
-export const WS_BASE_URL =
-  process.env.EXPO_PUBLIC_WS_URL ??
-  process.env.WS_URL ??
-  "ws://localhost:4000";
+/** WebSocket URL for Phoenix Channels — set at runtime via createTeincCore({ wsBaseUrl }) */
+export let WS_BASE_URL = "ws://localhost:4000";
+
+export function setApiBaseUrl(url: string | undefined): void {
+  if (url) {
+    API_BASE_URL = url;
+    try {
+      console.debug("[core:constants] API_BASE_URL set", url);
+    } catch {}
+  } else {
+    try {
+      console.debug("[core:constants] API_BASE_URL using default", API_BASE_URL);
+    } catch {}
+  }
+}
+
+export function setWsBaseUrl(url: string | undefined): void {
+  if (url) {
+    WS_BASE_URL = url;
+    try {
+      console.debug("[core:constants] WS_BASE_URL set", url);
+    } catch {}
+  } else {
+    try {
+      console.debug("[core:constants] WS_BASE_URL using default", WS_BASE_URL);
+    } catch {}
+  }
+}
 
 /** App metadata */
 export const APP_NAME = "Teinc Food Business";
