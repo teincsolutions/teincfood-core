@@ -31,6 +31,8 @@ export { formatDate, formatRelativeTime } from "./utils/formatDate";
 export * from "./utils/validation";
 export * from "./utils/responsive";
 export * from "./utils/copyToClipBoard";
+export * from "./utils/customer-display";
+export * from "./utils/order-filter";
 
 // ── DB ──
 export * from "./db/migrations";
