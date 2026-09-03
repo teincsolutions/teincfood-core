@@ -1,5 +1,7 @@
 /**
- * Pending orders store stub.
+ * Pending orders store — holds locally queued (offline) order:create commands
+ * as optimistic SellerOrders so they remain visible on every terminal until
+ * the cloud acknowledges them. Observable so React hooks can subscribe.
  */
 
 import type { SellerOrder } from "../types/api/seller.api";
@@ -7,24 +9,63 @@ import type { SellerOrder } from "../types/api/seller.api";
 let orders: SellerOrder[] = [];
 let hydrated = false;
 
+const listeners = new Set<() => void>();
+
+function notify() {
+  listeners.forEach((l) => l());
+}
+
+export function subscribePendingOrders(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function getPendingOrdersSnapshot(): { orders: SellerOrder[]; hydrated: boolean } {
+  return { orders: [...orders], hydrated };
+}
+
 export const usePendingOrdersStore = {
   getState: () => ({
     hydrated,
-    orders,
+    orders: [...orders],
     addOrder: (order: SellerOrder) => {
       if (!orders.find((o) => o.order_number === order.order_number)) {
-        orders.push(order);
+        orders = [...orders, order];
+        notify();
       }
     },
     removeByOrderNumber: (orderNumber: string) => {
-      orders = orders.filter((o) => o.order_number !== orderNumber);
+      const next = orders.filter((o) => o.order_number !== orderNumber);
+      if (next.length !== orders.length) {
+        orders = next;
+        notify();
+      }
+    },
+    removeByOrderId: (orderId: string) => {
+      const next = orders.filter((o) => o.id !== orderId);
+      if (next.length !== orders.length) {
+        orders = next;
+        notify();
+      }
     },
     setHydrated: (v: boolean) => {
-      hydrated = v;
+      if (hydrated !== v) {
+        hydrated = v;
+        notify();
+      }
     },
   }),
   setState: (patch: Partial<{ orders: SellerOrder[]; hydrated: boolean }>) => {
-    if (patch.orders !== undefined) orders = patch.orders;
-    if (patch.hydrated !== undefined) hydrated = patch.hydrated;
+    let changed = false;
+    if (patch.orders !== undefined) {
+      orders = [...patch.orders];
+      changed = true;
+    }
+    if (patch.hydrated !== undefined && hydrated !== patch.hydrated) {
+      hydrated = patch.hydrated;
+      changed = true;
+    }
+    if (changed) notify();
   },
+  subscribe: subscribePendingOrders,
 };

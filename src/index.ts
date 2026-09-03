@@ -79,6 +79,9 @@ export type { CreateOrderInput, AssignRiderInput, OrderActionInput } from "./rep
 export { posRepository } from "./repositories/pos.repository";
 export type { POSOrderPreviewInput } from "./repositories/pos.repository";
 
+// ── Order lifecycle hooks (offline-first, device-owned outbox) ──
+export * from "./hooks/orders.hooks";
+
 // ── Reference ──
 export * from "./reference/types";
 export * from "./reference/operations";
@@ -99,6 +102,10 @@ export * from "./adapters/local-node";
 export * from "./adapters/services";
 export * from "./adapters/devices";
 export * from "./adapters/image-cache";
+export * from "./adapters/business";
+export * from "./adapters/pending-orders";
+export { KIOSK_KEYS, SELLER_ORDERS_KEYS, BUSINESS_DELIVERIES_KEYS, MENU_KEYS, REFERENCE_KEYS } from "./adapters/query-keys";
+// POS_KEYS / SELLER_KEYS are exported from hooks/orders.hooks (offline-first source of truth)
 
 // ── Init helper ──
 import { setSqliteDriver, type SqliteDriver } from "./adapters/sqlite";

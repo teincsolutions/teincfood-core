@@ -8,7 +8,7 @@ import { matchesCustomerSearch } from "./customer-display";
 
 export function filterOrdersOffline(
   orders: SellerOrder[],
-  filters?: { status?: string; order_type?: string; is_pos?: string; q?: string; search?: string },
+  filters?: { status?: string; order_type?: string; is_pos?: string; q?: string; search?: string; date_from?: string; date_to?: string },
 ): SellerOrder[] {
   let filtered = orders;
   const statusSet = filters?.status ? new Set(filters.status.split(",").map((s) => s.trim())) : null;
@@ -25,6 +25,14 @@ export function filterOrdersOffline(
         o.order_number.toLowerCase().includes(q) ||
         matchesCustomerSearch(o as unknown as Parameters<typeof matchesCustomerSearch>[0], q),
     );
+  }
+  if (filters?.date_from) {
+    const from = filters.date_from.slice(0, 10);
+    filtered = filtered.filter((o) => (o.inserted_at ?? "").slice(0, 10) >= from);
+  }
+  if (filters?.date_to) {
+    const to = filters.date_to.slice(0, 10);
+    filtered = filtered.filter((o) => (o.inserted_at ?? "").slice(0, 10) <= to);
   }
   return filtered;
 }

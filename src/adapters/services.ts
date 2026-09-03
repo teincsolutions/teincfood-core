@@ -20,8 +20,17 @@ export const posService = {
   },
 };
 
-// seller.service
+// seller.service — also order listing used by POS/seller order lifecycle
 export const sellerService = {
+  fetchBusinessOrders: async (_businessId: string, _params?: Record<string, unknown>): Promise<{ data: unknown[]; pagination: unknown }> => {
+    notImpl("sellerService.fetchBusinessOrders");
+  },
+  fetchSellerOrder: async (_orderId: string): Promise<{ data: unknown }> => {
+    notImpl("sellerService.fetchSellerOrder");
+  },
+  fetchBusinessDeliveries: async (_businessId: string, _params?: Record<string, unknown>): Promise<{ data: unknown[]; pagination: unknown }> => {
+    notImpl("sellerService.fetchBusinessDeliveries");
+  },
   acceptOrder: async (_orderId: string): Promise<{ data: unknown }> => {
     notImpl("sellerService.acceptOrder");
   },
