@@ -198,10 +198,47 @@ class ReferenceSyncService {
   ): Promise<{ payload: unknown; version: string }> {
     switch (key) {
       case "menu:items": {
-        const response = await menuService.fetchBusinessMenuItems(businessId, 1);
+        // Paginate through all pages so offline cache is complete — not just page 1 (20).
+        // Safety cap 50 pages (~1000 items) to avoid runaway on misconfigured backend.
+        const allItems: MenuItemListResponse["data"] = [];
+        let page = 1;
+        let lastPagination: MenuItemListResponse["pagination"] | null = null;
+        while (true) {
+          const response = (await menuService.fetchBusinessMenuItems(
+            businessId,
+            page,
+          )) as MenuItemListResponse;
+          allItems.push(...(response.data ?? []));
+          lastPagination = response.pagination;
+          if (
+            !lastPagination ||
+            lastPagination.page >= lastPagination.total_pages ||
+            (response.data ?? []).length === 0
+          )
+            break;
+          page += 1;
+          if (page > 50) break;
+        }
+        const merged: MenuItemListResponse = {
+          data: allItems,
+          pagination: lastPagination
+            ? {
+                ...lastPagination,
+                page: 1,
+                page_size: allItems.length,
+                total_pages: 1,
+                total_entries: allItems.length,
+              }
+            : {
+                page: 1,
+                page_size: allItems.length,
+                total_pages: 1,
+                total_entries: allItems.length,
+              },
+        };
         return {
-          payload: response,
-          version: this.hashPayload(response),
+          payload: merged,
+          version: this.hashPayload(merged),
         };
       }
       case "menu:categories": {
