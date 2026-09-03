@@ -53,8 +53,10 @@ export {
   generateLocalCalloutNumber,
   isLocalOrderNumber,
   generateOrderNumber,
+  generateOrderNumberForBusiness,
   isOfflineOrderNumber,
   parseOrderNumber,
+  resetCalloutForTests,
 } from "./sync/order-number";
 export { deviceLeaseService, getDeviceNumber, isOnlineOnly, ensureLease } from "./sync/device-lease.service";
 export { useDeviceLease, ensureDeviceLease } from "./sync/use-device-lease";

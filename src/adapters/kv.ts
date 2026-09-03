@@ -62,8 +62,21 @@ export async function removeItem(key: string): Promise<void> {
 }
 
 // Synchronous fallbacks for legacy callers that used MMKV sync API
+// 0.7.1: delegate to driver when driver supports sync (MMKV), otherwise memory
 export function getItemSync<T>(key: string): T | null {
-  const raw = memory.get(key);
+  let raw: string | null | undefined;
+  if (driver) {
+    try {
+      const v = driver.getItem(key);
+      // if driver returns Promise, we can't await sync — fall back to memory
+      if (v instanceof Promise) raw = memory.get(key) ?? null;
+      else raw = (v as string | null) ?? memory.get(key) ?? null;
+    } catch {
+      raw = memory.get(key) ?? null;
+    }
+  } else {
+    raw = memory.get(key);
+  }
   if (raw == null) return null;
   try {
     return JSON.parse(raw) as T;
@@ -73,9 +86,23 @@ export function getItemSync<T>(key: string): T | null {
 }
 
 export function setItemSync<T>(key: string, value: T): void {
-  memory.set(key, JSON.stringify(value));
+  const str = JSON.stringify(value);
+  memory.set(key, str);
+  if (driver) {
+    try {
+      const r = driver.setItem(key, str);
+      // if async, also keep memory
+      if (r instanceof Promise) r.catch(() => {});
+    } catch {}
+  }
 }
 
 export function removeItemSync(key: string): void {
   memory.delete(key);
+  if (driver) {
+    try {
+      const r = driver.removeItem(key);
+      if (r instanceof Promise) r.catch(() => {});
+    } catch {}
+  }
 }

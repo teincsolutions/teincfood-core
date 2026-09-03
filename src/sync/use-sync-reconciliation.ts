@@ -33,7 +33,7 @@ function isLocalOrderEvent(event: DomainEvent): boolean {
   const payload = event.payload as Record<string, unknown> | undefined;
   if (!payload) return false;
   const localOrderNumber = payload.local_order_number;
-  return typeof localOrderNumber === "string" && localOrderNumber.startsWith("TFL-");
+  return typeof localOrderNumber === "string" && /^[0-9]{2}-[0-9]{3}-[0-9]{3}$/.test(localOrderNumber);
 }
 
 export function useSyncReconciliation(): void {
