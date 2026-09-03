@@ -37,7 +37,7 @@ export function setWsBaseUrl(url: string | undefined): void {
 
 /** App metadata */
 export const APP_NAME = "Teinc Food Business";
-export const APP_VERSION = "0.7.2";
+export const APP_VERSION = "0.7.3";
 
 /** Async storage keys */
 export const STORAGE_KEYS = {

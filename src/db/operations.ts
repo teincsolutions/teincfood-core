@@ -444,3 +444,30 @@ function rowToDomainEvent(row: EventRow): DomainEvent {
     timestamp: row.timestamp,
   };
 }
+
+// ─────────────────────────────────────────────────────────────
+// Maintenance — clear stale local data (used by Diagnostics)
+// ─────────────────────────────────────────────────────────────
+
+export async function clearAllSyncData(db: SQLiteDatabase): Promise<void> {
+  await db.execAsync(`DELETE FROM commands;`);
+  await db.execAsync(`DELETE FROM events;`);
+  await db.execAsync(`DELETE FROM entity_snapshots;`);
+  // Keep reference_data — it is business-scoped and expensive to re-fetch;
+  // only order/command state is cleared. If full wipe needed, call
+  // clearReferenceData below.
+}
+
+export async function clearReferenceData(db: SQLiteDatabase): Promise<void> {
+  await db.execAsync(`DELETE FROM reference_data;`);
+}
+
+export async function clearCompletedCommandsAndOrphans(db: SQLiteDatabase): Promise<void> {
+  await db.execAsync(`DELETE FROM commands WHERE status = 'completed';`);
+  try {
+    await db.execAsync(`DELETE FROM commands WHERE payload LIKE '%TFL-%';`);
+  } catch {}
+  try {
+    await db.execAsync(`DELETE FROM events WHERE payload LIKE '%TFL-%';`);
+  } catch {}
+}

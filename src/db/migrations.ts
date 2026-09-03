@@ -123,4 +123,26 @@ export const MIGRATIONS: Migration[] = [
         `);
     },
   },
+  {
+    version: 4,
+    up: async (db) => {
+      // Clear stale completed outbox rows and legacy TFL- order numbers that
+      // accumulated before 0.7.0's DD-RRR-CCC cutover. Pending/failed/in_flight
+      // are kept so an in-flight replay is not lost; only completed + legacy
+      // payloads are pruned. Also clears legacy optimistic events.
+      await db.execAsync(`
+          DELETE FROM commands WHERE status = 'completed';
+        `);
+      try {
+        await db.execAsync(`
+            DELETE FROM commands WHERE payload LIKE '%TFL-%';
+          `);
+      } catch {}
+      try {
+        await db.execAsync(`
+            DELETE FROM events WHERE payload LIKE '%TFL-%';
+          `);
+      } catch {}
+    },
+  },
 ];

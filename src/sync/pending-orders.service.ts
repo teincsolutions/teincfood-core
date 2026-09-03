@@ -150,6 +150,12 @@ export async function applyPendingOrderEvent(
 
       const db = await openSyncDatabase();
       await insertEvent(db, { event, origin });
+      // Ensure every screen (POS, Orders, Kitchen) sees the optimistic order
+      // even when there is no Local Node — TanStack queries that merge pending
+      // orders will re-render due to store change, but also invalidate so
+      // server-backed lists that are currently cached refresh with the pending
+      // overlay.
+      invalidator?.();
       return;
     }
 

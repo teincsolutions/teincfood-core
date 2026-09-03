@@ -27,6 +27,7 @@ import {
   generateOrderNumberForBusiness,
 } from "./order-number";
 import type { SyncEngine } from "./engine";
+import { subscribeConnectivity } from "../adapters/connectivity";
 
 const MAX_RETRIES = 5;
 
@@ -168,6 +169,16 @@ class CommandQueueService {
 
   setSyncEngine(engine: SyncEngine): void {
     this.syncEngine = engine;
+    // Auto-replay when the cloud becomes reachable again (e.g. after a
+    // timeout-induced `unreachable` flip, then the next successful probe sets
+    // `reachable`). No polling — event-driven via connectivity state.
+    try {
+      subscribeConnectivity((s) => {
+        if (s.isCloudReachable === "reachable" && s.isOnline) {
+          this.replay().catch(() => {});
+        }
+      });
+    } catch {}
   }
 
   /**
@@ -244,7 +255,10 @@ class CommandQueueService {
 
     try {
       const events = await this.syncEngine.execute(parsedCommand);
-      await updateCommandStatus(db, command.command_id, "completed");
+      // Outbox is an ephemeral queue — remove the row on success so the
+      // Diagnostics outbox count drops to 0 and old completed rows never
+      // accumulate. The optimistic event stays in `events` (marked synced).
+      await deleteCommand(db, command.command_id);
       syncLogger.command(parsedCommand, "completed", {
         event_count: events.length,
       });

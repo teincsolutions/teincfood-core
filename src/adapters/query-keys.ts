@@ -10,6 +10,19 @@ export const POS_KEYS = {
 
 export const SELLER_KEYS = {
   all: ["seller"] as const,
+  orders: (businessId?: string) => ["seller", "orders", businessId].filter((x) => x !== undefined) as readonly unknown[],
+};
+
+export const KIOSK_KEYS = {
+  all: ["kiosk"] as const,
+};
+
+export const SELLER_ORDERS_KEYS = {
+  all: ["seller-orders"] as const,
+};
+
+export const BUSINESS_DELIVERIES_KEYS = {
+  all: ["business-deliveries"] as const,
 };
 
 export const MENU_KEYS = {

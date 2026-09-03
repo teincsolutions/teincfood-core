@@ -20,7 +20,15 @@ import { localNodeService } from "../adapters/local-node";
 import { getSyncDatabase } from "../db/connection";
 import { markEventsSynced } from "../db/operations";
 import { syncLogger } from "../utils/sync-logger";
-import { POS_KEYS, SELLER_KEYS, MENU_KEYS, REFERENCE_KEYS } from "../adapters/query-keys";
+import {
+  POS_KEYS,
+  SELLER_KEYS,
+  KIOSK_KEYS,
+  SELLER_ORDERS_KEYS,
+  BUSINESS_DELIVERIES_KEYS,
+  MENU_KEYS,
+  REFERENCE_KEYS,
+} from "../adapters/query-keys";
 import {
   applyReferenceChangeEvent,
   registerReferenceInvalidator,
@@ -53,10 +61,14 @@ export function useSyncReconciliation(): void {
     // server-confirmed order replaces the optimistic one. Invalidate from the
     // broadest key: POS_KEYS.orders() without a businessId would produce
     // ['pos','orders',undefined] which does not prefix-match business-scoped
-    // keys.
+    // keys. Also cover kiosk/seller-orders/business-deliveries so boards
+    // refresh even when there is no Local Node (offline queue + Phoenix).
     const unregisterInvalidator = registerPendingOrdersInvalidator(() => {
       queryClient.invalidateQueries({ queryKey: POS_KEYS.all });
       queryClient.invalidateQueries({ queryKey: SELLER_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: KIOSK_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: SELLER_ORDERS_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: BUSINESS_DELIVERIES_KEYS.all });
     });
 
     // Reference-change events are published through the Sync Engine but are
