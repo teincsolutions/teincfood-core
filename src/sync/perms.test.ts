@@ -3,9 +3,9 @@ import { CAPABILITY_BY_COMMAND } from "../reference/capabilities";
 import { setItemSync, removeItemSync } from "../adapters/kv";
 
 describe("perms guard", () => {
-  it("maps order:create to pos:create_order", () => {
-    expect(CAPABILITY_BY_COMMAND["order:create"]).toBe("pos:create_order");
-    expect(CAPABILITY_BY_COMMAND["menu:update_item"]).toBe("menu:manage");
+  it("maps order:create to orders_create (backend snake_case)", () => {
+    expect(CAPABILITY_BY_COMMAND["order:create"]).toBe("orders_create");
+    expect(CAPABILITY_BY_COMMAND["menu:update_item"]).toBe("menu_manage");
   });
 
   it("hasCapabilitySyncSync fail open when no cache", async () => {

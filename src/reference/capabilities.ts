@@ -85,19 +85,19 @@ export function useHasCapabilityFor(businessId: string | undefined, capability: 
 }
 
 export const CAPABILITY_BY_COMMAND: Record<string, string> = {
-  "order:create": "pos:create_order",
-  "order:accept": "order:accept",
-  "order:reject": "order:reject",
-  "order:start_preparing": "order:start_preparing",
-  "order:mark_ready": "order:mark_ready",
-  "order:complete_pickup": "order:complete_pickup",
-  "order:cancel": "order:cancel",
-  "delivery:assign": "delivery:assign",
-  "delivery:confirm_handover": "delivery:confirm_handover",
-  "menu:create_item": "menu:manage",
-  "menu:update_item": "menu:manage",
-  "menu:delete_item": "menu:manage",
-  "menu:create_category": "menu:manage",
+  "order:create": "orders_create",
+  "order:accept": "orders_accept",
+  "order:reject": "orders_reject",
+  "order:start_preparing": "orders_start_preparing",
+  "order:mark_ready": "orders_mark_ready",
+  "order:complete_pickup": "orders_mark_ready",
+  "order:cancel": "orders_reject",
+  "delivery:assign": "deliveries_assign",
+  "delivery:confirm_handover": "deliveries_all",
+  "menu:create_item": "menu_manage",
+  "menu:update_item": "menu_manage",
+  "menu:delete_item": "menu_manage",
+  "menu:create_category": "menu_manage",
 };
 
 export async function hasCapabilitySync(businessId: string, commandType: string): Promise<boolean> {
