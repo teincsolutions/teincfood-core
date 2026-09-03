@@ -95,23 +95,44 @@ export * from "./reference/capabilities";
 
 // ── Adapters (for host apps to supply) ──
 export * from "./adapters/sqlite";
-export * from "./adapters/kv";
+export { KVDriver, setKVDriver, getKVDriver, kvGetItem, kvSetItem, kvRemoveItem, getItem, setItem, removeItem, getItemSync, setItemSync } from "./adapters/kv";
 export * from "./adapters/connectivity";
 export * from "./adapters/http";
 export * from "./adapters/local-node";
 export * from "./adapters/services";
 export * from "./adapters/devices";
-export * from "./adapters/image-cache";
+export { imageCacheService } from "./adapters/image-cache";
 export * from "./adapters/business";
 export * from "./adapters/pending-orders";
+export * from "./adapters/print";
+export * from "./adapters/filesystem";
 export { KIOSK_KEYS, SELLER_ORDERS_KEYS, BUSINESS_DELIVERIES_KEYS, MENU_KEYS, REFERENCE_KEYS } from "./adapters/query-keys";
 // POS_KEYS / SELLER_KEYS are exported from hooks/orders.hooks (offline-first source of truth)
+
+// ── Printer (backend-identical template) ──
+export * from "./printer/types";
+export * from "./printer/store";
+export * from "./printer/receipt";
+export * from "./printer/service";
+export * from "./printer/hooks";
+
+// ── Cart (device-local) ──
+export * from "./cart/store";
+export * from "./cart/hooks";
+
+// ── Catalog ──
+export * from "./catalog/hooks";
+
+// ── Image cache (durable) ──
+export { getCachedImagePath, ensureImageCacheDir, getCachedImageInfo, cacheRemoteImage, cacheImageBatch, clearImageCache, pruneImageCache, resolveImageSource, stableCacheUrl } from "./image-cache/service";
 
 // ── Init helper ──
 import { setSqliteDriver, type SqliteDriver } from "./adapters/sqlite";
 import { setKVDriver, type KVDriver } from "./adapters/kv";
 import { setConnectivityState } from "./adapters/connectivity";
 import { setHttpClient, type HttpClient } from "./adapters/http";
+import { setTcpAdapter, setPrintFileAdapter, setMdnsAdapter } from "./adapters/print";
+import { setFileSystemAdapter } from "./adapters/filesystem";
 import { API_BASE_URL, WS_BASE_URL, setApiBaseUrl, setWsBaseUrl } from "./utils/constants";
 import { SyncEngine } from "./sync/engine";
 import { restTransport } from "./sync/transport-rest";
@@ -125,6 +146,8 @@ export interface CoreConfig {
   wsBaseUrl?: string;
   /** Optional initial connectivity override */
   initialConnectivity?: { isOnline?: boolean; isCloudReachable?: "reachable" | "unreachable" | "unknown" };
+  printAdapters?: { tcp?: import("./adapters/print").TcpSocketAdapter; printFile?: import("./adapters/print").PrintFileAdapter; mdns?: import("./adapters/print").MdnsAdapter };
+  fileSystemAdapter?: import("./adapters/filesystem").FileSystemAdapter;
 }
 
 let engine: SyncEngine | null = null;
@@ -143,6 +166,10 @@ export function createTeincCore(config: CoreConfig = {}): { engine: SyncEngine }
   if (config.sqliteDriver) setSqliteDriver(config.sqliteDriver);
   if (config.kvDriver) setKVDriver(config.kvDriver);
   if (config.httpClient) setHttpClient(config.httpClient);
+  if (config.printAdapters?.tcp) setTcpAdapter(config.printAdapters.tcp);
+  if (config.printAdapters?.printFile) setPrintFileAdapter(config.printAdapters.printFile);
+  if (config.printAdapters?.mdns) setMdnsAdapter(config.printAdapters.mdns);
+  if (config.fileSystemAdapter) setFileSystemAdapter(config.fileSystemAdapter);
   if (config.apiBaseUrl) setApiBaseUrl(config.apiBaseUrl);
   else {
     try { console.debug("[core] apiBaseUrl not provided by app, using default", API_BASE_URL); } catch {}

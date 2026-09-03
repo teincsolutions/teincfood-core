@@ -317,6 +317,45 @@ export function usePOSOrderPreviewQuery(items: POSCartItem[], orderType: POSOrde
   });
 }
 
+// ─── Seller order detail (offline via snapshot fallback) ───────────────────
+
+export function useSellerOrderQuery(orderId: string, enabled = true) {
+  const businessId = useBusinessId();
+  const connectivity = useConnectivity();
+  const offline = isOfflineState(connectivity);
+  return useQuery({
+    queryKey: SELLER_KEYS.order(orderId, businessId),
+    queryFn: async () => {
+      if (offline) {
+        const list = businessId ? await orderSnapshotsService.getSellerList(businessId, businessId) : null;
+        const found = list?.find((o) => o.id === orderId || o.order_number === orderId);
+        if (found) return { data: found } as unknown as { data: SellerOrder };
+      }
+      try {
+        const res = await sellerService.fetchSellerOrder(orderId);
+        return res as unknown as { data: SellerOrder };
+      } catch (e) {
+        const list = businessId ? await orderSnapshotsService.getSellerList(businessId, businessId) : null;
+        const found = list?.find((o) => o.id === orderId || o.order_number === orderId);
+        if (found) return { data: found } as unknown as { data: SellerOrder };
+        throw e;
+      }
+    },
+    enabled: enabled && !!orderId && !!businessId,
+    staleTime: 30 * 1000,
+    retry: false,
+    networkMode: "offlineFirst" as const,
+  });
+}
+
+// ─── Helpers for queued UI ───────────────────────────────────────────────
+
+export function isQueuedTransition(result: unknown): boolean {
+  const r = result as { status?: string; command_id?: string; id?: string; order_number?: string } | null;
+  if (!r) return false;
+  return r.status === "pending" && !!r.command_id && !r.id;
+}
+
 // ─── Order status mutations via SyncEngine (all go through outbox) ────────
 
 function makeOrderActionMutation(
@@ -345,3 +384,57 @@ export const useStartPreparingOrderMutation = makeOrderActionMutation(({ orderId
 export const useMarkOrderReadyMutation = makeOrderActionMutation(({ orderId, businessId }) => orderRepository.markOrderReady({ orderId, businessId }));
 export const useCompletePickupMutation = makeOrderActionMutation(({ orderId, businessId }) => orderRepository.completePickup({ orderId, businessId }));
 export const useCancelOrderMutation = makeOrderActionMutation(({ orderId, businessId }) => orderRepository.cancelOrder({ orderId, businessId }));
+
+export function useConfirmHandoverMutation() {
+  const businessId = useBusinessId();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (deliveryId: string) => {
+      if (!businessId) throw new Error("No active business");
+      return orderRepository.confirmHandover({ deliveryId, businessId });
+    },
+    onSettled: (_d, _e, deliveryId) => {
+      queryClient.invalidateQueries({ queryKey: SELLER_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: POS_KEYS.all });
+      if (deliveryId) queryClient.invalidateQueries({ queryKey: SELLER_KEYS.order(deliveryId as string) });
+    },
+  });
+}
+
+export function useAssignRiderMutation() {
+  const businessId = useBusinessId();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ orderId, riderId }: { orderId: string; riderId: string }) => {
+      if (!businessId) throw new Error("No active business");
+      return orderRepository.assignRider({ orderId, riderId, businessId });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: SELLER_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: POS_KEYS.all });
+    },
+  });
+}
+
+export function useUpdateOrderStatusMutation() {
+  const accept = useAcceptOrderMutation();
+  const reject = useRejectOrderMutation();
+  const preparing = useStartPreparingOrderMutation();
+  const ready = useMarkOrderReadyMutation();
+  const complete = useCompletePickupMutation();
+  const cancel = useCancelOrderMutation();
+  return {
+    mutate: (orderId: string, status: string) => {
+      switch (status) {
+        case "accepted": return accept.mutateAsync(orderId);
+        case "preparing": return preparing.mutateAsync(orderId);
+        case "ready": return ready.mutateAsync(orderId);
+        case "delivered": return complete.mutateAsync(orderId);
+        case "cancelled": return cancel.mutateAsync(orderId);
+        case "rejected": return reject.mutateAsync(orderId);
+        default: throw new Error(`Unknown status ${status}`);
+      }
+    },
+    isPending: accept.isPending || reject.isPending || preparing.isPending || ready.isPending || complete.isPending || cancel.isPending,
+  };
+}
