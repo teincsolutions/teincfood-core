@@ -27,7 +27,7 @@ import {
   generateOrderNumberForBusiness,
 } from "./order-number";
 import type { SyncEngine } from "./engine";
-import { subscribeConnectivity } from "../adapters/connectivity";
+import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
 
 const MAX_RETRIES = 5;
 
@@ -87,6 +87,10 @@ function buildOptimisticOrder(
 ): SellerOrder {
   const items = (payload.items as Array<{ menu_item_id: string; quantity: number }>) ?? [];
   const totalMinor = (payload.total_minor as number) ?? 0;
+  const subtotalMinor = (payload.subtotal_minor as number) ?? totalMinor;
+  const taxMinor = (payload.tax_minor as number) ?? 0;
+  const taxLines = (payload.tax_lines as unknown[]) ?? [];
+  const currencyCode = (payload.currency_code as string) ?? "GHS";
   const now = new Date().toISOString();
 
   const orderNumber =
@@ -110,20 +114,20 @@ function buildOptimisticOrder(
       is_paid: (payload.pos_payment_method as string) === "cash",
       reference: null,
       amount_minor: totalMinor,
-      currency: "GHS",
+      currency: currencyCode,
       paid_at: (payload.pos_payment_method as string) === "cash" ? now : null,
     },
     payment_mode: "pos_cash",
     total_minor: totalMinor,
-    subtotal_minor: totalMinor,
-    delivery_fee_minor: 0,
-    tax_minor: 0,
-    tip_minor: null,
-    discount_minor: 0,
-    promo_code: null,
-    tax_lines: [],
-    currency: "GHS",
-    currency_code: "GHS",
+    subtotal_minor: subtotalMinor,
+    delivery_fee_minor: (payload.delivery_fee_minor as number) ?? 0,
+    tax_minor: taxMinor,
+    tip_minor: (payload.tip_minor as number) ?? null,
+    discount_minor: (payload.discount_minor as number) ?? 0,
+    promo_code: (payload.promo_code as string) ?? null,
+    tax_lines: taxLines as SellerOrder["tax_lines"],
+    currency: currencyCode,
+    currency_code: currencyCode,
     business_id: command.business_id,
     business: null,
     delivery_address: null,
@@ -173,7 +177,8 @@ class CommandQueueService {
     // timeout-induced `unreachable` flip, then the next successful probe sets
     // `reachable`). No polling — event-driven via connectivity state.
     try {
-      subscribeConnectivity((s) => {
+      subscribeConnectivity(() => {
+        const s = getConnectivityState();
         if (s.isCloudReachable === "reachable" && s.isOnline) {
           this.replay().catch(() => {});
         }

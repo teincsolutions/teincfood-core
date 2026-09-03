@@ -15,15 +15,17 @@ let state: ConnectivityState = {
   isCloudReachable: "unknown",
 };
 
-const listeners = new Set<(s: ConnectivityState) => void>();
+const listeners = new Set<() => void>();
 
 export function getConnectivityState(): ConnectivityState {
-  return { ...state };
+  return state;
 }
 
 export function setConnectivityState(patch: Partial<ConnectivityState>): void {
-  state = { ...state, ...patch };
-  listeners.forEach((l) => l({ ...state }));
+  const next = { ...state, ...patch };
+  if (next.isOnline === state.isOnline && next.isCloudReachable === state.isCloudReachable) return;
+  state = next;
+  listeners.forEach((l) => l());
 }
 
 export function setCloudReachable(value: CloudReachable): void {
@@ -34,11 +36,9 @@ export function setOnline(value: boolean): void {
   setConnectivityState({ isOnline: value });
 }
 
-export function subscribeConnectivity(
-  listener: (s: ConnectivityState) => void,
-): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
+export function subscribeConnectivity(listener: () => void): () => void {
+  listeners.add(listener as () => void);
+  return () => listeners.delete(listener as () => void);
 }
 
 // Compatibility shim for code that previously used useConnectivityStore.getState()
