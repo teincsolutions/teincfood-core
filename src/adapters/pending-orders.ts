@@ -20,8 +20,13 @@ export function subscribePendingOrders(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
+let cachedSnapshot: { orders: SellerOrder[]; hydrated: boolean } = { orders, hydrated };
+
 export function getPendingOrdersSnapshot(): { orders: SellerOrder[]; hydrated: boolean } {
-  return { orders: [...orders], hydrated };
+  if (cachedSnapshot.orders !== orders || cachedSnapshot.hydrated !== hydrated) {
+    cachedSnapshot = { orders, hydrated };
+  }
+  return cachedSnapshot;
 }
 
 export const usePendingOrdersStore = {
