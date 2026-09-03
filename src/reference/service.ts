@@ -182,12 +182,11 @@ class ReferenceSyncService {
 
     await setReferenceData(db, businessId, {
       key,
-      // Defensive: never write a NULL version. If the backend ever omits the
-      // version, generate one so the row is still usable; the next version
-      // comparison will simply see a mismatch and re-sync.
       version: version ?? generateUUID(),
       payload,
       downloadedAt: new Date().toISOString(),
+      lastHlc: version ?? generateUUID(),
+      lastEventId: `evt_${version ?? generateUUID()}`,
     });
 
     return true;

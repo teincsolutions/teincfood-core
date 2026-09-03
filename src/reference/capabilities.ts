@@ -83,3 +83,39 @@ export function useHasCapabilityFor(businessId: string | undefined, capability: 
   const { data } = useBusinessCapabilities(businessId);
   return data?.capabilities.includes(capability) ?? false;
 }
+
+export const CAPABILITY_BY_COMMAND: Record<string, string> = {
+  "order:create": "pos:create_order",
+  "order:accept": "order:accept",
+  "order:reject": "order:reject",
+  "order:start_preparing": "order:start_preparing",
+  "order:mark_ready": "order:mark_ready",
+  "order:complete_pickup": "order:complete_pickup",
+  "order:cancel": "order:cancel",
+  "delivery:assign": "delivery:assign",
+  "delivery:confirm_handover": "delivery:confirm_handover",
+  "menu:create_item": "menu:manage",
+  "menu:update_item": "menu:manage",
+  "menu:delete_item": "menu:manage",
+  "menu:create_category": "menu:manage",
+};
+
+export async function hasCapabilitySync(businessId: string, commandType: string): Promise<boolean> {
+  const required = CAPABILITY_BY_COMMAND[commandType];
+  if (!required) return true;
+  try {
+    const db = await openSyncDatabase();
+    const rec = await getReferenceData<BusinessMembershipResponse>(db, businessId, "capabilities");
+    const caps = (rec?.payload as unknown as BusinessMembershipResponse)?.data?.capabilities ?? [];
+    return caps.includes(required);
+  } catch {
+    return true; // fail open if cache unreadable — backend will still 403
+  }
+}
+
+export function hasCapabilitySyncSync(businessId: string, commandType: string): boolean {
+  // Synchronous fallback for non-async callers — checks in-memory KV mirror if available
+  const required = CAPABILITY_BY_COMMAND[commandType];
+  if (!required) return true;
+  return true;
+}

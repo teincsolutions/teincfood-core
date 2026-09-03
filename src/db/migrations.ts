@@ -113,4 +113,14 @@ export const MIGRATIONS: Migration[] = [
         `);
     },
   },
+  {
+    version: 3,
+    up: async (db) => {
+      await db.execAsync(`
+          ALTER TABLE reference_data ADD COLUMN last_event_id TEXT;
+          ALTER TABLE reference_data ADD COLUMN last_hlc TEXT;
+          CREATE INDEX IF NOT EXISTS idx_reference_data_hlc ON reference_data(last_hlc);
+        `);
+    },
+  },
 ];

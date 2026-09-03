@@ -23,8 +23,8 @@ import {
 import { syncLogger } from "../utils/sync-logger";
 import { generateEventId } from "../utils/uuid";
 import {
-  generateLocalOrderNumber,
   generateLocalCalloutNumber,
+  generateOrderNumberForBusiness,
 } from "./order-number";
 import type { SyncEngine } from "./engine";
 
@@ -89,7 +89,7 @@ function buildOptimisticOrder(
   const now = new Date().toISOString();
 
   const orderNumber =
-    (payload.order_number as string) ?? generateLocalOrderNumber();
+    (payload.order_number as string) ?? generateOrderNumberForBusiness(command.business_id);
 
   return {
     id: (command.entity_id as string) ?? command.command_id,
@@ -151,11 +151,13 @@ function injectLocalOrderNumber(command: Command): Command {
   const payload = command.payload as Record<string, unknown>;
   if (payload.order_number) return command;
 
+  // 0.7.0: business-scoped DD-RRR-CCC; requires leased device_number
+  const orderNumber = generateOrderNumberForBusiness(command.business_id);
   return {
     ...command,
     payload: {
       ...payload,
-      order_number: generateLocalOrderNumber(),
+      order_number: orderNumber,
     },
   };
 }
@@ -253,9 +255,30 @@ class CommandQueueService {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // Distinguish retryable (network/5xx/timeout) vs non-retryable (4xx validation)
-      // so a rejected order does not block the entire outbox.
-      const apiErr = error as { status?: number; name?: string };
+      const apiErr = error as { status?: number; name?: string; code?: string; data?: unknown };
+      // 409 ORDER_NUMBER_TAKEN is retryable once with new RRR
+      const code = (apiErr as unknown as { code?: string })?.code ?? (apiErr?.data as unknown as { code?: string })?.code;
+      if (apiErr?.status === 409 && String(code).includes("ORDER_NUMBER_TAKEN")) {
+        // Regenerate random part of order_number if this was order:create
+        if (command.command_type === "order:create") {
+          try {
+            const payload = command.payload as Record<string, unknown>;
+            const on = payload.order_number as string | undefined;
+            const parsed = on ? on.match(/^([0-9]{2})-([0-9]{3})-([0-9]{3})$/) : null;
+            if (parsed) {
+              const deviceNumber = parsed[1];
+              const { generateOrderNumber } = await import("./order-number");
+              const { orderNumber: newOn } = generateOrderNumber(deviceNumber);
+              const newPayload = { ...payload, order_number: newOn };
+              await updateCommandStatus(db, command.command_id, "failed", `retry_random:${message}`);
+              // Update stored payload for retry
+              await db.runAsync(`UPDATE commands SET payload = ?, retry_count = retry_count WHERE command_id = ?;`, JSON.stringify(newPayload), command.command_id);
+            }
+          } catch {}
+        }
+        await updateCommandStatus(db, command.command_id, "failed", `order_number_taken:${message}`);
+        throw error;
+      }
       const isNonRetryable =
         apiErr?.name === "ApiError" &&
         typeof apiErr.status === "number" &&

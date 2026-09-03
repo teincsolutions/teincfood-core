@@ -15,6 +15,8 @@ export async function getReferenceData<T>(
     version: string;
     payload: string;
     downloaded_at: string;
+    last_event_id?: string | null;
+    last_hlc?: string | null;
   }>(
     "SELECT * FROM reference_data WHERE business_id = ? AND key = ?;",
     businessId,
@@ -28,6 +30,8 @@ export async function getReferenceData<T>(
     version: row.version,
     payload: JSON.parse(row.payload) as T,
     downloadedAt: row.downloaded_at,
+    lastEventId: row.last_event_id ?? null,
+    lastHlc: row.last_hlc ?? null,
   };
 }
 
@@ -51,19 +55,59 @@ export async function setReferenceData<T>(
 ): Promise<void> {
   await db.runAsync(
     `
-      INSERT INTO reference_data (business_id, key, version, payload, downloaded_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO reference_data (business_id, key, version, payload, downloaded_at, last_event_id, last_hlc)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(business_id, key) DO UPDATE SET
         version = excluded.version,
         payload = excluded.payload,
-        downloaded_at = excluded.downloaded_at;
+        downloaded_at = excluded.downloaded_at,
+        last_event_id = excluded.last_event_id,
+        last_hlc = excluded.last_hlc;
     `,
     businessId,
     record.key,
     record.version,
     JSON.stringify(record.payload),
     record.downloadedAt,
+    record.lastEventId ?? null,
+    record.lastHlc ?? null,
   );
+}
+
+export async function mergeReferenceData<T extends Record<string, unknown>>(
+  db: SQLiteDatabase,
+  businessId: string,
+  key: ReferenceDataKey,
+  incoming: Record<string, unknown>,
+  hlc: string,
+  eventId: string,
+): Promise<void> {
+  const { compareHLCString } = await import("../utils/hlc");
+  const existing = await getReferenceData<T>(db, businessId, key);
+  if (!existing) {
+    await setReferenceData(db, businessId, {
+      key,
+      version: hlc,
+      payload: incoming as T,
+      downloadedAt: new Date().toISOString(),
+      lastEventId: eventId,
+      lastHlc: hlc,
+    });
+    return;
+  }
+  // If incoming HLC is older, keep existing (LWW per key)
+  if (existing.lastHlc && compareHLCString(hlc, existing.lastHlc) <= 0) {
+    // Still allow partial field merge if payload is LWWMap shaped
+    return;
+  }
+  await setReferenceData(db, businessId, {
+    key,
+    version: hlc,
+    payload: incoming as T,
+    downloadedAt: new Date().toISOString(),
+    lastEventId: eventId,
+    lastHlc: hlc,
+  });
 }
 
 export async function deleteReferenceData(

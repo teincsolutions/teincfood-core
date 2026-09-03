@@ -67,6 +67,26 @@ export class SyncEngine {
   async execute(command: Command): Promise<DomainEvent[]> {
     syncLogger.command(command, "issued");
 
+    // Perms guard (offline-capable): block before routing
+    const { CAPABILITY_BY_COMMAND } = await import("../reference/capabilities");
+    const required = CAPABILITY_BY_COMMAND[command.command_type];
+    if (required) {
+      try {
+        const { getReferenceData } = await import("../reference/operations");
+        const { openSyncDatabase } = await import("../db/connection");
+        const db = await openSyncDatabase();
+        const rec = await getReferenceData(db, command.business_id, "capabilities");
+        const caps: string[] = (rec?.payload as unknown as { data?: { capabilities?: string[] } })?.data?.capabilities ?? [];
+        // If capabilities cached and missing required, block locally
+        if (rec && caps.length > 0 && !caps.includes(required)) {
+          throw new ApiError(`Missing capability: ${required}`, 403, "FORBIDDEN");
+        }
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 403) throw e;
+        // otherwise fail open
+      }
+    }
+
     let strategy = this.resolveStrategy(command);
 
     const { isCloudReachable, isOnline } = getConnectivityState();

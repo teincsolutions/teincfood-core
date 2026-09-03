@@ -48,7 +48,18 @@ export * from "./sync/command-builder";
 export * from "./sync/command-queue.service";
 export { commandQueueService } from "./sync/command-queue.service";
 export { buildCommand } from "./sync/command-builder";
-export { generateLocalOrderNumber, generateLocalCalloutNumber, isLocalOrderNumber } from "./sync/order-number";
+export {
+  generateLocalOrderNumber,
+  generateLocalCalloutNumber,
+  isLocalOrderNumber,
+  generateOrderNumber,
+  isOfflineOrderNumber,
+  parseOrderNumber,
+} from "./sync/order-number";
+export { deviceLeaseService, getDeviceNumber, isOnlineOnly, ensureLease } from "./sync/device-lease.service";
+export { useDeviceLease, ensureDeviceLease } from "./sync/use-device-lease";
+export * from "./utils/hlc";
+export * from "./reference/lww";
 export { orderSnapshotsService } from "./sync/order-snapshots.service";
 export * from "./sync/pending-orders.service";
 export { restTransport } from "./sync/transport-rest";

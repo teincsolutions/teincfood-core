@@ -15,6 +15,9 @@ import { syncEngine } from "./engine";
 import { buildCommand } from "./command-builder";
 import { syncLogger } from "../utils/sync-logger";
 import { ApiError } from "../adapters/http";
+import { CAPABILITY_BY_COMMAND } from "../reference/capabilities";
+import { openSyncDatabase } from "../db/connection";
+import { getReferenceData } from "../reference/operations";
 
 export interface OfflineCapableOptions<TService, TCommandPayload> {
   /** Direct REST call — used online. */
@@ -29,6 +32,20 @@ export interface OfflineCapableOptions<TService, TCommandPayload> {
 export async function runOfflineCapableMutation<TService, TCommandPayload>(
   options: OfflineCapableOptions<TService, TCommandPayload>,
 ): Promise<TService> {
+  // Per-command capability guard before even attempting direct call
+  const required = CAPABILITY_BY_COMMAND[options.commandType];
+  if (required) {
+    try {
+      const db = await openSyncDatabase();
+      const rec = await getReferenceData(db, options.businessId, "capabilities");
+      const caps: string[] = (rec?.payload as unknown as { data?: { capabilities?: string[] } })?.data?.capabilities ?? [];
+      if (rec && caps.length > 0 && !caps.includes(required)) {
+        throw new ApiError(`Missing capability: ${required}`, 403, "FORBIDDEN");
+      }
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 403) throw e;
+    }
+  }
   try {
     return await options.run();
   } catch (error) {

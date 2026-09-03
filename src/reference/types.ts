@@ -25,12 +25,16 @@ export interface ReferenceDataRecord<T = unknown> {
   version: string;
   payload: T;
   downloadedAt: string;
+  lastEventId?: string | null;
+  lastHlc?: string | null;
 }
 
 export interface ReferenceVersionInfo {
   key: ReferenceDataKey;
   version: string;
   updated_at: string;
+  event_id?: string;
+  hlc?: string;
 }
 
 export interface ReferenceSyncOptions {
