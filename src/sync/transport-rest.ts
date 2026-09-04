@@ -61,6 +61,7 @@ export class RestTransport implements Transport {
       case "order:create": {
         const posPayload = {
           ...(payload as unknown as POSOrderCreateRequest),
+          id: command.command_id,
           command_id: command.command_id,
           local_order_number: (payload as { order_number?: string }).order_number,
         };
@@ -68,7 +69,7 @@ export class RestTransport implements Transport {
           business_id,
           posPayload as unknown as POSOrderCreateRequest,
         );
-        return this.wrapResponse("order.created", response.data as unknown as Record<string, unknown>, entity_id, timestamp, command);
+        return this.wrapResponse("order.created", response.data as unknown as Record<string, unknown>, entity_id ?? command.command_id, timestamp, command);
       }
 
       case "order:accept": {
@@ -115,8 +116,9 @@ export class RestTransport implements Transport {
       }
 
       case "menu:create_item": {
-        const response = await menuService.createMenuItem(business_id, payload as Record<string, unknown>);
-        return this.wrapResponse("menu.item_created", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
+        const createPayload = { ...(payload as Record<string, unknown>), id: (payload as Record<string, unknown>).id ?? command.command_id, command_id: command.command_id };
+        const response = await menuService.createMenuItem(business_id, createPayload);
+        return this.wrapResponse("menu.item_created", response as unknown as Record<string, unknown>, command.command_id, timestamp, command);
       }
 
       case "menu:update_item": {
@@ -130,8 +132,14 @@ export class RestTransport implements Transport {
       }
 
       case "menu:create_category": {
-        const response = await menuService.createCategory(business_id, payload as Record<string, unknown>);
-        return this.wrapResponse("menu.category_created", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
+        const createPayload = { ...(payload as Record<string, unknown>), id: (payload as Record<string, unknown>).id ?? command.command_id, command_id: command.command_id };
+        const response = await menuService.createCategory(business_id, createPayload);
+        return this.wrapResponse("menu.category_created", response as unknown as Record<string, unknown>, command.command_id, timestamp, command);
+      }
+
+      case "payment:confirm_cash": {
+        const response = await sellerService.confirmCashPayment(entity_id!);
+        return this.wrapResponse("payment.completed", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
       }
 
       default:

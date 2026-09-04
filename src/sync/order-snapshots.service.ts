@@ -128,6 +128,39 @@ class OrderSnapshotsService {
     }
   }
 
+  async applyPaymentEvent(
+    event: DomainEvent,
+    origin: "local" | "lan" | "cloud" = "local",
+  ): Promise<void> {
+    const payload = event.payload as Record<string, unknown> | undefined;
+    const orderId = (payload?.order_id as string | undefined) ?? (event.entity_id as string | undefined);
+    if (!orderId) return;
+    const paidAt = (payload?.paid_at as string) || new Date().toISOString();
+    try {
+      const db = await openSyncDatabase();
+      await insertEvent(db, { event, origin });
+      const lists = await getEntitySnapshotsByType<SellerOrderListSnapshot>(db, "seller_orders");
+      for (const list of lists) {
+        const data = list.payload.data ?? [];
+        const idx = data.findIndex((o) => o.id === orderId || o.order_number === (payload?.order_number as string));
+        if (idx === -1) continue;
+        const updated = data.map((o, i) =>
+          i === idx ? { ...o, is_paid: true, paid_at: paidAt, payment: { ...(o.payment as SellerOrder["payment"]), is_paid: true, paid_at: paidAt } } : o,
+        );
+        await upsertEntitySnapshot(db, {
+          entityType: "seller_orders",
+          entityId: list.entity_id,
+          businessId: list.business_id,
+          lastEventId: event.event_id,
+          lastEventTimestamp: event.timestamp,
+          payload: { ...list.payload, data: updated },
+        });
+      }
+    } catch (error) {
+      syncLogger.error("OrderSnapshots", "Failed to apply payment", { error: String(error) });
+    }
+  }
+
   /**
    * Patch the latest status of a known order inside every list snapshot for the
    * business, so offline devices see live status changes without a refetch.

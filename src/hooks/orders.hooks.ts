@@ -323,9 +323,12 @@ export function useSellerOrderQuery(orderId: string, enabled = true) {
   const businessId = useBusinessId();
   const connectivity = useConnectivity();
   const offline = isOfflineState(connectivity);
+  const pendingOrders = useCorePendingOrders(businessId);
   return useQuery({
     queryKey: SELLER_KEYS.order(orderId, businessId),
     queryFn: async () => {
+      const pendingHit = pendingOrders.find((o) => o.id === orderId || o.order_number === orderId);
+      if (pendingHit) return { data: pendingHit } as unknown as { data: SellerOrder };
       if (offline) {
         const list = businessId ? await orderSnapshotsService.getSellerList(businessId, businessId) : null;
         const found = list?.find((o) => o.id === orderId || o.order_number === orderId);
@@ -338,6 +341,8 @@ export function useSellerOrderQuery(orderId: string, enabled = true) {
         const list = businessId ? await orderSnapshotsService.getSellerList(businessId, businessId) : null;
         const found = list?.find((o) => o.id === orderId || o.order_number === orderId);
         if (found) return { data: found } as unknown as { data: SellerOrder };
+        const pendingAgain = getPendingOrdersSnapshot().orders.find((o) => o.id === orderId || o.order_number === orderId);
+        if (pendingAgain) return { data: pendingAgain } as unknown as { data: SellerOrder };
         throw e;
       }
     },
@@ -412,6 +417,22 @@ export function useAssignRiderMutation() {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: SELLER_KEYS.all });
       queryClient.invalidateQueries({ queryKey: POS_KEYS.all });
+    },
+  });
+}
+
+export function useConfirmCashPaymentMutation() {
+  const businessId = useBusinessId();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (orderId: string) => {
+      if (!businessId) throw new Error("No active business");
+      return orderRepository.confirmCashPayment({ orderId, businessId });
+    },
+    onSettled: (_d, _e, orderId) => {
+      queryClient.invalidateQueries({ queryKey: SELLER_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: POS_KEYS.all });
+      if (orderId) queryClient.invalidateQueries({ queryKey: SELLER_KEYS.order(orderId as string) });
     },
   });
 }

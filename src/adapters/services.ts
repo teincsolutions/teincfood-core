@@ -52,6 +52,9 @@ export const sellerService = {
   confirmHandover: async (_deliveryId: string): Promise<unknown> => {
     notImpl("sellerService.confirmHandover");
   },
+  confirmCashPayment: async (_orderId: string): Promise<{ data: unknown }> => {
+    notImpl("sellerService.confirmCashPayment");
+  },
 };
 
 // kiosk.service

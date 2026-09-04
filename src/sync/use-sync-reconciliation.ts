@@ -11,6 +11,7 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { syncEngine } from "./engine";
+import { getActiveBusiness } from "../adapters/business";
 import {
   applyPendingOrderEvent,
   applyOrderStateChangeEvent,
@@ -44,17 +45,46 @@ function isLocalOrderEvent(event: DomainEvent): boolean {
   return typeof localOrderNumber === "string" && /^[0-9]{2}-[0-9]{3}-[0-9]{3}$/.test(localOrderNumber);
 }
 
+const RECONCILE_DEBOUNCE_MS = 400;
+
 export function useSyncReconciliation(): void {
   const queryClient = useQueryClient();
 
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pending = new Set<string>();
+
+    const flush = () => {
+      timer = undefined;
+      if (pending.has("reference")) {
+        queryClient.invalidateQueries({ queryKey: MENU_KEYS.all });
+        queryClient.invalidateQueries({ queryKey: REFERENCE_KEYS.all });
+        queryClient.invalidateQueries({ queryKey: POS_KEYS.all });
+        queryClient.invalidateQueries({ queryKey: SELLER_KEYS.all });
+      }
+      if (pending.has("pending")) {
+        queryClient.invalidateQueries({ queryKey: POS_KEYS.all });
+        queryClient.invalidateQueries({ queryKey: SELLER_KEYS.all });
+        queryClient.invalidateQueries({ queryKey: KIOSK_KEYS.all });
+        queryClient.invalidateQueries({ queryKey: SELLER_ORDERS_KEYS.all });
+        queryClient.invalidateQueries({ queryKey: BUSINESS_DELIVERIES_KEYS.all });
+      }
+      if (pending.has("order")) {
+        // order.created with local number already covered by pending, but keep fine-grained
+        // POS.orders(businessId) is also covered by pending's broad POS.all, no extra needed.
+      }
+      pending.clear();
+    };
+
+    const schedule = (kind: string) => {
+      pending.add(kind);
+      if (!timer) timer = setTimeout(flush, RECONCILE_DEBOUNCE_MS);
+    };
+
     // Reference changes re-sync offline data and refresh caches on this device
     // and (via the LAN relay) on every connected terminal.
     const unregisterReferenceInvalidator = registerReferenceInvalidator(() => {
-      queryClient.invalidateQueries({ queryKey: MENU_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: REFERENCE_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: POS_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: SELLER_KEYS.all });
+      schedule("reference");
     });
 
     // Pending-order reconciliation invalidates POS + seller order lists so the
@@ -64,11 +94,7 @@ export function useSyncReconciliation(): void {
     // keys. Also cover kiosk/seller-orders/business-deliveries so boards
     // refresh even when there is no Local Node (offline queue + Phoenix).
     const unregisterInvalidator = registerPendingOrdersInvalidator(() => {
-      queryClient.invalidateQueries({ queryKey: POS_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: SELLER_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: KIOSK_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: SELLER_ORDERS_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: BUSINESS_DELIVERIES_KEYS.all });
+      schedule("pending");
     });
 
     // Reference-change events are published through the Sync Engine but are
@@ -77,6 +103,12 @@ export function useSyncReconciliation(): void {
     registerReferenceEventEngine(syncEngine);
 
     const unsubscribe = syncEngine.subscribe(async (event) => {
+      // LAN strict: ignore events for other business on same subnet
+      try {
+        const activeId = getActiveBusiness()?.id;
+        const payloadBid = (event.payload as Record<string, unknown> | undefined)?.business_id as string | undefined;
+        if (activeId && payloadBid && payloadBid !== activeId) return;
+      } catch {}
       syncLogger.event(event, "received");
 
       // The node relays engine events (e.g. order.created when a queued
@@ -124,16 +156,12 @@ export function useSyncReconciliation(): void {
           });
         }
 
-        const payload = event.payload as Record<string, unknown>;
-        const businessId = payload.business_id as string | undefined;
-        if (businessId) {
-          queryClient.invalidateQueries({ queryKey: POS_KEYS.orders(businessId) });
-          queryClient.invalidateQueries({ queryKey: SELLER_KEYS.all });
-        }
+        schedule("pending");
       }
     });
 
     return () => {
+      if (timer) clearTimeout(timer);
       unsubscribe();
       unregisterInvalidator();
       unregisterReferenceInvalidator();

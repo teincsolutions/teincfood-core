@@ -47,6 +47,8 @@ const QUEUED_STATUS_EVENT_TYPES = new Set([
   "delivery.confirm_handover_queued",
 ]);
 
+const PAYMENT_QUEUED_TYPES = new Set(["payment.completed_queued"]);
+
 let invalidator: (() => void) | null = null;
 
 /**
@@ -113,7 +115,11 @@ export async function applyOrderStateChangeEvent(
 ): Promise<void> {
   try {
     const isQueued = QUEUED_STATUS_EVENT_TYPES.has(event.event_type);
-    if (!ORDER_STATE_EVENT_TYPES.has(event.event_type) && !isQueued) return;
+    const isPaymentQueued = PAYMENT_QUEUED_TYPES.has(event.event_type);
+    if (!ORDER_STATE_EVENT_TYPES.has(event.event_type) && !isQueued && !isPaymentQueued) {
+      // Also handle cloud payment.completed for is_paid patch
+      if (event.event_type !== "payment.completed") return;
+    }
     syncLogger.debug("OrderState", "Order state changed", {
       origin,
       event_type: event.event_type,
@@ -124,6 +130,19 @@ export async function applyOrderStateChangeEvent(
     // Queued transitions carry to_status/order_id so they patch instantly offline.
     if (isQueued) {
       await orderSnapshotsService.applyQueuedStatusEvent(event, origin);
+      patchPendingStatus(event);
+      invalidator?.();
+      return;
+    }
+    if (isPaymentQueued) {
+      await orderSnapshotsService.applyPaymentEvent(event, origin);
+      patchPendingPaid(event);
+      invalidator?.();
+      return;
+    }
+    if (event.event_type === "payment.completed") {
+      await orderSnapshotsService.applyPaymentEvent(event, origin);
+      patchPendingPaid(event);
       invalidator?.();
       return;
     }
@@ -135,6 +154,42 @@ export async function applyOrderStateChangeEvent(
       event_type: event.event_type,
     });
   }
+}
+
+function patchPendingStatus(event: DomainEvent): void {
+  try {
+    const payload = event.payload as Record<string, unknown>;
+    const toStatus = (payload.to_status as string) || (payload.status as string);
+    const orderId = (payload.order_id as string) || event.entity_id;
+    if (!toStatus || !orderId) return;
+    const store = usePendingOrdersStore.getState();
+    const target = store.orders.find((o) => o.id === orderId || o.order_number === orderId);
+    if (!target) return;
+    const patched = { ...target, status: toStatus as SellerOrder["status"] };
+    store.addOrder(patched);
+  } catch {}
+}
+
+function patchPendingPaid(event: DomainEvent): void {
+  try {
+    const payload = event.payload as Record<string, unknown>;
+    const orderId = (payload.order_id as string) || event.entity_id;
+    if (!orderId) return;
+    const now = new Date().toISOString();
+    const store = usePendingOrdersStore.getState();
+    const target = store.orders.find((o) => o.id === orderId || o.order_number === (payload.order_number as string) || o.id === event.entity_id);
+    const altTarget = !target ? store.orders.find((o) => o.id === orderId) : null;
+    const t = target ?? altTarget;
+    if (!t) return;
+    const paidAt = (payload.paid_at as string) || now;
+    const patched: SellerOrder = {
+      ...t,
+      is_paid: true,
+      paid_at: paidAt,
+      payment: { ...(t.payment as SellerOrder["payment"]), is_paid: true, paid_at: paidAt },
+    };
+    store.addOrder(patched);
+  } catch {}
 }
 
 export async function applyPendingOrderEvent(
@@ -162,6 +217,26 @@ export async function applyPendingOrderEvent(
     if (QUEUED_STATUS_EVENT_TYPES.has(event.event_type)) {
       // Queued transitions: patch the read model so listing reflects new status offline.
       await orderSnapshotsService.applyQueuedStatusEvent(event, origin);
+      // Also patch pending store so isPending overlay shows new status immediately.
+      try {
+        const payload = event.payload as Record<string, unknown>;
+        const toStatus = (payload.to_status as string) || (payload.status as string);
+        const orderId = (payload.order_id as string) || event.entity_id;
+        if (toStatus && orderId) {
+          const store = usePendingOrdersStore.getState();
+          const target = store.orders.find((o) => o.id === orderId || o.order_number === orderId);
+          if (target) store.addOrder({ ...target, status: toStatus as SellerOrder["status"] });
+        }
+      } catch {}
+      const db = await openSyncDatabase();
+      await insertEvent(db, { event, origin });
+      invalidator?.();
+      return;
+    }
+
+    if (PAYMENT_QUEUED_TYPES.has(event.event_type) || event.event_type === "payment.completed") {
+      await orderSnapshotsService.applyPaymentEvent(event, origin);
+      patchPendingPaid(event);
       const db = await openSyncDatabase();
       await insertEvent(db, { event, origin });
       invalidator?.();

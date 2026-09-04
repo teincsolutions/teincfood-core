@@ -98,6 +98,7 @@ export const CAPABILITY_BY_COMMAND: Record<string, string> = {
   "menu:update_item": "menu_manage",
   "menu:delete_item": "menu_manage",
   "menu:create_category": "menu_manage",
+  "payment:confirm_cash": "orders_accept",
 };
 
 export async function hasCapabilitySync(businessId: string, commandType: string): Promise<boolean> {

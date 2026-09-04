@@ -42,6 +42,11 @@ const QUEUED_STATUS_BY_COMMAND: Record<string, string> = {
   "delivery:confirm_handover": "delivered",
 };
 
+const PAYMENT_QUEUED_PAYLOAD: Record<string, unknown> = {
+  is_paid: true,
+  to_is_paid: true,
+};
+
 export function getQueuedStatus(commandType: string): string | null {
   return QUEUED_STATUS_BY_COMMAND[commandType] ?? null;
 }
@@ -57,6 +62,24 @@ function buildOptimisticEvent(command: Command): DomainEvent {
       user_id: command.user_id,
       device_id: command.device_id,
       payload: buildOptimisticOrder(command, payload),
+      timestamp: new Date().toISOString(),
+    };
+  }
+  if (command.command_type === "payment:confirm_cash") {
+    return {
+      event_id: generateEventId(),
+      event_type: "payment.completed_queued",
+      event_version: "1.0",
+      entity_id: command.entity_id ?? command.command_id,
+      user_id: command.user_id,
+      device_id: command.device_id,
+      payload: {
+        ...payload,
+        command_id: command.command_id,
+        is_paid: true,
+        paid_at: new Date().toISOString(),
+        order_id: command.entity_id,
+      },
       timestamp: new Date().toISOString(),
     };
   }
@@ -76,6 +99,7 @@ function buildOptimisticEvent(command: Command): DomainEvent {
       to_status: queuedStatus,
       order_id: command.entity_id,
       delivery_id: command.entity_id,
+      ...(queuedStatus ? {} : {}),
     },
     timestamp: new Date().toISOString(),
   };
@@ -85,6 +109,7 @@ function buildOptimisticOrder(
   command: Command,
   payload: Record<string, unknown>,
 ): SellerOrder {
+  const snapshots = (payload.item_snapshots as Array<{ menu_item_id: string; name: string; quantity: number; unit_price_minor: number; variant_name?: string; addons?: Array<{ name: string; price_minor: number }> }>) ?? null;
   const items = (payload.items as Array<{ menu_item_id: string; quantity: number }>) ?? [];
   const totalMinor = (payload.total_minor as number) ?? 0;
   const subtotalMinor = (payload.subtotal_minor as number) ?? totalMinor;
@@ -134,14 +159,22 @@ function buildOptimisticOrder(
     delivery_lat: null,
     delivery_lng: null,
     user: null,
-    items: items.map((item, index) => ({
+    items: (snapshots ? snapshots.map((s, index) => ({
+      id: `tmp-${command.command_id}-${index}`,
+      menu_item: { id: s.menu_item_id, name: s.name },
+      quantity: s.quantity,
+      unit_price: s.unit_price_minor,
+      subtotal: s.unit_price_minor * s.quantity,
+      variant_name: s.variant_name,
+      addons: (s.addons ?? []).map((a) => ({ name: a.name, price_minor: a.price_minor })),
+    })) : items.map((item, index) => ({
       id: `tmp-${command.command_id}-${index}`,
       menu_item: { id: item.menu_item_id, name: "" },
       quantity: item.quantity,
       unit_price: 0,
       subtotal: 0,
       addons: [],
-    })),
+    }))) as SellerOrder["items"],
     inserted_at: now,
   };
 }

@@ -16,3 +16,13 @@ export function setAuthUser(u: AuthUser | null): void {
 export const useAuthStore = {
   getState: () => ({ user }),
 };
+
+let getAccessToken: (() => string | null) | null = null;
+
+export function setAuthProvider(fn: () => string | null): void {
+  getAccessToken = fn;
+}
+
+export function getAuthToken(): string | null {
+  return getAccessToken ? getAccessToken() : null;
+}

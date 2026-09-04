@@ -166,4 +166,14 @@ export const orderRepository = {
     }
     return event.payload;
   },
+
+  async confirmCashPayment(input: OrderActionInput): Promise<SellerOrder> {
+    const command = buildCommand<Record<string, never>>({
+      commandType: "payment:confirm_cash",
+      businessId: input.businessId,
+      entityId: input.orderId,
+      payload: {},
+    });
+    return executeCommand(command);
+  },
 };

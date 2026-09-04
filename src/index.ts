@@ -101,6 +101,7 @@ export * from "./adapters/http";
 export * from "./adapters/local-node";
 export * from "./adapters/services";
 export * from "./adapters/devices";
+export { setAuthProvider, getAuthToken } from "./adapters/auth";
 export { imageCacheService } from "./adapters/image-cache";
 export * from "./adapters/business";
 export * from "./adapters/pending-orders";
@@ -122,6 +123,12 @@ export * from "./cart/hooks";
 
 // ── Catalog ──
 export * from "./catalog/hooks";
+
+// ── Realtime (single source — PHX WebSocket + business:{id}) ──
+export { phoenixSocket } from "./realtime/phoenix-socket";
+export { eventsService } from "./realtime/events.service";
+export { orderEventsService } from "./realtime/order-events.service";
+export { useEventsConnection } from "./realtime/useEventsConnection";
 
 // ── Image cache (durable) ──
 export { getCachedImagePath, ensureImageCacheDir, getCachedImageInfo, cacheRemoteImage, cacheImageBatch, clearImageCache, pruneImageCache, resolveImageSource, stableCacheUrl } from "./image-cache/service";
