@@ -25,9 +25,13 @@ import { orderSnapshotsService } from "../sync/order-snapshots.service";
 import { hydratePendingOrders } from "../sync/pending-orders.service";
 import { isLocalOrderNumber } from "../sync/order-number";
 import { filterOrdersOffline, paginateOffline } from "../utils/order-filter";
+import { getDeviceNumber, ensureLease } from "../sync/device-lease.service";
+import { openSyncDatabase } from "../db/connection";
+import { getReferenceData } from "../reference/operations";
+import { calculatePricing } from "../pricing/engine";
 import type { POSOrderCreateRequest, POSOrderPreviewResponse } from "../types/pos.types";
 import type { POSCartItem, POSOrderType, POSOrderItemRequest } from "../types/pos.types";
-import type { SellerOrder } from "../types/api/seller.api";
+import type { SellerOrder, SellerOrdersResponse } from "../types/api/seller.api";
 
 // ─── Keys (host apps should import from core, not define their own) ─────
 
@@ -69,7 +73,7 @@ function useCorePendingOrders(businessId?: string): SellerOrder[] {
     hydratePendingOrders().catch(() => {});
   }, [snap.hydrated]);
   return useMemo(
-    () => (businessId ? snap.orders.filter((o) => (o as unknown as { business_id?: string }).business_id === businessId) : snap.orders),
+    () => (businessId ? snap.orders.filter((o) => o.business_id === businessId) : snap.orders),
     [snap.orders, businessId],
   );
 }
@@ -92,7 +96,9 @@ function isOfflineState(s: ReturnType<typeof getConnectivityState>): boolean {
   return !s.isOnline || s.isCloudReachable === "unreachable";
 }
 
-// ─── POS Orders Query (offline-first) ─────────────────────────────────────
+// ─── POS Orders Query — SQLite is source (sync updates SQLite in background) ──
+// UI reads SQLite via orderSnapshotsService; SyncEngine + background fetch keep SQLite current.
+// Connectivity controls sync, not source (§4-5).
 
 export function usePOSOrdersQuery(
   filters?: {
@@ -109,47 +115,52 @@ export function usePOSOrdersQuery(
   const businessId = useBusinessId();
   const pendingOrders = useCorePendingOrders(businessId);
   const connectivity = useConnectivity();
-  const offline = isOfflineState(connectivity);
+  const queryClient = useQueryClient();
+
+  // Background sync: when online, pull ALL orders for business into SQLite.
+  // UI filtering/search is done locally via filterOrdersOffline/paginateOffline.
+  // This ensures empty DB is populated with full business dataset.
+  useEffect(() => {
+    if (!enabled || !businessId) return;
+    if (isOfflineState(getConnectivityState())) return;
+    const fetchAll = async () => {
+      try {
+        const first: SellerOrdersResponse = await posRepository.fetchOrders(businessId, { page: "1", page_size: "100" });
+        let all: SellerOrder[] = [...first.data];
+        const totalPages = first.pagination.total_pages ?? 1;
+        for (let p = 2; p <= totalPages; p++) {
+          const res: SellerOrdersResponse = await posRepository.fetchOrders(businessId, { page: String(p), page_size: "100" });
+          all = all.concat(res.data);
+        }
+        await orderSnapshotsService.persistSellerOrders(businessId, businessId, all);
+        queryClient.invalidateQueries({ queryKey: [...POS_KEYS.orders(businessId), filters] });
+      } catch {}
+    };
+    void fetchAll();
+  }, [businessId, enabled, connectivity.isOnline, connectivity.isCloudReachable, queryClient]);
 
   const query = useInfiniteQuery({
     queryKey: [...POS_KEYS.orders(businessId), filters],
     queryFn: async ({ pageParam = 1 }) => {
-      const params: Record<string, string> = { page: String(pageParam) };
-      if (filters?.status) params.status = filters.status;
-      if (filters?.order_type) params.order_type = filters.order_type;
-      if (filters?.is_pos) params.is_pos = filters.is_pos;
-      if (filters?.date_from) params.date_from = filters.date_from;
-      if (filters?.date_to) params.date_to = filters.date_to;
-      if (filters?.q) params.q = filters.q;
-      if (filters?.search) params.search = filters.search;
-
-      if (offline) {
-        const offlineList = businessId ? await orderSnapshotsService.getSellerList(businessId, businessId) : null;
-        const base = offlineList ?? [];
-        const filtered = filterOrdersOffline(base as SellerOrder[], filters as any);
-        // date_from/to are handled inside filterSellerOrders via inserted_at; apply if present
-        const paged = paginateOffline(filtered as SellerOrder[], pageParam as number, 20);
-        return paged as unknown as { data: SellerOrder[]; pagination: { page: number; total_pages: number } };
+      let base: SellerOrder[] = businessId ? (await orderSnapshotsService.getSellerList(businessId, businessId)) ?? [] : [];
+      if (base.length === 0 && businessId && !isOfflineState(getConnectivityState())) {
+        try {
+          const first: SellerOrdersResponse = await posRepository.fetchOrders(businessId, { page: "1", page_size: "100" });
+          let all: SellerOrder[] = [...first.data];
+          const totalPages = first.pagination.total_pages ?? 1;
+          for (let p = 2; p <= totalPages; p++) {
+            const res: SellerOrdersResponse = await posRepository.fetchOrders(businessId, { page: String(p), page_size: "100" });
+            all = all.concat(res.data);
+          }
+          if (all.length) {
+            await orderSnapshotsService.persistSellerOrders(businessId, businessId, all);
+            base = all;
+          }
+        } catch {}
       }
-
-      try {
-        const result = (await posRepository.fetchOrders(businessId!, params)) as unknown as {
-          data: SellerOrder[];
-          pagination: { page: number; total_pages: number };
-        };
-        if (pageParam === 1 && businessId && Array.isArray((result as unknown as { data: unknown[] }).data)) {
-          orderSnapshotsService.persistSellerOrders(businessId, businessId, (result as unknown as { data: SellerOrder[] }).data).catch(() => {});
-        }
-        return result;
-      } catch (e) {
-        const offlineList = businessId ? await orderSnapshotsService.getSellerList(businessId, businessId) : null;
-        if (offlineList) {
-          const filtered = filterOrdersOffline(offlineList as SellerOrder[], filters as any);
-          const paged = paginateOffline(filtered as SellerOrder[], pageParam as number, 20);
-          return paged as unknown as { data: SellerOrder[]; pagination: { page: number; total_pages: number } };
-        }
-        throw e;
-      }
+      const filtered = filterOrdersOffline(base, filters as any);
+      const paged = paginateOffline(filtered, pageParam as number, 20);
+      return paged;
     },
     initialPageParam: 1,
     getNextPageParam: (lastPage) => {
@@ -168,7 +179,7 @@ export function usePOSOrdersQuery(
   return { ...query, data } as typeof query & { data: SellerOrder[] | undefined };
 }
 
-// ─── Seller Orders Query (offline-first, shares same snapshot) ────────────
+// ─── Seller Orders Query — SQLite source, same as POS ───────────────────────
 
 export function useSellerOrdersQuery(
   enabled = true,
@@ -177,44 +188,49 @@ export function useSellerOrdersQuery(
   const businessId = useBusinessId();
   const pendingOrders = useCorePendingOrders(businessId);
   const connectivity = useConnectivity();
-  const offline = isOfflineState(connectivity);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    if (!enabled || !businessId) return;
+    if (isOfflineState(getConnectivityState())) return;
+    const fetchAll = async () => {
+      try {
+        const first: SellerOrdersResponse = await sellerService.fetchBusinessOrders(businessId, { page: 1, page_size: 100 });
+        let all: SellerOrder[] = [...first.data];
+        const totalPages = first.pagination.total_pages ?? 1;
+        for (let p = 2; p <= totalPages; p++) {
+          const res: SellerOrdersResponse = await sellerService.fetchBusinessOrders(businessId, { page: p, page_size: 100 });
+          all = all.concat(res.data);
+        }
+        await orderSnapshotsService.persistSellerOrders(businessId, businessId, all);
+        queryClient.invalidateQueries({ queryKey: SELLER_KEYS.orders(businessId, filters as Record<string, unknown>) });
+      } catch {}
+    };
+    void fetchAll();
+  }, [businessId, enabled, connectivity.isOnline, connectivity.isCloudReachable, queryClient]);
 
   const query = useInfiniteQuery({
     queryKey: SELLER_KEYS.orders(businessId, filters as Record<string, unknown>),
     queryFn: async ({ pageParam = 1 }) => {
-      const params: Record<string, unknown> = { page: pageParam, page_size: 20 };
-      if (filters?.status) (params as Record<string, string>).status = filters.status;
-      if (filters?.q) (params as Record<string, string>).q = filters.q;
-      if (filters?.search) (params as Record<string, string>).search = filters.search;
-      if ((filters as Record<string, string>)?.date_from) (params as Record<string, string>).date_from = (filters as Record<string, string>).date_from;
-      if ((filters as Record<string, string>)?.date_to) (params as Record<string, string>).date_to = (filters as Record<string, string>).date_to;
-
-      if (offline) {
-        const offlineList = businessId ? await orderSnapshotsService.getSellerList(businessId, businessId) : null;
-        const base = offlineList ?? [];
-        const filtered = filterOrdersOffline(base as SellerOrder[], filters as any);
-        const paged = paginateOffline(filtered as SellerOrder[], pageParam as number, 20);
-        return paged as unknown as { data: SellerOrder[]; pagination: { page: number; total_pages: number } };
+      let base: SellerOrder[] = businessId ? (await orderSnapshotsService.getSellerList(businessId, businessId)) ?? [] : [];
+      if (base.length === 0 && businessId && !isOfflineState(getConnectivityState())) {
+        try {
+          const first: SellerOrdersResponse = await sellerService.fetchBusinessOrders(businessId, { page: 1, page_size: 100 });
+          let all: SellerOrder[] = [...first.data];
+          const totalPages = first.pagination.total_pages ?? 1;
+          for (let p = 2; p <= totalPages; p++) {
+            const res: SellerOrdersResponse = await sellerService.fetchBusinessOrders(businessId, { page: p, page_size: 100 });
+            all = all.concat(res.data);
+          }
+          if (all.length) {
+            await orderSnapshotsService.persistSellerOrders(businessId, businessId, all);
+            base = all;
+          }
+        } catch {}
       }
-
-      try {
-        const result = (await sellerService.fetchBusinessOrders(businessId!, params)) as unknown as {
-          data: SellerOrder[];
-          pagination: { page: number; total_pages: number };
-        };
-        if (pageParam === 1 && businessId && Array.isArray((result as unknown as { data: unknown[] }).data)) {
-          orderSnapshotsService.persistSellerOrders(businessId, businessId, (result as unknown as { data: SellerOrder[] }).data).catch(() => {});
-        }
-        return result;
-      } catch (e) {
-        const offlineList = businessId ? await orderSnapshotsService.getSellerList(businessId, businessId) : null;
-        if (offlineList) {
-          const filtered = filterOrdersOffline(offlineList as SellerOrder[], filters as any);
-          const paged = paginateOffline(filtered as SellerOrder[], pageParam as number, 20);
-          return paged as unknown as { data: SellerOrder[]; pagination: { page: number; total_pages: number } };
-        }
-        throw e;
-      }
+      const filtered = filterOrdersOffline(base, filters as any);
+      const paged = paginateOffline(filtered, pageParam as number, 20);
+      return paged;
     },
     initialPageParam: 1,
     getNextPageParam: (lastPage) => {
@@ -249,10 +265,9 @@ export function useCreatePOSOrderMutation() {
       const { isOnline, isCloudReachable } = getConnectivityState();
       if (!businessId) throw new Error("Missing business — select a business before creating orders");
       try {
-        const m = await import("../sync/device-lease.service");
-        const dn = (m as unknown as { getDeviceNumber?: (id: string) => string | null }).getDeviceNumber?.(businessId) ?? null;
+        const dn = getDeviceNumber(businessId);
         if (!dn) {
-          const leased = await (m as unknown as { ensureDeviceLease?: (id: string) => Promise<boolean> }).ensureDeviceLease?.(businessId);
+          const leased = await ensureLease(businessId);
           if (!leased && (!isOnline || isCloudReachable === "unreachable")) {
             throw new Error("No device number leased (99 devices max) — cannot create offline orders");
           }
@@ -302,9 +317,6 @@ export function usePOSOrderPreviewQuery(items: POSCartItem[], orderType: POSOrde
         const s = getConnectivityState();
         const isOffline = !s.isOnline || s.isCloudReachable === "unreachable";
         if (!isOffline) throw e;
-        const { openSyncDatabase } = await import("../db/connection");
-        const { getReferenceData } = await import("../reference/operations");
-        const { calculatePricing } = await import("../pricing/engine");
         const db = await openSyncDatabase();
         const taxRec = await getReferenceData<{ data: unknown[] }>(db, businessId!, "tax-rules");
         const taxRules = (taxRec?.payload as { data?: unknown[] })?.data as unknown[] ?? [];
@@ -317,32 +329,35 @@ export function usePOSOrderPreviewQuery(items: POSCartItem[], orderType: POSOrde
   });
 }
 
-// ─── Seller order detail (offline via snapshot fallback) ───────────────────
+// ─── Seller order detail — SQLite-first id||order_number (pending + snapshot) ──
 
 export function useSellerOrderQuery(orderId: string, enabled = true) {
   const businessId = useBusinessId();
-  const connectivity = useConnectivity();
-  const offline = isOfflineState(connectivity);
   const pendingOrders = useCorePendingOrders(businessId);
   return useQuery({
     queryKey: SELLER_KEYS.order(orderId, businessId),
     queryFn: async () => {
+      // SQLite source: pending overlay + snapshot, same row offline/online (§27)
       const pendingHit = pendingOrders.find((o) => o.id === orderId || o.order_number === orderId);
       if (pendingHit) return { data: pendingHit } as unknown as { data: SellerOrder };
-      if (offline) {
-        const list = businessId ? await orderSnapshotsService.getSellerList(businessId, businessId) : null;
-        const found = list?.find((o) => o.id === orderId || o.order_number === orderId);
-        if (found) return { data: found } as unknown as { data: SellerOrder };
-      }
+      const list = businessId ? await orderSnapshotsService.getSellerList(businessId, businessId) : null;
+      const found = list?.find((o) => o.id === orderId || o.order_number === orderId);
+      if (found) return { data: found } as unknown as { data: SellerOrder };
+      const pendingAgain = getPendingOrdersSnapshot().orders.find((o) => o.id === orderId || o.order_number === orderId);
+      if (pendingAgain) return { data: pendingAgain } as unknown as { data: SellerOrder };
+      // Background sync fallback: try cloud then persist, but still return snapshot on next invalidate
       try {
         const res = await sellerService.fetchSellerOrder(orderId);
+        const data = (res as unknown as { data: SellerOrder }).data;
+        if (data && businessId) {
+          // write-through single order into list snapshot
+          const cur = (await orderSnapshotsService.getSellerList(businessId, businessId)) ?? [];
+          const exists = cur.find((o) => o.id === data.id || o.order_number === data.order_number);
+          const next = exists ? cur.map((o) => (o.id === data.id ? data : o)) : [data, ...cur];
+          await orderSnapshotsService.persistSellerOrders(businessId, businessId, next as SellerOrder[]);
+        }
         return res as unknown as { data: SellerOrder };
       } catch (e) {
-        const list = businessId ? await orderSnapshotsService.getSellerList(businessId, businessId) : null;
-        const found = list?.find((o) => o.id === orderId || o.order_number === orderId);
-        if (found) return { data: found } as unknown as { data: SellerOrder };
-        const pendingAgain = getPendingOrdersSnapshot().orders.find((o) => o.id === orderId || o.order_number === orderId);
-        if (pendingAgain) return { data: pendingAgain } as unknown as { data: SellerOrder };
         throw e;
       }
     },
@@ -446,14 +461,18 @@ export function useUpdateOrderStatusMutation() {
   const cancel = useCancelOrderMutation();
   return {
     mutate: (orderId: string, status: string) => {
-      switch (status) {
+      const s = String(status);
+      if (!["accepted", "preparing", "ready", "delivered", "cancelled", "rejected"].includes(s)) {
+        throw new Error(`Unknown status ${s} — use explicit mutations (accept/reject/startPreparing/markReady/completePickup/cancel)`);
+      }
+      switch (s) {
         case "accepted": return accept.mutateAsync(orderId);
         case "preparing": return preparing.mutateAsync(orderId);
         case "ready": return ready.mutateAsync(orderId);
         case "delivered": return complete.mutateAsync(orderId);
         case "cancelled": return cancel.mutateAsync(orderId);
         case "rejected": return reject.mutateAsync(orderId);
-        default: throw new Error(`Unknown status ${status}`);
+        default: throw new Error(`Unknown status ${s}`);
       }
     },
     isPending: accept.isPending || reject.isPending || preparing.isPending || ready.isPending || complete.isPending || cancel.isPending,

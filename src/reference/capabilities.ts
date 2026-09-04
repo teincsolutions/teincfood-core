@@ -98,6 +98,8 @@ export const CAPABILITY_BY_COMMAND: Record<string, string> = {
   "menu:update_item": "menu_manage",
   "menu:delete_item": "menu_manage",
   "menu:create_category": "menu_manage",
+  "menu:update_category": "menu_manage",
+  "menu:delete_category": "menu_manage",
   "payment:confirm_cash": "orders_accept",
 };
 

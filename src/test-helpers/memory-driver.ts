@@ -134,9 +134,17 @@ export function createMemoryDriver(): SqliteDriver {
         return { lastInsertRowId: 0, changes: 1 };
       }
       if (s.includes("UPDATE commands SET payload")) {
-        const [payload, command_id] = args as any[];
+        // handles both old (payload, command_id) and new (payload, error, updated_at, command_id)
+        const payload = args[0] as string;
+        const command_id = args[args.length - 1] as string;
         const row = tables.commands.find((r) => r.command_id === command_id);
-        if (row) row.payload = payload;
+        if (row) {
+          row.payload = payload;
+          if (args.length === 4) {
+            row.error = args[1] as string;
+            row.updated_at = args[2] as string;
+          }
+        }
         return { lastInsertRowId: 0, changes: 1 };
       }
 
@@ -199,6 +207,12 @@ export function createMemoryDriver(): SqliteDriver {
         return (row ? { last_event_timestamp: row.last_event_timestamp } as unknown as T : null);
       }
 
+      if (s.includes("SELECT * FROM entity_snapshots WHERE entity_type = ? AND entity_id = ? AND business_id =")) {
+        const [entity_type, entity_id, business_id] = args as string[];
+        const row = tables.entity_snapshots.find((r) => r.entity_type === entity_type && r.entity_id === entity_id && r.business_id === business_id);
+        return (row as unknown as T) ?? null;
+      }
+
       if (s.includes("SELECT * FROM entity_snapshots WHERE entity_type = ? AND entity_id =")) {
         const [entity_type, entity_id] = args as string[];
         const row = tables.entity_snapshots.find((r) => r.entity_type === entity_type && r.entity_id === entity_id);
@@ -220,6 +234,12 @@ export function createMemoryDriver(): SqliteDriver {
       if (s.includes("SELECT key FROM reference_data WHERE business_id = ? ORDER BY key")) {
         const [business_id] = args as string[];
         return tables.reference_data.filter((r) => r.business_id === business_id).map((r) => ({ key: r.key } as unknown as T));
+      }
+
+      if (s.includes("SELECT * FROM entity_snapshots WHERE entity_type = ? AND business_id = ? ORDER BY last_event_timestamp DESC")) {
+        const [entity_type, business_id] = args as string[];
+        const rows = tables.entity_snapshots.filter((r) => r.entity_type === entity_type && r.business_id === business_id).sort((a, b) => (a.last_event_timestamp < b.last_event_timestamp ? 1 : -1));
+        return rows as unknown as T[];
       }
 
       if (s.includes("SELECT * FROM entity_snapshots WHERE entity_type = ? ORDER BY last_event_timestamp DESC")) {

@@ -7,6 +7,8 @@ function notImpl(name: string): never {
   throw new Error(`Service ${name} not injected. Wire via adapters/services.ts or setHttpClient.`);
 }
 
+import type { SellerOrdersResponse, SellerOrderDetailResponse, BusinessDeliveriesResponse } from "../types/api/seller.api";
+
 // pos.service
 export const posService = {
   createPOSOrder: async (_businessId: string, _payload: unknown): Promise<{ data: unknown }> => {
@@ -15,20 +17,20 @@ export const posService = {
   fetchPOSOrderPreview: async (_businessId: string, _payload: unknown): Promise<unknown> => {
     notImpl("posService.fetchPOSOrderPreview");
   },
-  fetchBusinessOrders: async (_businessId: string, _params?: unknown): Promise<unknown> => {
+  fetchBusinessOrders: async (_businessId: string, _params?: Record<string, string>): Promise<SellerOrdersResponse> => {
     notImpl("posService.fetchBusinessOrders");
   },
 };
 
 // seller.service — also order listing used by POS/seller order lifecycle
 export const sellerService = {
-  fetchBusinessOrders: async (_businessId: string, _params?: Record<string, unknown>): Promise<{ data: unknown[]; pagination: unknown }> => {
+  fetchBusinessOrders: async (_businessId: string, _params?: Record<string, unknown>): Promise<SellerOrdersResponse> => {
     notImpl("sellerService.fetchBusinessOrders");
   },
-  fetchSellerOrder: async (_orderId: string): Promise<{ data: unknown }> => {
+  fetchSellerOrder: async (_orderId: string): Promise<SellerOrderDetailResponse> => {
     notImpl("sellerService.fetchSellerOrder");
   },
-  fetchBusinessDeliveries: async (_businessId: string, _params?: Record<string, unknown>): Promise<{ data: unknown[]; pagination: unknown }> => {
+  fetchBusinessDeliveries: async (_businessId: string, _params?: Record<string, unknown>): Promise<BusinessDeliveriesResponse> => {
     notImpl("sellerService.fetchBusinessDeliveries");
   },
   acceptOrder: async (_orderId: string): Promise<{ data: unknown }> => {

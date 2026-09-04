@@ -110,6 +110,28 @@ function businessAddress(business: SellerOrder["business"]): string | null {
   return null;
 }
 
+function businessLogoUrl(order: SellerOrder): string | null {
+  const b = order.business as unknown as { logo_url?: string | null; logoUrl?: string | null } | null;
+  if (!b) return null;
+  return (b.logo_url ?? (b as unknown as { logoUrl?: string | null }).logoUrl ?? null) as string | null;
+}
+
+/** Fetch remote URL (or tfimg://) and return data URI, or null on failure. Uses Web fetch; works for http(s) and for cached tfimg via Rust protocol. */
+async function fetchAsDataUri(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    const reader = await new Promise<string>((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result as string);
+      fr.onerror = () => reject(new Error("FileReader failed"));
+      fr.readAsDataURL(blob);
+    });
+    return reader;
+  } catch { return null; }
+}
+
 // ── ESC/POS ────────────────────────────────────────────────────────────
 
 function doubleLineEscpos(): string { return "═".repeat(LINE_WIDTH) + LF; }
@@ -217,6 +239,53 @@ export function generateEscpos(order: SellerOrder): string {
 }
 
 // ── HTML ───────────────────────────────────────────────────────────────
+
+export async function generateHtmlAsync(order: SellerOrder, opts?: { logoDataUri?: string | null; useCache?: boolean }): Promise<string> {
+  const explicit = opts?.logoDataUri;
+  if (explicit) return generateHtml(order, explicit);
+  const logoUrl = businessLogoUrl(order);
+  if (!logoUrl) {
+    // Try reference cache business logo (order.business may not have logo_url but reference does)
+    try {
+      const { openSyncDatabase } = await import("../db/connection");
+      const { getReferenceData } = await import("../reference/operations");
+      const bId = order.business_id;
+      if (bId) {
+        const db = await openSyncDatabase();
+        const ref = await getReferenceData<{ logo_url?: string; logoUrl?: string }>(db, bId, "business" as unknown as import("../reference/types").ReferenceDataKey);
+        const refLogo = (ref?.payload as unknown as { logo_url?: string; logoUrl?: string } | null)?.logo_url ?? (ref?.payload as unknown as { logoUrl?: string } | null)?.logoUrl;
+        if (refLogo) {
+          const dataUri = await fetchAsDataUri(refLogo);
+          if (dataUri) return generateHtml(order, dataUri);
+          // Fallback: ensure cached via image-cache batch (warms tfimg)
+          try {
+            const { cacheRemoteImage, resolveImageSource } = await import("../image-cache/service");
+            await cacheRemoteImage(refLogo, { skipIfCached: true });
+            const resolved = await resolveImageSource(refLogo);
+            const src = resolved?.uri ?? refLogo;
+            const dataUri2 = await fetchAsDataUri(src);
+            if (dataUri2) return generateHtml(order, dataUri2);
+            if (src !== refLogo) return generateHtml(order, src);
+          } catch {}
+          return generateHtml(order, refLogo);
+        }
+      }
+    } catch {}
+    return generateHtml(order, null);
+  }
+  // Warm cache and embed — use tfimg:// when cached (offline), else remote; try data URI for email/print portability
+  try {
+    const { cacheRemoteImage, resolveImageSource } = await import("../image-cache/service");
+    await cacheRemoteImage(logoUrl, { skipIfCached: true });
+    const resolved = await resolveImageSource(logoUrl);
+    const src = resolved?.uri ?? logoUrl;
+    const dataUri = await fetchAsDataUri(src);
+    if (dataUri) return generateHtml(order, dataUri);
+    // Fallback to resolved tfimg:// (works offline via Rust protocol) — ensures logo still shows
+    if (src !== logoUrl) return generateHtml(order, src);
+  } catch {}
+  return generateHtml(order, logoUrl);
+}
 
 export function generateHtml(order: SellerOrder, logoDataUri?: string | null): string {
   const business = order.business;

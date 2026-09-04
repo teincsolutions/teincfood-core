@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { getDeviceNumber, isOnlineOnly } from "./device-lease.service";
+import { getDeviceNumber, isOnlineOnly, ensureLease } from "./device-lease.service";
 import { removeItemSync, setItemSync } from "../adapters/kv";
 import { setHttpClient } from "../adapters/http";
 
@@ -35,7 +35,6 @@ describe("device-lease", () => {
       patch: async () => ({ data: null } as any),
       delete: async () => ({ data: null } as any),
     });
-    const { ensureLease } = await import("./device-lease.service");
     const res = await ensureLease("biz1");
     expect(res).toBeNull();
     expect(isOnlineOnly("biz1")).toBe(true);

@@ -8,6 +8,7 @@ import { getHttpClient } from "../adapters/http";
 import { getTcpAdapter, getPrintFileAdapter } from "../adapters/print";
 import { getPrinterState } from "./store";
 import { generateEscpos, generateHtml } from "./receipt";
+import { API_BASE_URL } from "../utils/constants";
 import type { SellerOrder } from "../types/api/seller.api";
 
 async function fetchReceipt(orderId: string, format: "html" | "escpos" = "html"): Promise<string> {
@@ -23,7 +24,6 @@ async function fetchReceipt(orderId: string, format: "html" | "escpos" = "html")
     return String(data);
   }
   // Fallback fetch using API_BASE_URL already injected
-  const { API_BASE_URL } = await import("../utils/constants");
   const url = `${API_BASE_URL}/orders/${orderId}/receipt?format=${format}`;
   const resp = await fetch(url, { headers: { Accept: format === "html" ? "text/html" : "text/plain" } });
   if (!resp.ok) {

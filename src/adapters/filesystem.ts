@@ -9,6 +9,8 @@ export interface FileSystemAdapter {
   deleteAsync(path: string, opts?: { idempotent?: boolean }): Promise<void>;
   readDirectoryAsync(path: string): Promise<string[]>;
   getDocumentDirectory(): string;
+  readAsStringAsync?(path: string, opts?: { encoding?: string }): Promise<string>;
+  readAsBase64Async?(path: string): Promise<string>;
 }
 
 let fsAdapter: FileSystemAdapter | null = null;

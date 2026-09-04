@@ -4,6 +4,7 @@
 
 import type { SQLiteDatabase } from "../adapters/sqlite";
 import type { ReferenceDataKey, ReferenceDataRecord } from "./types";
+import { compareHLCString } from "../utils/hlc";
 
 export async function getReferenceData<T>(
   db: SQLiteDatabase,
@@ -82,7 +83,6 @@ export async function mergeReferenceData<T extends Record<string, unknown>>(
   hlc: string,
   eventId: string,
 ): Promise<void> {
-  const { compareHLCString } = await import("../utils/hlc");
   const existing = await getReferenceData<T>(db, businessId, key);
   if (!existing) {
     await setReferenceData(db, businessId, {

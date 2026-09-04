@@ -25,6 +25,7 @@ import { generateEventId } from "../utils/uuid";
 import {
   generateLocalCalloutNumber,
   generateOrderNumberForBusiness,
+  generateOrderNumber,
 } from "./order-number";
 import type { SyncEngine } from "./engine";
 import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
@@ -124,7 +125,7 @@ function buildOptimisticOrder(
   return {
     id: (command.entity_id as string) ?? command.command_id,
     order_number: orderNumber,
-    callout_number: generateLocalCalloutNumber(),
+    callout_number: generateLocalCalloutNumber(command.business_id),
     order_type: (payload.order_type as string) ?? "takeout",
     is_pos: true,
     customer_name: (payload.customer_name as string) ?? null,
@@ -311,7 +312,6 @@ class CommandQueueService {
       // 409 ORDER_NUMBER_TAKEN is retryable once with new RRR
       const code = (apiErr as unknown as { code?: string })?.code ?? (apiErr?.data as unknown as { code?: string })?.code;
       if (apiErr?.status === 409 && String(code).includes("ORDER_NUMBER_TAKEN")) {
-        // Regenerate random part of order_number if this was order:create
         if (command.command_type === "order:create") {
           try {
             const payload = command.payload as Record<string, unknown>;
@@ -319,12 +319,12 @@ class CommandQueueService {
             const parsed = on ? on.match(/^([0-9]{2})-([0-9]{3})-([0-9]{3})$/) : null;
             if (parsed) {
               const deviceNumber = parsed[1];
-              const { generateOrderNumber } = await import("./order-number");
-              const { orderNumber: newOn } = generateOrderNumber(deviceNumber);
+              const { orderNumber: newOn } = generateOrderNumber(deviceNumber, command.business_id);
               const newPayload = { ...payload, order_number: newOn };
-              await updateCommandStatus(db, command.command_id, "failed", `retry_random:${message}`);
-              // Update stored payload for retry
-              await db.runAsync(`UPDATE commands SET payload = ?, retry_count = retry_count WHERE command_id = ?;`, JSON.stringify(newPayload), command.command_id);
+              await db.runAsync(`UPDATE commands SET payload = ?, error = ?, updated_at = ? WHERE command_id = ?;`, JSON.stringify(newPayload), `retry_random:${message}`, new Date().toISOString(), command.command_id);
+              syncLogger.info("CommandQueueService", "Regenerated order_number after 409", { command_id: command.command_id, new_order_number: newOn });
+              // keep retry_count unchanged so next replay retries; do not mark failed twice
+              return;
             }
           } catch {}
         }

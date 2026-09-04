@@ -45,7 +45,6 @@ export * from "./sync/types";
 export * from "./sync/use-sync-reconciliation";
 export { SyncEngine, syncEngine } from "./sync/engine";
 export * from "./sync/command-builder";
-export * from "./sync/command-queue.service";
 export { commandQueueService } from "./sync/command-queue.service";
 export { buildCommand } from "./sync/command-builder";
 export {
@@ -81,6 +80,14 @@ export type { POSOrderPreviewInput } from "./repositories/pos.repository";
 
 // ── Order lifecycle hooks (offline-first, device-owned outbox) ──
 export * from "./hooks/orders.hooks";
+export {
+  KIOSK_KEYS,
+  useKioskOrdersQuery,
+  useAcceptKioskOrderMutation,
+  useRejectKioskOrderMutation,
+  useStartPreparingKioskOrderMutation,
+  useMarkKioskOrderReadyMutation,
+} from "./hooks/kiosk.hooks";
 
 // ── Reference ──
 export * from "./reference/types";
@@ -107,7 +114,8 @@ export * from "./adapters/business";
 export * from "./adapters/pending-orders";
 export * from "./adapters/print";
 export * from "./adapters/filesystem";
-export { KIOSK_KEYS, SELLER_ORDERS_KEYS, BUSINESS_DELIVERIES_KEYS, MENU_KEYS, REFERENCE_KEYS } from "./adapters/query-keys";
+export { SELLER_ORDERS_KEYS, BUSINESS_DELIVERIES_KEYS, MENU_KEYS, REFERENCE_KEYS } from "./adapters/query-keys";
+// KIOSK_KEYS exported from hooks/kiosk.hooks (single source)
 // POS_KEYS / SELLER_KEYS are exported from hooks/orders.hooks (offline-first source of truth)
 
 // ── Printer (backend-identical template) ──
@@ -124,8 +132,9 @@ export * from "./cart/hooks";
 // ── Catalog ──
 export * from "./catalog/hooks";
 
-// ── Components (shared order card logic) ──
-export * from "./components/OrderStatusCard";
+// ── Order transitions (shared business logic — single source) ──
+export * from "./utils/order-transitions";
+// components/OrderStatusCard was folded into order-transitions (compat re-export lives in apps)
 
 // ── Realtime (single source — PHX WebSocket + business:{id}) ──
 export { phoenixSocket } from "./realtime/phoenix-socket";

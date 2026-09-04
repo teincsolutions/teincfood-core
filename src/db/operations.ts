@@ -330,7 +330,17 @@ export async function getEntitySnapshot<T>(
   db: SQLiteDatabase,
   entityType: string,
   entityId: string,
+  businessId?: string | null,
 ): Promise<EntitySnapshot<T> | null> {
+  if (businessId) {
+    const row = await db.getFirstAsync<EntitySnapshotRow>(
+      "SELECT * FROM entity_snapshots WHERE entity_type = ? AND entity_id = ? AND business_id = ?;",
+      entityType,
+      entityId,
+      businessId,
+    );
+    if (row) return rowToEntitySnapshot<T>(row);
+  }
   const row = await db.getFirstAsync<EntitySnapshotRow>(
     "SELECT * FROM entity_snapshots WHERE entity_type = ? AND entity_id = ?;",
     entityType,
@@ -342,7 +352,16 @@ export async function getEntitySnapshot<T>(
 export async function getEntitySnapshotsByType<T>(
   db: SQLiteDatabase,
   entityType: string,
+  businessId?: string | null,
 ): Promise<EntitySnapshot<T>[]> {
+  if (businessId) {
+    const rows = await db.getAllAsync<EntitySnapshotRow>(
+      "SELECT * FROM entity_snapshots WHERE entity_type = ? AND business_id = ? ORDER BY last_event_timestamp DESC;",
+      entityType,
+      businessId,
+    );
+    return rows.map(rowToEntitySnapshot<T>);
+  }
   const rows = await db.getAllAsync<EntitySnapshotRow>(
     "SELECT * FROM entity_snapshots WHERE entity_type = ? ORDER BY last_event_timestamp DESC;",
     entityType,

@@ -101,10 +101,11 @@ class OrderSnapshotsService {
     event: DomainEvent,
   ): Promise<void> {
     try {
-      const lists = await getEntitySnapshotsByType<SellerOrderListSnapshot>(
-        db,
-        "seller_orders",
-      );
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const businessId = (payload?.business_id as string | undefined) ?? (payload?.businessId as string | undefined) ?? null;
+      const lists = businessId
+        ? await getEntitySnapshotsByType<SellerOrderListSnapshot>(db, "seller_orders", businessId)
+        : await getEntitySnapshotsByType<SellerOrderListSnapshot>(db, "seller_orders");
       for (const list of lists) {
         const data = list.payload.data ?? [];
         const idx = data.findIndex((o) => o.id === orderId);
@@ -139,7 +140,10 @@ class OrderSnapshotsService {
     try {
       const db = await openSyncDatabase();
       await insertEvent(db, { event, origin });
-      const lists = await getEntitySnapshotsByType<SellerOrderListSnapshot>(db, "seller_orders");
+      const businessId = (payload?.business_id as string | undefined) ?? (payload?.businessId as string | undefined) ?? null;
+      const lists = businessId
+        ? await getEntitySnapshotsByType<SellerOrderListSnapshot>(db, "seller_orders", businessId)
+        : await getEntitySnapshotsByType<SellerOrderListSnapshot>(db, "seller_orders");
       for (const list of lists) {
         const data = list.payload.data ?? [];
         const idx = data.findIndex((o) => o.id === orderId || o.order_number === (payload?.order_number as string));
@@ -224,6 +228,7 @@ class OrderSnapshotsService {
         db,
         "seller_orders",
         scope,
+        businessId,
       );
       if (!snap || snap.business_id !== businessId) return null;
       return snap.payload.data ?? null;

@@ -20,6 +20,9 @@ import { getConnectivityState, setConnectivityState } from "../adapters/connecti
 import { ApiError } from "../adapters/http";
 import { syncLogger } from "../utils/sync-logger";
 import { CLOUD_COMMAND_TIMEOUT_MS } from "../utils/constants";
+import { CAPABILITY_BY_COMMAND } from "../reference/capabilities";
+import { getReferenceData } from "../reference/operations";
+import { openSyncDatabase } from "../db/connection";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -68,12 +71,9 @@ export class SyncEngine {
     syncLogger.command(command, "issued");
 
     // Perms guard (offline-capable): block before routing
-    const { CAPABILITY_BY_COMMAND } = await import("../reference/capabilities");
     const required = CAPABILITY_BY_COMMAND[command.command_type];
     if (required) {
       try {
-        const { getReferenceData } = await import("../reference/operations");
-        const { openSyncDatabase } = await import("../db/connection");
         const db = await openSyncDatabase();
         const rec = await getReferenceData(db, command.business_id, "capabilities");
         const caps: string[] = (rec?.payload as unknown as { data?: { capabilities?: string[] } })?.data?.capabilities ?? [];

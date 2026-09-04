@@ -20,24 +20,37 @@ function cryptoRandom100to999(): number {
   return 100 + Math.floor(Math.random() * 900);
 }
 
-function getNextCallout(): number {
-  const stored = getItem<number>(CALLOUT_SEQ_KEY);
+function calloutKeyForBusiness(businessId?: string | null): string {
+  return businessId ? `${CALLOUT_SEQ_KEY}:${businessId}` : CALLOUT_SEQ_KEY;
+}
+
+function getNextCallout(businessId?: string | null): number {
+  const key = calloutKeyForBusiness(businessId);
+  const stored = getItem<number>(key);
   let next = (stored ?? 0) + 1;
   if (next > 999) next = 1;
-  setItem(CALLOUT_SEQ_KEY, next);
+  setItem(key, next);
+  // migrate legacy global once: keep global in sync for backward compat
+  if (businessId) {
+    const legacy = getItem<number>(CALLOUT_SEQ_KEY) ?? 0;
+    if (legacy < next) setItem(CALLOUT_SEQ_KEY, next);
+  }
   return next;
 }
 
-export function peekCallout(): number {
-  const stored = getItem<number>(CALLOUT_SEQ_KEY);
-  return stored ?? 0;
+export function peekCallout(businessId?: string | null): number {
+  const key = calloutKeyForBusiness(businessId);
+  const v = getItem<number>(key);
+  if (v != null) return v;
+  const legacy = getItem<number>(CALLOUT_SEQ_KEY);
+  return legacy ?? 0;
 }
 
-export function generateOrderNumber(deviceNumber: string): { orderNumber: string; callout: number; random: number } {
+export function generateOrderNumber(deviceNumber: string, businessId?: string | null): { orderNumber: string; callout: number; random: number } {
   if (!/^(0[1-9]|[1-9][0-9])$/.test(deviceNumber)) {
     throw new Error(`Invalid deviceNumber ${deviceNumber} — must be 01-99`);
   }
-  const callout = getNextCallout();
+  const callout = getNextCallout(businessId);
   let random = cryptoRandom100to999();
   // On wrap to 001, ensure new random (already new per order, but keep hook)
   if (callout === 1) {
@@ -60,12 +73,12 @@ export function generateOrderNumberForBusiness(businessId: string): string {
   if (!v || !/^(0[1-9]|[1-9][0-9])$/.test(v)) {
     throw new Error(`No device lease for business ${businessId} — call ensureLease(businessId) first (online-only until leased)`);
   }
-  return generateOrderNumber(v).orderNumber;
+  return generateOrderNumber(v, businessId).orderNumber;
 }
 
-export function generateLocalCalloutNumber(): number {
-  // kept for SellerOrder.callout_number compatibility — returns CCC
-  const next = peekCallout() + 1;
+export function generateLocalCalloutNumber(businessId?: string | null): number {
+  // kept for SellerOrder.callout_number compatibility — returns next CCC
+  const next = peekCallout(businessId) + 1;
   return next > 999 ? 1 : next;
 }
 
@@ -85,6 +98,12 @@ export function parseOrderNumber(orderNumber: string): { deviceNumber: string; r
 }
 
 // Test helpers
-export function resetCalloutForTests(): void {
+export function resetCalloutForTests(businessId?: string | null): void {
+  if (businessId) {
+    setItem(calloutKeyForBusiness(businessId), 0);
+    return;
+  }
   setItem(CALLOUT_SEQ_KEY, 0);
+  // also clear per-business keys that tests may have touched
+  // caller should pass businessId if they used business-scoped sequences
 }
