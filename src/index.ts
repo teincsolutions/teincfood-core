@@ -124,6 +124,9 @@ export * from "./cart/hooks";
 // ── Catalog ──
 export * from "./catalog/hooks";
 
+// ── Components (shared order card logic) ──
+export * from "./components/OrderStatusCard";
+
 // ── Realtime (single source — PHX WebSocket + business:{id}) ──
 export { phoenixSocket } from "./realtime/phoenix-socket";
 export { eventsService } from "./realtime/events.service";
