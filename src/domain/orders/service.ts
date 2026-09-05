@@ -43,9 +43,13 @@ async function ensureOrdersBackfilledFromSnapshots(businessId: string): Promise<
   } catch {}
 }
 
+function isEffectivelyOnline(): boolean {
+  const s = getConnectivityState();
+  // Health probe failure means backend unreachable — treat as offline for order gates too
+  return s.isOnline && s.isCloudReachable !== "unreachable";
+}
 function isOnline(): boolean {
-  // For order gates (online payment / delivery) only need raw isOnline, not WS reachable
-  return getConnectivityState().isOnline;
+  return isEffectivelyOnline();
 }
 
 export async function createLocalOrder(businessId: string, input: POSOrderCreateRequest & { is_pos?: boolean; delivery_params?: Record<string, unknown> }): Promise<SellerOrder> {

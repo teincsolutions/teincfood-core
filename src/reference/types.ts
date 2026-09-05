@@ -17,6 +17,8 @@ export type ReferenceDataKey =
   | "tax-rules"
   | "business:profile"
   | "operating-hours"
+  | "delivery-settings"
+  | "payment-settings"
   | "subscription:entitlements"
   | "capabilities";
 

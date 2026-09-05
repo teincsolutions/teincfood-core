@@ -39,6 +39,8 @@ const DEFAULT_SYNC_KEYS: ReferenceDataKey[] = [
   "tax-rules",
   "business:profile",
   "operating-hours",
+  "delivery-settings",
+  "payment-settings",
   "subscription:entitlements",
   "capabilities",
 ];
@@ -288,6 +290,21 @@ class ReferenceSyncService {
         return {
           payload: response,
           version: this.hashPayload(response),
+        };
+      }
+      case "delivery-settings": {
+        const response = await (businessService as unknown as { fetchDeliverySettings: (id: string) => Promise<unknown> }).fetchDeliverySettings?.(businessId) ?? (await (await import("../adapters/http")).getHttpClient().get(`/businesses/${businessId}/delivery-settings`).then((r) => (r as unknown as { data: unknown }).data));
+        return {
+          payload: response,
+          version: this.hashPayload(response),
+        };
+      }
+      case "payment-settings": {
+        const response = await businessService.fetchBusinessById(businessId);
+        const payload = (response as unknown as { data?: { paymentSettings?: unknown } })?.data?.paymentSettings ?? response;
+        return {
+          payload,
+          version: this.hashPayload(payload),
         };
       }
       default:

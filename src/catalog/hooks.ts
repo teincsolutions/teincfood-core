@@ -27,14 +27,15 @@ function useBusinessId(): string | undefined {
   const id = useSyncExternalStore(subscribeBusiness, () => getActiveBusiness()?.id ?? null, () => null);
   return id ?? undefined;
 }
-function useIsOnline(): boolean {
+function useIsEffectivelyOnline(): boolean {
   const s = useSyncExternalStore(subscribeConnectivity, getConnectivityState, getConnectivityState);
-  return s.isOnline;
+  // Offline = navigator offline OR /health probe says backend unreachable. Matches user's "health fails = device offline".
+  return s.isOnline && s.isCloudReachable !== "unreachable";
 }
 
 export function useMenuItemsQuery(filters?: { search?: string; category_ids?: string; sort?: string }, enabled = true) {
   const businessId = useBusinessId();
-  const isOnline = useIsOnline();
+  const isOnline = useIsEffectivelyOnline();
 
   // Cached reference query — synchronous from SQLite via query
   const cachedQuery = useQuery({
@@ -103,7 +104,7 @@ export function useMenuItemsQuery(filters?: { search?: string; category_ids?: st
 
 export function useMenuCategoriesQuery() {
   const businessId = useBusinessId();
-  const isOnline = useIsOnline();
+  const isOnline = useIsEffectivelyOnline();
   const cachedQuery = useQuery({
     queryKey: [...CATALOG_KEYS.categories(businessId), "cached"],
     queryFn: async () => {

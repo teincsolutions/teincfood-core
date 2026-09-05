@@ -45,9 +45,9 @@ function useCapabilitiesPlaceholder(businessId: string | null | undefined) {
   return cached;
 }
 
-function useIsOnline(): boolean {
+function useIsEffectivelyOnline(): boolean {
   const s = useSyncExternalStore(subscribeConnectivity, getConnectivityState, getConnectivityState);
-  return s.isOnline;
+  return s.isOnline && s.isCloudReachable !== "unreachable";
 }
 
 /**
@@ -57,7 +57,7 @@ function useIsOnline(): boolean {
  * When online, network refreshes the cache.
  */
 export function useBusinessCapabilities(businessId?: string | null) {
-  const isOnline = useIsOnline();
+  const isOnline = useIsEffectivelyOnline();
   const cached = useCapabilitiesPlaceholder(businessId ?? null);
 
   const query = useQuery({
