@@ -6,8 +6,8 @@
 
 import { getItemSync as getSync, setItemSync as setSync, removeItemSync } from "../adapters/kv";
 import { getHttpClient, ApiError } from "../adapters/http";
-import { generateUUID } from "../utils/uuid";
 import { syncLogger } from "../utils/sync-logger";
+import { getAppInstanceIdAsync } from "../adapters/devices";
 
 const LEASE_KEY = (businessId: string) => `teinc_device_number:${businessId}`;
 const LEASE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -15,15 +15,6 @@ const LEASE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 interface LeaseResponse {
   device_number: string;
   device_uuid: string;
-}
-
-function getAppInstanceId(): string {
-  let id = getSync<string>("teinc_app_instance_id");
-  if (!id) {
-    id = generateUUID();
-    setSync("teinc_app_instance_id", id);
-  }
-  return id;
 }
 
 export function getDeviceNumber(businessId: string): string | null {
@@ -42,7 +33,7 @@ export async function ensureLease(businessId: string): Promise<string | null> {
 
   try {
     const http = getHttpClient();
-    const deviceUuid = getAppInstanceId();
+    const deviceUuid = await getAppInstanceIdAsync();
     const res = await http.post<{ data: LeaseResponse } | LeaseResponse>(
       `/businesses/${businessId}/devices/lease`,
       { device_uuid: deviceUuid, app_instance_id: deviceUuid },
@@ -87,7 +78,8 @@ export async function refreshLease(businessId: string): Promise<void> {
   }
   try {
     const http = getHttpClient();
-    await http.patch(`/businesses/${businessId}/devices/${getAppInstanceId()}/touch`, {});
+    const uuid = await getAppInstanceIdAsync();
+    await http.patch(`/businesses/${businessId}/devices/${uuid}/touch`, {});
     setSync(`${LEASE_KEY(businessId)}:leased_at`, new Date().toISOString());
   } catch {
     // ignore — will retry next boot
@@ -104,5 +96,6 @@ export const deviceLeaseService = {
   isOnlineOnly,
   ensureLease,
   refreshLease,
-  getAppInstanceId,
+  getAppInstanceId: getAppInstanceIdAsync,
+  getAppInstanceIdAsync,
 };
