@@ -11,9 +11,11 @@
 
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSyncExternalStore } from "react";
 import { openSyncDatabase } from "../db/connection";
 import { getReferenceData, setReferenceData } from "./operations";
 import { businessService } from "../adapters/services";
+import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
 import type { BusinessMembershipResponse } from "../types/api/business.api";
 
 const MEMBERSHIP_KEYS = {
@@ -43,16 +45,22 @@ function useCapabilitiesPlaceholder(businessId: string | null | undefined) {
   return cached;
 }
 
+function useIsOnline(): boolean {
+  const s = useSyncExternalStore(subscribeConnectivity, getConnectivityState, getConnectivityState);
+  return s.isOnline;
+}
+
 /**
  * Standard hook for both apps — businessId comes from the host's active business store.
- * Returns the same shape as the previous app-level useMyBusinessCapabilities.
+ * Offline-first: when offline, only the SQLite cache (`capabilities`) is used so
+ * nav filtering (menu/pos/orders/deliveries hidden) does not break when backend is down.
+ * When online, network refreshes the cache.
  */
 export function useBusinessCapabilities(businessId?: string | null) {
-  const queryClient = useQueryClient();
-  void queryClient;
+  const isOnline = useIsOnline();
   const cached = useCapabilitiesPlaceholder(businessId ?? null);
 
-  return useQuery({
+  const query = useQuery({
     queryKey: MEMBERSHIP_KEYS.byBusiness(businessId ?? ""),
     queryFn: async () => {
       const res = (await businessService.fetchMyBusinessMembership(businessId!)) as BusinessMembershipResponse;
@@ -67,16 +75,28 @@ export function useBusinessCapabilities(businessId?: string | null) {
       } catch {}
       return res;
     },
-    enabled: !!businessId,
-    staleTime: Infinity,
+    enabled: !!businessId && isOnline,
+    staleTime: 30 * 1000,
+    retry: false,
+    networkMode: "offlineFirst" as const,
     placeholderData: cached ?? undefined,
-    select: (data) => ({
-      role: (data as BusinessMembershipResponse).data.role,
-      source: (data as BusinessMembershipResponse).data.source,
-      capabilities: (data as BusinessMembershipResponse).data.capabilities,
-      status: (data as BusinessMembershipResponse).data.status,
-    }),
   });
+
+  // When offline, use the SQLite-cached membership directly so nav stays visible.
+  const raw = (query.data as BusinessMembershipResponse | undefined) ?? cached ?? null;
+  const selected = raw
+    ? {
+        role: (raw as BusinessMembershipResponse).data.role,
+        source: (raw as BusinessMembershipResponse).data.source,
+        capabilities: (raw as BusinessMembershipResponse).data.capabilities,
+        status: (raw as BusinessMembershipResponse).data.status,
+      }
+    : undefined;
+
+  return {
+    ...query,
+    data: selected,
+  } as unknown as ReturnType<typeof useQuery> & { data: typeof selected };
 }
 
 export function useHasCapabilityFor(businessId: string | undefined, capability: string): boolean {
