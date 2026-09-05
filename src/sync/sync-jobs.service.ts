@@ -24,7 +24,9 @@ function isOnline(): boolean {
   return s.isOnline && s.isCloudReachable !== "unreachable";
 }
 function isOnlineForRest(): boolean {
-  return getConnectivityState().isOnline;
+  // Health probe failure = device offline per spec — don't hammer REST with 5xx/network when backend unreachable
+  const s = getConnectivityState();
+  return s.isOnline && s.isCloudReachable !== "unreachable";
 }
 function isOnlineForPhx(): boolean {
   const s = getConnectivityState();
@@ -166,6 +168,10 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
         await db.runAsync(`UPDATE sync_jobs SET status='completed', updated_at=? WHERE id=?;`, new Date().toISOString(), row.id);
         syncLogger.info("SyncJobs", "Drained via PHX", { businessId, entityId });
         clearRetry(businessId);
+        try {
+          const next = await db.getFirstAsync<{ id: string }>(`SELECT id FROM sync_jobs WHERE business_id=? AND entity_id=? AND status='pending' ORDER BY created_at LIMIT 1;`, businessId, entityId);
+          if (next) setTimeout(() => void drainOne(businessId, entityId), 50);
+        } catch {}
         return;
       }
     } else {
@@ -179,6 +185,15 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
       await db.runAsync(`UPDATE sync_jobs SET status='completed', updated_at=? WHERE id=?;`, new Date().toISOString(), row.id);
       syncLogger.info("SyncJobs", "Drained via REST", { businessId, entityId, command_type: row.command_type });
       clearRetry(businessId);
+      // Immediately drain next pending for same entity (FIFO chain: create -> prepare -> ready -> pickup should sync in order without waiting for timer)
+      try {
+        const next = await db.getFirstAsync<{ id: string }>(`SELECT id FROM sync_jobs WHERE business_id=? AND entity_id=? AND status='pending' ORDER BY created_at LIMIT 1;`, businessId, entityId);
+        if (next) {
+          syncLogger.debug("SyncJobs", "chaining next job for same entity", { businessId, entityId });
+          // fire next without inflight block — we already cleared inflight for this key, so recurse
+          setTimeout(() => void drainOne(businessId, entityId), 50);
+        }
+      } catch {}
       return;
     }
     // 3) Handle 409 RRR regen same UUID (POS create only)
@@ -231,6 +246,16 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
         try { clearAuth(); } catch {}
       }
       syncLogger.debug("SyncJobs", "401 deferred until login", { businessId });
+      return;
+    }
+    // Permanent 4xx (except 401/404/408/409/429) — don't retry infinitely; mark failed to stop sync spinner loop.
+    // 404 is retryable (order not yet created on backend due to FIFO race), 409 is handled above for RRR regen.
+    if (rest.status && rest.status >= 400 && rest.status < 500 && rest.status !== 401 && rest.status !== 404 && rest.status !== 408 && rest.status !== 409 && rest.status !== 429) {
+      syncLogger.warn("SyncJobs", "Permanent 4xx — marking job failed to stop retry loop", { businessId, entityId, status: rest.status, code: rest.code, message: rest.message });
+      try {
+        await db.runAsync(`UPDATE sync_jobs SET status='failed', last_error=?, updated_at=? WHERE id=?;`, `${rest.status} ${rest.code ?? ""} ${rest.message ?? ""}`.trim(), new Date().toISOString(), row.id);
+      } catch {}
+      clearRetry(businessId);
       return;
     }
     // Keep pending for retry (5xx / network) — auto retry with backoff
