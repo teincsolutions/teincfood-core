@@ -465,16 +465,142 @@ function rowToDomainEvent(row: EventRow): DomainEvent {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Orders — real local DB (primary, like backend)
+// ─────────────────────────────────────────────────────────────
+
+export interface OrderRow {
+  id: string;
+  business_id: string;
+  order_number: string;
+  callout_number: number | null;
+  status: string;
+  order_type: string | null;
+  is_pos: number;
+  items: string;
+  subtotal_minor: number;
+  total_minor: number;
+  tax_minor: number;
+  tax_lines: string | null;
+  payment: string | null;
+  customer_name: string | null;
+  customer_phone: string | null;
+  pos_payment_method: string | null;
+  delivery_id: string | null;
+  business: string | null;
+  user: string | null;
+  inserted_at: string;
+  hlc: string | null;
+  deleted_at: string | null;
+}
+
+function orderRowToSellerOrder(row: OrderRow): import("../types/api/seller.api").SellerOrder {
+  return {
+    id: row.id,
+    business_id: row.business_id,
+    order_number: row.order_number,
+    callout_number: row.callout_number,
+    status: row.status,
+    order_type: row.order_type,
+    is_pos: !!row.is_pos,
+    items: row.items ? JSON.parse(row.items) : [],
+    subtotal_minor: row.subtotal_minor,
+    total_minor: row.total_minor,
+    tax_minor: row.tax_minor,
+    tax_lines: row.tax_lines ? JSON.parse(row.tax_lines) : [],
+    payment: row.payment ? JSON.parse(row.payment) : { is_paid: false, reference: null, amount_minor: null, currency: null, paid_at: null },
+    customer_name: row.customer_name,
+    customer_phone: row.customer_phone,
+    pos_payment_method: row.pos_payment_method,
+    delivery_id: row.delivery_id,
+    business: row.business ? JSON.parse(row.business) : null,
+    delivery_address: null,
+    delivery_lat: null,
+    delivery_lng: null,
+    user: row.user ? JSON.parse(row.user) : null,
+    currency: (row.payment ? JSON.parse(row.payment).currency : "GHS") ?? "GHS",
+    currency_code: (row.payment ? JSON.parse(row.payment).currency : "GHS") ?? "GHS",
+    discount_minor: 0,
+    promo_code: null,
+    tip_minor: null,
+    delivery_fee_minor: 0,
+    delivery_status: null,
+    is_paid: row.payment ? JSON.parse(row.payment).is_paid ?? false : false,
+    paid_at: row.payment ? JSON.parse(row.payment).paid_at ?? null : null,
+    inserted_at: row.inserted_at,
+  } as unknown as import("../types/api/seller.api").SellerOrder;
+}
+
+export async function insertOrder(db: SQLiteDatabase, order: import("../types/api/seller.api").SellerOrder & { hlc?: string }): Promise<void> {
+  const hlc = (order as unknown as { hlc?: string }).hlc ?? new Date().toISOString();
+  await db.runAsync(
+    `INSERT INTO orders (id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, hlc)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET business_id=excluded.business_id, order_number=excluded.order_number, callout_number=excluded.callout_number, status=excluded.status, order_type=excluded.order_type, is_pos=excluded.is_pos, items=excluded.items, subtotal_minor=excluded.subtotal_minor, total_minor=excluded.total_minor, tax_minor=excluded.tax_minor, tax_lines=excluded.tax_lines, payment=excluded.payment, customer_name=excluded.customer_name, customer_phone=excluded.customer_phone, pos_payment_method=excluded.pos_payment_method, delivery_id=excluded.delivery_id, business=excluded.business, user=excluded.user, hlc=excluded.hlc
+     WHERE excluded.hlc >= orders.hlc OR orders.hlc IS NULL;`,
+    order.id, order.business_id, order.order_number, order.callout_number, order.status, order.order_type, order.is_pos ? 1 : 0,
+    JSON.stringify(order.items), order.subtotal_minor, order.total_minor, order.tax_minor, JSON.stringify(order.tax_lines), JSON.stringify(order.payment),
+    order.customer_name, order.customer_phone, order.pos_payment_method, order.delivery_id, order.business ? JSON.stringify(order.business) : null, order.user ? JSON.stringify(order.user) : null,
+    order.inserted_at, hlc
+  );
+}
+
+export async function getOrderById(db: SQLiteDatabase, businessId: string, idOrNumber: string): Promise<import("../types/api/seller.api").SellerOrder | null> {
+  const row = await db.getFirstAsync<OrderRow>(`SELECT * FROM orders WHERE business_id = ? AND (id = ? OR order_number = ?) LIMIT 1;`, businessId, idOrNumber, idOrNumber);
+  return row ? orderRowToSellerOrder(row) : null;
+}
+
+export async function listOrders(db: SQLiteDatabase, businessId: string, filters?: { status?: string; q?: string; is_pos?: string; order_type?: string }, page = 1, pageSize = 20): Promise<{ data: import("../types/api/seller.api").SellerOrder[]; total: number }> {
+  const where: string[] = ["business_id = ?"];
+  const args: unknown[] = [businessId];
+  if (filters?.status) {
+    const statuses = filters.status.split(",").map((s) => s.trim()).filter(Boolean);
+    if (statuses.length) { where.push(`status IN (${statuses.map(() => "?").join(",")})`); args.push(...statuses); }
+  }
+  if (filters?.is_pos != null) { where.push("is_pos = ?"); args.push(filters.is_pos === "true" || filters.is_pos === "1" ? 1 : 0); }
+  if (filters?.order_type) { where.push("order_type = ?"); args.push(filters.order_type); }
+  if (filters?.q) { where.push("(order_number LIKE ? OR customer_name LIKE ? OR customer_phone LIKE ?)"); const q = `%${filters.q}%`; args.push(q, q, q); }
+  const whereSql = where.join(" AND ");
+  const countRow = await db.getFirstAsync<{ c: number }>(`SELECT COUNT(*) as c FROM orders WHERE ${whereSql};`, ...args);
+  const total = countRow?.c ?? 0;
+  const offset = (page - 1) * pageSize;
+  const rows = await db.getAllAsync<OrderRow>(`SELECT * FROM orders WHERE ${whereSql} ORDER BY inserted_at DESC LIMIT ? OFFSET ?;`, ...args, pageSize, offset);
+  return { data: rows.map(orderRowToSellerOrder), total };
+}
+
+export async function updateOrderStatus(db: SQLiteDatabase, businessId: string, orderId: string, toStatus: string, hlc?: string): Promise<void> {
+  const now = hlc ?? new Date().toISOString();
+  await db.runAsync(`UPDATE orders SET status = ?, hlc = ? WHERE business_id = ? AND (id = ? OR order_number = ?);`, toStatus, now, businessId, orderId, orderId);
+}
+
+export async function updateOrderPayment(db: SQLiteDatabase, businessId: string, orderId: string, patch: { is_paid: boolean; paid_at: string | null }): Promise<void> {
+  const row = await getOrderById(db, businessId, orderId);
+  if (!row) return;
+  const payment = { ...(row.payment as object), is_paid: patch.is_paid, paid_at: patch.paid_at } as unknown as string;
+  await db.runAsync(`UPDATE orders SET payment = ?, hlc = ? WHERE business_id = ? AND (id = ? OR order_number = ?);`, JSON.stringify(payment), new Date().toISOString(), businessId, orderId, orderId);
+}
+
+// ─────────────────────────────────────────────────────────────
 // Maintenance — clear stale local data (used by Diagnostics)
 // ─────────────────────────────────────────────────────────────
 
 export async function clearAllSyncData(db: SQLiteDatabase): Promise<void> {
-  await db.execAsync(`DELETE FROM commands;`);
-  await db.execAsync(`DELETE FROM events;`);
-  await db.execAsync(`DELETE FROM entity_snapshots;`);
-  // Keep reference_data — it is business-scoped and expensive to re-fetch;
-  // only order/command state is cleared. If full wipe needed, call
-  // clearReferenceData below.
+  // New-DB primary: orders + sync_jobs. Keep legacy deletes guarded (v8 dropped them).
+  try { await db.execAsync(`DELETE FROM orders;`); } catch {}
+  try { await db.execAsync(`DELETE FROM sync_jobs;`); } catch {}
+  try { await db.execAsync(`DELETE FROM entity_snapshots;`); } catch {}
+  try { await db.execAsync(`DELETE FROM commands;`); } catch {}
+  try { await db.execAsync(`DELETE FROM events;`); } catch {}
+  // Keep reference_data by default (expensive to re-fetch). Use wipeForNewInstall for full reset.
+}
+
+export async function wipeForNewInstall(db: SQLiteDatabase): Promise<void> {
+  try { await db.execAsync(`DELETE FROM orders;`); } catch {}
+  try { await db.execAsync(`DELETE FROM sync_jobs;`); } catch {}
+  try { await db.execAsync(`DELETE FROM entity_snapshots;`); } catch {}
+  try { await db.execAsync(`DELETE FROM reference_data;`); } catch {}
+  try { await db.execAsync(`DELETE FROM commands;`); } catch {}
+  try { await db.execAsync(`DELETE FROM events;`); } catch {}
+  try { await db.execAsync(`DELETE FROM migrations WHERE version >= 5;`); } catch {}
 }
 
 export async function clearReferenceData(db: SQLiteDatabase): Promise<void> {

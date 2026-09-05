@@ -68,7 +68,8 @@ describe("order-transitions", () => {
   });
 
   it("nextActionFor pipeline + awaiting_payment null + ready walk-in label", () => {
-    expect(nextActionFor(order({ status: "pending" }))).toEqual({ label: "Accept", key: "accept" });
+    expect(nextActionFor(order({ status: "pending", is_pos: false }))).toEqual({ label: "Accept", key: "accept" });
+    expect(nextActionFor(order({ status: "pending", is_pos: true }))).toEqual({ label: "Start preparing", key: "start_preparing" });
     expect(nextActionFor(order({ status: "accepted" }))).toEqual({ label: "Start preparing", key: "start_preparing" });
     expect(nextActionFor(order({ status: "preparing" }))).toEqual({ label: "Mark ready", key: "mark_ready" });
     expect(nextActionFor(order({ status: "ready", order_type: "dine_in" }))).toEqual({ label: "Complete", key: "complete_pickup" });
@@ -100,8 +101,9 @@ describe("order-transitions", () => {
     expect(canTransition(aw, "start_preparing")).toBe(false);
   });
 
-  it("getAllowedActions: pending → accept/reject, ready walk-in → complete_pickup+cancel+confirm_cash if unpaid, ready delivery → assign/confirm", () => {
-    expect(getAllowedActions(order({ status: "pending" }))).toEqual(["accept", "reject"]);
+  it("getAllowedActions: pending → accept/reject (online) vs start_preparing (is_pos), ready walk-in → complete_pickup+cancel+confirm_cash if unpaid, ready delivery → assign/confirm", () => {
+    expect(getAllowedActions(order({ status: "pending", is_pos: false }))).toEqual(["accept", "reject"]);
+    expect(getAllowedActions(order({ status: "pending", is_pos: true }))).toEqual(expect.arrayContaining(["start_preparing"]));
     expect(getAllowedActions(order({ status: "accepted" }))).toEqual(expect.arrayContaining(["start_preparing", "cancel"]));
     expect(getAllowedActions(order({ status: "preparing" }))).toEqual(expect.arrayContaining(["mark_ready", "cancel"]));
     const walkReadyUnpaid = order({ status: "ready", order_type: "takeout", delivery_id: null, is_paid: false, paid_at: null, payment: { is_paid: false } as any });

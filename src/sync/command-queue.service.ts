@@ -132,7 +132,7 @@ function buildOptimisticOrder(
     customer_phone: (payload.customer_phone as string) ?? null,
     pos_payment_method: (payload.pos_payment_method as string) ?? "cash",
     paid_at: null,
-    status: "pending",
+    status: "accepted",
     delivery_id: null,
     delivery_status: null,
     is_paid: (payload.pos_payment_method as string) === "cash",

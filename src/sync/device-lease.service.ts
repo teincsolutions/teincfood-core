@@ -4,7 +4,7 @@
  * KV persists device_number per businessId.
  */
 
-import { getItemSync as getSync, setItemSync as setSync } from "../adapters/kv";
+import { getItemSync as getSync, setItemSync as setSync, removeItemSync } from "../adapters/kv";
 import { getHttpClient, ApiError } from "../adapters/http";
 import { generateUUID } from "../utils/uuid";
 import { syncLogger } from "../utils/sync-logger";
@@ -56,8 +56,14 @@ export async function ensureLease(businessId: string): Promise<string | null> {
       return dn;
     }
   } catch (e) {
-    const apiErr = e as { status?: number; name?: string };
-    if (apiErr?.status === 429 || (e as Error)?.message?.includes("DEVICE_LIMIT_REACHED")) {
+    const apiErr = e as { status?: number; name?: string; code?: string };
+    const msg = String((e as Error)?.message ?? "");
+    const isAuth = apiErr?.status === 401 || msg.includes("TOKEN_MISSING") || msg.includes("No authentication token");
+    if (isAuth) {
+      syncLogger.debug("DeviceLease", "No auth yet — lease deferred until login", { businessId });
+      return null;
+    }
+    if (apiErr?.status === 429 || msg.includes("DEVICE_LIMIT_REACHED")) {
       syncLogger.warn("DeviceLease", "Device limit reached — online only", { businessId });
       return null;
     }
@@ -89,8 +95,6 @@ export async function refreshLease(businessId: string): Promise<void> {
 }
 
 export function clearLeaseForTests(businessId: string): void {
-  // test helper
-  const { removeItemSync } = require("../adapters/kv");
   removeItemSync(LEASE_KEY(businessId));
   removeItemSync(`${LEASE_KEY(businessId)}:leased_at`);
 }

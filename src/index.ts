@@ -108,7 +108,7 @@ export * from "./adapters/http";
 export * from "./adapters/local-node";
 export * from "./adapters/services";
 export * from "./adapters/devices";
-export { setAuthProvider, getAuthToken } from "./adapters/auth";
+export { setAuthProvider, getAuthToken, setAuthRefreshProvider, getRefreshToken, setAuthTokensProvider, setAuthTokens, setAuthClearProvider, clearAuth } from "./adapters/auth";
 export { imageCacheService } from "./adapters/image-cache";
 export * from "./adapters/business";
 export * from "./adapters/pending-orders";
@@ -136,11 +136,18 @@ export * from "./catalog/hooks";
 export * from "./utils/order-transitions";
 // components/OrderStatusCard was folded into order-transitions (compat re-export lives in apps)
 
+// ── Domain (offline-first primary DB) ──
+export * from "./domain/orders/service";
+
 // ── Realtime (single source — PHX WebSocket + business:{id}) ──
 export { phoenixSocket } from "./realtime/phoenix-socket";
 export { eventsService } from "./realtime/events.service";
 export { orderEventsService } from "./realtime/order-events.service";
 export { useEventsConnection } from "./realtime/useEventsConnection";
+
+// ── Sync jobs (POS primary sync) — debug helpers for DiagnosticsScreen
+export { getSyncJobsPendingCount, debugDumpSyncJobs, drainPending } from "./sync/sync-jobs.service";
+export { notifyAuthChanged, subscribeAuth } from "./adapters/auth";
 
 // ── Image cache (durable) ──
 export { getCachedImagePath, ensureImageCacheDir, getCachedImageInfo, cacheRemoteImage, cacheImageBatch, clearImageCache, pruneImageCache, resolveImageSource, stableCacheUrl } from "./image-cache/service";
@@ -156,6 +163,7 @@ import { API_BASE_URL, WS_BASE_URL, setApiBaseUrl, setWsBaseUrl } from "./utils/
 import { SyncEngine } from "./sync/engine";
 import { restTransport } from "./sync/transport-rest";
 import { localNodeTransport } from "./sync/transport-local-node";
+import { setupSyncJobsDrain } from "./sync/sync-jobs.service";
 
 export interface CoreConfig {
   sqliteDriver?: SqliteDriver;
@@ -198,6 +206,8 @@ export function createTeincCore(config: CoreConfig = {}): { engine: SyncEngine }
     try { console.debug("[core] wsBaseUrl not provided by app, using default", WS_BASE_URL); } catch {}
   }
   if (config.initialConnectivity) setConnectivityState(config.initialConnectivity);
+
+  try { setupSyncJobsDrain(); } catch {}
 
   // Debug: confirm env vars as seen by core after injection
   try {

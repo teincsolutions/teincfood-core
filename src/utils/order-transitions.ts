@@ -95,7 +95,11 @@ export function nextActionFor(order: SellerOrder): { label: string; key: OrderAc
   const status = (order as unknown as { status?: string }).status ?? "";
   // awaiting_payment must pay first — no pipeline progression
   if (status === "awaiting_payment") return null;
-  if (status === "pending") return { label: "Accept", key: "accept" };
+  if (status === "pending") {
+    const isPos = !!(order as unknown as { is_pos?: boolean }).is_pos;
+    if (isPos) return { label: "Start preparing", key: "start_preparing" };
+    return { label: "Accept", key: "accept" };
+  }
   if (status === "accepted") return { label: "Start preparing", key: "start_preparing" };
   if (status === "preparing") return { label: "Mark ready", key: "mark_ready" };
   if (status === "ready") {
@@ -118,11 +122,11 @@ export function canTransition(order: SellerOrder, action: OrderAction): boolean 
 
   switch (action) {
     case "accept":
-      return status === "pending";
+      return status === "pending" && !(order as unknown as { is_pos?: boolean }).is_pos;
     case "reject":
       return status === "pending";
     case "start_preparing":
-      return status === "accepted" || status === "pending";
+      return status === "accepted" || (status === "pending" && !!(order as unknown as { is_pos?: boolean }).is_pos);
     case "mark_ready":
       return status === "preparing";
     case "complete_pickup":
@@ -153,7 +157,9 @@ export function getAllowedActions(order: SellerOrder): OrderAction[] {
   }
 
   if (status === "pending") {
-    const actions: OrderAction[] = ["accept", "reject"];
+    const isPos = !!(order as unknown as { is_pos?: boolean }).is_pos;
+    const actions: OrderAction[] = isPos ? [] : ["accept", "reject"];
+    if (isPos) actions.push("start_preparing");
     if (isCancellable(status)) {
       // reject already covers pending; cancel alias not needed
     }
