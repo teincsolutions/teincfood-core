@@ -6,7 +6,7 @@
 
 import { openSyncDatabase } from "../../db/connection";
 import { insertOrder, getOrderById, listOrders, updateOrderStatus, updateOrderPayment, getEntitySnapshotsByType } from "../../db/operations";
-import { getDeviceNumber } from "../../sync/device-lease.service";
+import { getDeviceNumber, ensureLease } from "../../sync/device-lease.service";
 import { generateOrderNumberForBusiness } from "../../sync/order-number";
 import { generateUUID } from "../../utils/uuid";
 import { getConnectivityState } from "../../adapters/connectivity";
@@ -14,6 +14,7 @@ import { canTransition } from "../../utils/order-transitions";
 import { drainOne, pullRemoteOrders } from "../../sync/sync-jobs.service";
 import { getAuthToken } from "../../adapters/auth";
 import { syncLogger } from "../../utils/sync-logger";
+import { getItem } from "../../adapters/kv";
 import type { SellerOrder } from "../../types/api/seller.api";
 import type { POSOrderCreateRequest } from "../../types/pos.types";
 
@@ -59,8 +60,19 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
   if ((input.order_type as string) === "delivery" || (input as unknown as { delivery_params?: unknown }).delivery_params) {
     if (!isOnline()) throw new Error("Delivery orders require online");
   }
-  // DD lease required (backend lease, not local alloc)
-  const dd = getDeviceNumber(businessId);
+  // DD lease required (backend lease, not local alloc) — keep leased DD even offline
+  let dd = getDeviceNumber(businessId);
+  if (!dd) {
+    // Boot race: sync KV may not yet have hydrated from kv.json — try async before blocking
+    try {
+      const asyncDd = await getItem<string>(`teinc_device_number:${businessId}`);
+      if (asyncDd && /^(0[1-9]|[1-9][0-9])$/.test(asyncDd)) dd = asyncDd;
+    } catch {}
+  }
+  if (!dd) {
+    const leased = await ensureLease(businessId);
+    if (leased) dd = leased;
+  }
   if (!dd) throw new Error("No device number leased (99 max) — connect online once to lease DD");
 
   const id = (input as unknown as { command_id?: string }).command_id ?? generateUUID();

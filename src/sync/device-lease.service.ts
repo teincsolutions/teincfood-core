@@ -4,10 +4,11 @@
  * KV persists device_number per businessId.
  */
 
-import { getItemSync as getSync, setItemSync as setSync, removeItemSync } from "../adapters/kv";
+import { getItemSync as getSync, setItemSync as setSync, removeItemSync, getItem } from "../adapters/kv";
 import { getHttpClient, ApiError } from "../adapters/http";
 import { syncLogger } from "../utils/sync-logger";
 import { getAppInstanceIdAsync } from "../adapters/devices";
+import { getConnectivityState } from "../adapters/connectivity";
 
 const LEASE_KEY = (businessId: string) => `teinc_device_number:${businessId}`;
 const LEASE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -28,8 +29,37 @@ export function isOnlineOnly(businessId: string): boolean {
 }
 
 export async function ensureLease(businessId: string): Promise<string | null> {
-  const existing = getDeviceNumber(businessId);
-  if (existing) return existing;
+  // Offline-first: keep leased DD even offline — if online check/lease fails, return cached
+  const existingSync = getDeviceNumber(businessId);
+  if (existingSync) {
+    // Opportunistically refresh touch if online, but never discard cached on failure
+    if (getConnectivityState().isOnline) {
+      try {
+        const leasedAt = getSync<string>(`${LEASE_KEY(businessId)}:leased_at`);
+        const needsRefresh = !leasedAt || Date.now() - new Date(leasedAt).getTime() > LEASE_TTL_MS - 24 * 60 * 60 * 1000;
+        if (needsRefresh) await refreshLease(businessId);
+      } catch {
+        // keep existing on any refresh failure
+      }
+    }
+    return existingSync;
+  }
+
+  // No sync cache — try async KV (covers boot race where sync cache not yet hydrated from kv.json)
+  try {
+    const asyncCached = await getItem<string>(LEASE_KEY(businessId));
+    if (asyncCached && /^(0[1-9]|[1-9][0-9])$/.test(asyncCached)) {
+      // hydrate sync cache for next getDeviceNumber calls
+      try { setSync(LEASE_KEY(businessId), asyncCached); } catch {}
+      return asyncCached;
+    }
+  } catch {}
+
+  // No cached DD — must lease online. If offline, keep null (caller blocks POS with clear message)
+  if (!getConnectivityState().isOnline) {
+    syncLogger.debug("DeviceLease", "Offline and no cached DD — need online once", { businessId });
+    return null;
+  }
 
   try {
     const http = getHttpClient();
@@ -43,6 +73,7 @@ export async function ensureLease(businessId: string): Promise<string | null> {
     if (dn && /^(0[1-9]|[1-9][0-9])$/.test(dn)) {
       setSync(LEASE_KEY(businessId), dn);
       setSync(`${LEASE_KEY(businessId)}:leased_at`, new Date().toISOString());
+      try { await getItem<string>(LEASE_KEY(businessId)); } catch {}
       syncLogger.info("DeviceLease", "Leased device number", { businessId, device_number: dn });
       return dn;
     }
@@ -52,16 +83,33 @@ export async function ensureLease(businessId: string): Promise<string | null> {
     const isAuth = apiErr?.status === 401 || msg.includes("TOKEN_MISSING") || msg.includes("No authentication token");
     if (isAuth) {
       syncLogger.debug("DeviceLease", "No auth yet — lease deferred until login", { businessId });
+      // fallback to any async cache that may have appeared concurrently
+      try {
+        const fallback = await getItem<string>(LEASE_KEY(businessId));
+        if (fallback && /^(0[1-9]|[1-9][0-9])$/.test(fallback)) return fallback;
+      } catch {}
+      const again = getDeviceNumber(businessId);
+      if (again) return again;
       return null;
     }
     if (apiErr?.status === 429 || msg.includes("DEVICE_LIMIT_REACHED")) {
       syncLogger.warn("DeviceLease", "Device limit reached — online only", { businessId });
       return null;
     }
-    syncLogger.warn("DeviceLease", "Lease failed — will operate online-only until next boot", {
+    // Network/offline failure while leasing — keep any cached that may exist
+    syncLogger.warn("DeviceLease", "Lease failed — keep cached if any", {
       businessId,
       error: String(e),
     });
+    try {
+      const fallback = await getItem<string>(LEASE_KEY(businessId));
+      if (fallback && /^(0[1-9]|[1-9][0-9])$/.test(fallback)) {
+        try { setSync(LEASE_KEY(businessId), fallback); } catch {}
+        return fallback;
+      }
+    } catch {}
+    const again = getDeviceNumber(businessId);
+    if (again) return again;
   }
   return null;
 }
