@@ -32,3 +32,8 @@ export const MENU_KEYS = {
 export const REFERENCE_KEYS = {
   all: ["reference"] as const,
 };
+
+export const SELLER_DASHBOARD_KEYS = {
+  all: ["seller-dashboard"] as const,
+  full: (businessId?: string) => ["seller-dashboard", "full", businessId].filter((x) => x !== undefined) as readonly unknown[],
+};

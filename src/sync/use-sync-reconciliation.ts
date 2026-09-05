@@ -29,6 +29,7 @@ import {
   BUSINESS_DELIVERIES_KEYS,
   MENU_KEYS,
   REFERENCE_KEYS,
+  SELLER_DASHBOARD_KEYS,
 } from "../adapters/query-keys";
 import {
   applyReferenceChangeEvent,
@@ -61,6 +62,7 @@ export function useSyncReconciliation(): void {
         queryClient.invalidateQueries({ queryKey: REFERENCE_KEYS.all });
         queryClient.invalidateQueries({ queryKey: POS_KEYS.all });
         queryClient.invalidateQueries({ queryKey: SELLER_KEYS.all });
+        queryClient.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all });
       }
       if (pending.has("pending")) {
         queryClient.invalidateQueries({ queryKey: POS_KEYS.all });
@@ -68,6 +70,7 @@ export function useSyncReconciliation(): void {
         queryClient.invalidateQueries({ queryKey: KIOSK_KEYS.all });
         queryClient.invalidateQueries({ queryKey: SELLER_ORDERS_KEYS.all });
         queryClient.invalidateQueries({ queryKey: BUSINESS_DELIVERIES_KEYS.all });
+        queryClient.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all });
       }
       if (pending.has("order")) {
         // order.created with local number already covered by pending, but keep fine-grained
@@ -136,6 +139,10 @@ export function useSyncReconciliation(): void {
       // Order/delivery state changed: refresh order caches so this terminal
       // shows the same order states as the device that made the change.
       await applyOrderStateChangeEvent(event, "local");
+      // Any order/delivery event should refresh dashboard recent orders immediately (fresh on transition)
+      if (event.event_type.startsWith("order.") || event.event_type.startsWith("delivery.")) {
+        schedule("pending");
+      }
 
       // Route both queued (optimistic) and reconciled (created) order events
       // into the pending-orders store.

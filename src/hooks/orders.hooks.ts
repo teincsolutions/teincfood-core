@@ -9,6 +9,7 @@ import { useSyncExternalStore } from "react";
 import { createLocalOrder, transitionLocalOrder, listLocalOrders, getLocalOrder } from "../domain/orders/service";
 import { getDeviceNumber, ensureLease } from "../sync/device-lease.service";
 import { getConnectivityState } from "../adapters/connectivity";
+import { SELLER_DASHBOARD_KEYS } from "../adapters/query-keys";
 import { openSyncDatabase } from "../db/connection";
 import { getReferenceData } from "../reference/operations";
 import { calculatePricing } from "../pricing/engine";
@@ -95,7 +96,7 @@ export function useCreatePOSOrderMutation() {
       if (!dn) { const leased = await ensureLease(bid); if (!leased) throw new Error("No device number leased — connect online once"); }
       return createLocalOrder(bid, data as unknown as POSOrderCreateRequest & { is_pos?: boolean });
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: POS_KEYS.orders(bid) }); qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: POS_KEYS.orders(bid) }); qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); },
   });
 }
 
@@ -132,7 +133,7 @@ function makeOrderActionMutation(build: (p:{orderId:string;businessId:string})=>
         if (!bid) throw new Error("No active business");
         return build({ orderId, businessId: bid });
       },
-      onSuccess: (_d,_e, orderId) => { qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); if(orderId) qc.invalidateQueries({ queryKey: SELLER_KEYS.order(orderId as string) }); },
+      onSuccess: (_d,_e, orderId) => { qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); if(orderId) qc.invalidateQueries({ queryKey: SELLER_KEYS.order(orderId as string) }); },
     });
   };
 }
@@ -145,15 +146,15 @@ export const useCompletePickupMutation = makeOrderActionMutation(({orderId,busin
 export const useCancelOrderMutation = makeOrderActionMutation(({orderId,businessId}) => transitionLocalOrder(businessId, orderId, "cancel"));
 export function useConfirmHandoverMutation() {
   const bid = useBusinessId(); const qc = useQueryClient();
-  return useMutation({ mutationFn: (deliveryId: string) => { if(!bid) throw new Error("No business"); return transitionLocalOrder(bid, deliveryId, "confirm_handover"); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); }});
+  return useMutation({ mutationFn: (deliveryId: string) => { if(!bid) throw new Error("No business"); return transitionLocalOrder(bid, deliveryId, "confirm_handover"); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); }});
 }
 export function useAssignRiderMutation() {
   const bid = useBusinessId(); const qc = useQueryClient();
-  return useMutation({ mutationFn: ({orderId,riderId}:{orderId:string;riderId:string})=>{ if(!bid) throw new Error("No business"); if(!getConnectivityState().isOnline) throw new Error("Assign rider requires online"); return orderRepository.assignRider({orderId,riderId,businessId:bid}); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); }});
+  return useMutation({ mutationFn: ({orderId,riderId}:{orderId:string;riderId:string})=>{ if(!bid) throw new Error("No business"); const s = getConnectivityState(); if(!s.isOnline || s.isCloudReachable === "unreachable") throw new Error("Assign rider requires online"); return orderRepository.assignRider({orderId,riderId,businessId:bid}); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); }});
 }
 export function useConfirmCashPaymentMutation() {
   const bid = useBusinessId(); const qc = useQueryClient();
-  return useMutation({ mutationFn: (orderId:string)=>{ if(!bid) throw new Error("No business"); return transitionLocalOrder(bid, orderId, "confirm_cash"); }, onSuccess: (_d,_e,orderId)=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); if(orderId) qc.invalidateQueries({ queryKey: SELLER_KEYS.order(orderId as string)}); }});
+  return useMutation({ mutationFn: (orderId:string)=>{ if(!bid) throw new Error("No business"); return transitionLocalOrder(bid, orderId, "confirm_cash"); }, onSuccess: (_d,_e,orderId)=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); if(orderId) qc.invalidateQueries({ queryKey: SELLER_KEYS.order(orderId as string)}); }});
 }
 export function useUpdateOrderStatusMutation() { const accept=useAcceptOrderMutation(); const reject=useRejectOrderMutation(); const preparing=useStartPreparingOrderMutation(); const ready=useMarkOrderReadyMutation(); const complete=useCompletePickupMutation(); const cancel=useCancelOrderMutation(); return { mutate: (orderId:string,status:string)=>{ const s=String(status); if(!["accepted","preparing","ready","delivered","cancelled","rejected"].includes(s)) throw new Error(`Unknown status ${s}`); switch(s){case "accepted":return accept.mutateAsync(orderId);case "preparing":return preparing.mutateAsync(orderId);case "ready":return ready.mutateAsync(orderId);case "delivered":return complete.mutateAsync(orderId);case "cancelled":return cancel.mutateAsync(orderId);case "rejected":return reject.mutateAsync(orderId);default:throw new Error(`Unknown status ${s}`);} }, isPending: accept.isPending||reject.isPending||preparing.isPending||ready.isPending||complete.isPending||cancel.isPending, }; }
 export function isQueuedTransition(result: unknown): boolean { const r=result as {status?:string;command_id?:string;id?:string}|null; return !!r && r.status==="pending" && !!r.command_id && !r.id; }
