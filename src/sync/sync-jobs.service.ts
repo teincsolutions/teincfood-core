@@ -391,10 +391,10 @@ export async function getSyncJobsPendingCount(businessId: string): Promise<numbe
     return rows.length;
   } catch { return 0; }
 }
-export async function debugDumpSyncJobs(businessId: string): Promise<Array<{ id: string; command_type: string; status: string; created_at: string }>> {
+export async function debugDumpSyncJobs(businessId: string): Promise<Array<{ id: string; command_type: string; status: string; created_at: string; attempts: number; last_error: string | null }>> {
   try {
     const db = await openSyncDatabase();
-    const rows = await db.getAllAsync<{ id: string; command_type: string; status: string; created_at: string }>(`SELECT id, command_type, status, created_at FROM sync_jobs WHERE business_id=? ORDER BY created_at`, businessId);
+    const rows = await db.getAllAsync<{ id: string; command_type: string; status: string; created_at: string; attempts: number; last_error: string | null }>(`SELECT id, command_type, status, created_at, attempts, last_error FROM sync_jobs WHERE business_id=? ORDER BY created_at`, businessId);
     return rows;
   } catch { return []; }
 }
