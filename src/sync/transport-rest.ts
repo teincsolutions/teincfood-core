@@ -7,10 +7,12 @@
  */
 
 import type { Command, DomainEvent, Transport } from "./types";
-import { posService, sellerService, kioskService, menuService } from "../adapters/services";
+import { sellerService, kioskService, menuService } from "../adapters/services";
 import { syncLogger } from "../utils/sync-logger";
 import { generateEventId } from "../utils/uuid";
 import type { POSOrderCreateRequest } from "../types/pos.types";
+import type { SellerOrder } from "../types/api/seller.api";
+import { createLocalOrder, transitionLocalOrder } from "../domain/orders/service";
 
 export class RestTransport implements Transport {
   readonly name = "rest";
@@ -58,48 +60,40 @@ export class RestTransport implements Transport {
     const timestamp = new Date().toISOString();
 
     switch (command_type) {
+      // Single create path — createLocalOrder owns SQLite + sync_jobs + the
+      // operating-hours gate. No direct-REST fallback: guard rejections
+      // (BUSINESS_CLOSED / HOURS_NOT_SYNCED) must stand, never be bypassed.
       case "order:create": {
-        const posPayload = {
-          ...(payload as unknown as POSOrderCreateRequest),
-          id: command.command_id,
+        const order = await createLocalOrder(business_id, {
+          ...((payload ?? {}) as Record<string, unknown>),
           command_id: command.command_id,
-          local_order_number: (payload as { order_number?: string }).order_number,
-        };
-        const response = await posService.createPOSOrder(
-          business_id,
-          posPayload as unknown as POSOrderCreateRequest,
-        );
-        return this.wrapResponse("order.created", response.data as unknown as Record<string, unknown>, entity_id ?? command.command_id, timestamp, command);
+          id: entity_id ?? command.command_id,
+        } as unknown as POSOrderCreateRequest);
+        return this.wrapResponse("order.created", order as unknown as Record<string, unknown>, order.id, timestamp, command);
       }
 
       case "order:accept": {
-        const response = await sellerService.acceptOrder(entity_id!);
-        return this.wrapResponse("order.status_changed", response.data as unknown as Record<string, unknown>, entity_id, timestamp, command);
+        return this.executeOrderTransition(command, "accept", timestamp, () => sellerService.acceptOrder(entity_id!));
       }
 
       case "order:reject": {
-        const response = await sellerService.rejectOrder(entity_id!);
-        return this.wrapResponse("order.status_changed", response.data as unknown as Record<string, unknown>, entity_id, timestamp, command);
+        return this.executeOrderTransition(command, "reject", timestamp, () => sellerService.rejectOrder(entity_id!));
       }
 
       case "order:start_preparing": {
-        const response = await sellerService.startPreparingOrder(entity_id!);
-        return this.wrapResponse("order.status_changed", response.data as unknown as Record<string, unknown>, entity_id, timestamp, command);
+        return this.executeOrderTransition(command, "start_preparing", timestamp, () => sellerService.startPreparingOrder(entity_id!));
       }
 
       case "order:mark_ready": {
-        const response = await sellerService.markOrderReady(entity_id!);
-        return this.wrapResponse("order.status_changed", response.data as unknown as Record<string, unknown>, entity_id, timestamp, command);
+        return this.executeOrderTransition(command, "mark_ready", timestamp, () => sellerService.markOrderReady(entity_id!));
       }
 
       case "order:complete_pickup": {
-        const response = await sellerService.completeOrderPickup(entity_id!);
-        return this.wrapResponse("order.status_changed", response.data as unknown as Record<string, unknown>, entity_id, timestamp, command);
+        return this.executeOrderTransition(command, "complete_pickup", timestamp, () => sellerService.completeOrderPickup(entity_id!));
       }
 
       case "order:cancel": {
-        const response = await sellerService.cancelOrder(entity_id!);
-        return this.wrapResponse("order.status_changed", response.data as unknown as Record<string, unknown>, entity_id, timestamp, command);
+        return this.executeOrderTransition(command, "cancel", timestamp, () => sellerService.cancelOrder(entity_id!));
       }
 
       case "delivery:assign": {
@@ -138,12 +132,39 @@ export class RestTransport implements Transport {
       }
 
       case "payment:confirm_cash": {
-        const response = await sellerService.confirmCashPayment(entity_id!);
-        return this.wrapResponse("payment.completed", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
+        return this.executeOrderTransition(command, "confirm_cash", timestamp, () => sellerService.confirmCashPayment(entity_id!), "payment.completed");
       }
 
       default:
         throw new Error(`RestTransport: unsupported command type ${command_type}`);
+    }
+  }
+
+  /**
+   * Order transitions go through the domain service first (single write path:
+   * SQLite + sync_jobs). If this device never saw the order (e.g. a LAN node
+   * handling a cloud-created order before its first pull), fall back to the
+   * previous direct-REST behavior so availability never regresses.
+   */
+  private async executeOrderTransition(
+    command: Command,
+    action: string,
+    timestamp: string,
+    restFallback: () => Promise<{ data: unknown }>,
+    eventType = "order.status_changed",
+  ): Promise<DomainEvent | null> {
+    const { business_id, entity_id } = command;
+    try {
+      const order = await transitionLocalOrder(business_id, entity_id!, action);
+      return this.wrapResponse(eventType, order as unknown as Record<string, unknown>, (order as SellerOrder).id, timestamp, command);
+    } catch (error) {
+      syncLogger.warn("RestTransport", "domain transition unavailable, REST fallback", {
+        command_type: command.command_type,
+        entity_id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      const response = await restFallback();
+      return this.wrapResponse(eventType, response.data as unknown as Record<string, unknown>, entity_id, timestamp, command);
     }
   }
 

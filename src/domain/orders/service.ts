@@ -10,6 +10,7 @@ import { getDeviceNumber, ensureLease } from "../../sync/device-lease.service";
 import { generateOrderNumberForBusiness } from "../../sync/order-number";
 import { generateUUID } from "../../utils/uuid";
 import { getConnectivityState } from "../../adapters/connectivity";
+import { assertBusinessOpenForCreate } from "../../utils/business-hours";
 import { canTransition } from "../../utils/order-transitions";
 import { drainOne, pullRemoteOrders } from "../../sync/sync-jobs.service";
 import { getAuthToken } from "../../adapters/auth";
@@ -64,6 +65,10 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
   if ((input.order_type as string) === "delivery" || (input as unknown as { delivery_params?: unknown }).delivery_params) {
     if (!isOnline()) throw new Error("Delivery orders require online");
   }
+  // Operating-hours gate (fail-closed, offline-first): matches backend
+  // validate_business_open. Throws BUSINESS_CLOSED / HOURS_NOT_SYNCED before
+  // anything is written, so a doomed order never enters SQLite/sync_jobs.
+  await assertBusinessOpenForCreate(businessId);
   // DD lease required (backend lease, not local alloc) — keep leased DD even offline
   let dd = getDeviceNumber(businessId);
   if (!dd) {

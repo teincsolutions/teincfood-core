@@ -134,6 +134,10 @@ export * from "./catalog/hooks";
 
 // ── Order transitions (shared business logic — single source) ──
 export * from "./utils/order-transitions";
+
+// ── Business hours gate (single source — mirrors backend is_open?) ──
+export * from "./utils/business-hours";
+export * from "./hooks/business-hours.hooks";
 // components/OrderStatusCard was folded into order-transitions (compat re-export lives in apps)
 
 // ── Domain (offline-first primary DB) ──

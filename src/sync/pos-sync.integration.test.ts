@@ -11,6 +11,7 @@ import { createLocalOrder, transitionLocalOrder } from "../domain/orders/service
 import { drainOne, pullRemoteOrders } from "./sync-jobs.service";
 import { setItemSync, getItemSync } from "../adapters/kv";
 import { phoenixSocket } from "../realtime/phoenix-socket";
+import { seedOpenHours } from "../test-helpers/seed-hours";
 
 const BUSINESS_ID = "0f0764da-53aa-48e4-ac40-3bfd8a52b0ec";
 const USER_ID = "test-user";
@@ -88,6 +89,8 @@ describe("POS sync — full correct data like Desktop CartPanel", () => {
     setHttpClient(mockHttp);
     // ensure DB migrated
     await openSyncDatabase();
+    // creation is fail-closed on operating hours — seed 24/7
+    await seedOpenHours(BUSINESS_ID);
   });
 
   it("create POS order with full CartPanel data syncs via POST /businesses/:id/pos/orders (not /orders/sync)", async () => {

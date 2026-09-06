@@ -19,6 +19,10 @@ export interface POSOrderPreviewInput {
 }
 
 export const posRepository = {
+  /**
+   * @deprecated Single create path is `createLocalOrder` (domain/orders/service).
+   * Forwards via `orderRepository.createOrder`, which delegates there directly.
+   */
   async createOrder(
     businessId: string,
     data: POSOrderCreateRequest,

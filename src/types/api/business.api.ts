@@ -10,6 +10,8 @@ export interface Business {
   status: string;
   currency: string;
   is_open: boolean;
+  /** Seller-facing open/close toggle (present when backend serializes it). */
+  manually_closed?: boolean;
   owner_id: string;
   business_number: string;
   latitude: number;

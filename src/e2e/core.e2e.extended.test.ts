@@ -3,21 +3,14 @@
  */
 import { describe, it, expect } from "vitest";
 import { setConnectivityState } from "../adapters/connectivity";
-import { createMemoryDriver } from "../test-helpers/memory-driver";
-import { setSqliteDriver } from "../adapters/sqlite";
+import { setHttpClient } from "../adapters/http";
+import { getLocalOrder } from "../domain/orders/service";
+import { getSyncJobsPendingCount, drainPending } from "../sync/sync-jobs.service";
 import { closeSyncDatabase, openSyncDatabase } from "../db/connection";
-import { setActiveBusiness } from "../adapters/business";
-import { setItemSync } from "../adapters/kv";
 import { orderSnapshotsService } from "../sync/order-snapshots.service";
-import { resetHarness, createMockBackend, installMockTransport } from "./harness";
+import { resetHarness } from "./harness";
 import { applyOrderStateChangeEvent } from "../sync/pending-orders.service";
-import { commandQueueService } from "../sync/command-queue.service";
-import { SyncEngine } from "../sync/engine";
-import { restTransport } from "../sync/transport-rest";
-import { localNodeTransport } from "../sync/transport-local-node";
-import { getPendingCommands } from "../db/operations";
 import { posRepository } from "../repositories/pos.repository";
-import { usePendingOrdersStore } from "../adapters/pending-orders";
 import { setFileSystemAdapter } from "../adapters/filesystem";
 import { cacheImageBatch } from "../image-cache/service";
 
@@ -76,37 +69,42 @@ describe.sequential("E2E TEST 4 — global reconciliation idle dashboard", () =>
 describe.sequential("E2E TEST 5 — LAN mesh", () => {
   it("B offline creates, LAN node relays to A/C, restart keeps same UUID", async () => {
     const bid = await resetHarness("biz-e2e");
-    const backend = createMockBackend();
-    const restore = installMockTransport(backend);
-    // Device B offline
+    const received = new Map<string, unknown>();
+    setHttpClient({
+      get: async () => ({ data: { data: [], pagination: { total_pages: 1 } } }) as unknown as never,
+      post: async (url: string, body?: unknown) => {
+        if (url.includes("/pos/orders")) {
+          const id = (body as { id?: string })?.id ?? "";
+          if (!received.has(id)) received.set(id, body);
+        }
+        return { data: {} } as unknown as never;
+      },
+      put: async () => ({ data: {} } as unknown as never),
+      patch: async () => ({ data: {} } as unknown as never),
+      delete: async () => ({ data: {} } as unknown as never),
+    } as never);
+    // Device B offline — two creates (two terminals), each with stable UUID
     setConnectivityState({ isOnline: false, isCloudReachable: "unreachable" });
     const itemSnap = [{ menu_item_id: "item1", name: "Jollof", quantity: 1, unit_price_minor: 5000 }];
-    await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 1 }], item_snapshots: itemSnap as never, total_minor: 5000 } as never);
-    const uuid = (usePendingOrdersStore.getState().orders[0] as unknown as { id: string }).id;
-    // Simulate LAN relay: same event with origin lan on another device's DB
-    // For this single-DB harness, verify that lan origin is also hydratable
-    const db = await openSyncDatabase();
-    const { getUnsyncedEvents } = await import("../db/operations");
-    const lanEvents = await getUnsyncedEvents(db, "lan");
-    // In single DB, lan events are 0, but local event should be hydratable
-    const localEvents = await getUnsyncedEvents(db, "local");
-    expect(localEvents.length).toBe(1);
-    // Simulate restart
+    const o1 = await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 1 }], item_snapshots: itemSnap as never, total_minor: 5000 } as never);
+    const o2 = await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 2 }], item_snapshots: itemSnap as never, total_minor: 10000 } as never);
+    expect(o1.id).not.toBe(o2.id);
+    expect((await getLocalOrder(bid, o1.id))?.id).toBe(o1.id);
+    expect((await getLocalOrder(bid, o2.id))?.id).toBe(o2.id);
+    expect(await getSyncJobsPendingCount(bid)).toBe(2);
+    // Simulate restart — both UUIDs stable, both jobs survive
     await closeSyncDatabase();
     await openSyncDatabase();
-    usePendingOrdersStore.setState({ orders: [], hydrated: false });
-    const { hydratePendingOrders } = await import("../sync/pending-orders.service");
-    await hydratePendingOrders();
-    expect(usePendingOrdersStore.getState().orders[0]?.id).toBe(uuid);
-    // Online replay
+    expect((await getLocalOrder(bid, o1.id))?.id).toBe(o1.id);
+    expect((await getLocalOrder(bid, o2.id))?.id).toBe(o2.id);
+    expect(await getSyncJobsPendingCount(bid)).toBe(2);
+    // Online drain — both land on the backend under their own UUIDs
     setConnectivityState({ isOnline: true, isCloudReachable: "reachable" });
-    await new Promise((r) => setTimeout(r, 600));
-    await commandQueueService.replay();
-    await new Promise((r) => setTimeout(r, 200));
-    const after = await getPendingCommands(await openSyncDatabase());
-    expect(after.length).toBe(0);
-    expect(backend.orders.size).toBe(1);
-    restore();
+    await drainPending(bid);
+    expect(await getSyncJobsPendingCount(bid)).toBe(0);
+    expect(received.size).toBe(2);
+    expect(received.has(o1.id)).toBe(true);
+    expect(received.has(o2.id)).toBe(true);
   });
 });
 
@@ -178,19 +176,14 @@ describe.sequential("E2E TEST 11 — restart preserves queue/journal", () => {
     const bid = await resetHarness("biz-e2e");
     setConnectivityState({ isOnline: false, isCloudReachable: "unreachable" });
     const itemSnap = [{ menu_item_id: "item1", name: "Jollof", quantity: 1, unit_price_minor: 5000 }];
-    await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 1 }], item_snapshots: itemSnap as never, total_minor: 5000 } as never);
-    await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 1 }], item_snapshots: itemSnap as never, total_minor: 5000 } as never);
-    const db1 = await openSyncDatabase();
-    const pending1 = await getPendingCommands(db1);
-    expect(pending1.length).toBe(2);
-    // restart
+    const o1 = await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 1 }], item_snapshots: itemSnap as never, total_minor: 5000 } as never);
+    const o2 = await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 1 }], item_snapshots: itemSnap as never, total_minor: 5000 } as never);
+    expect(await getSyncJobsPendingCount(bid)).toBe(2);
+    // restart — orders + sync jobs survive
     await closeSyncDatabase();
     await openSyncDatabase();
-    usePendingOrdersStore.setState({ orders: [], hydrated: false });
-    const { hydratePendingOrders } = await import("../sync/pending-orders.service");
-    await hydratePendingOrders();
-    const pending2 = await getPendingCommands(await openSyncDatabase());
-    expect(pending2.length).toBe(2);
-    expect(usePendingOrdersStore.getState().orders.length).toBe(2);
+    expect((await getLocalOrder(bid, o1.id))?.id).toBe(o1.id);
+    expect((await getLocalOrder(bid, o2.id))?.id).toBe(o2.id);
+    expect(await getSyncJobsPendingCount(bid)).toBe(2);
   });
 });

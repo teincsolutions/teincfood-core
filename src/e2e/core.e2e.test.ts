@@ -2,102 +2,99 @@
  * E2E tests per §44 — real @teincfood/core, real SQLite (memory), real SyncEngine, real queue/journal.
  * Uses harness mock backend — not faking the synchronization system.
  */
-import { describe, it, expect, beforeEach } from "vitest";
-import { setConnectivityState, getConnectivityState } from "../adapters/connectivity";
+import { describe, it, expect } from "vitest";
+import { setConnectivityState } from "../adapters/connectivity";
+import { setHttpClient } from "../adapters/http";
+import { getLocalOrder } from "../domain/orders/service";
+import { getSyncJobsPendingCount, drainPending } from "../sync/sync-jobs.service";
 import { posRepository } from "../repositories/pos.repository";
-import { orderRepository } from "../repositories/order.repository";
-import { createMemoryDriver } from "../test-helpers/memory-driver";
-import { setSqliteDriver } from "../adapters/sqlite";
 import { closeSyncDatabase, openSyncDatabase } from "../db/connection";
-import { getPendingCommands } from "../db/operations";
-import { resetHarness, createMockBackend, installMockTransport } from "./harness";
-import { setActiveBusiness } from "../adapters/business";
-import { commandQueueService } from "../sync/command-queue.service";
+import { resetHarness } from "./harness";
 import { orderSnapshotsService } from "../sync/order-snapshots.service";
-import { SyncEngine } from "../sync/engine";
-import { localNodeTransport } from "../sync/transport-local-node";
-import { restTransport } from "../sync/transport-rest";
-import { setItemSync } from "../adapters/kv";
-import { usePendingOrdersStore } from "../adapters/pending-orders";
-import { applyOrderStateChangeEvent, hydratePendingOrders } from "../sync/pending-orders.service";
+import { applyOrderStateChangeEvent } from "../sync/pending-orders.service";
 import { setReferenceData, mergeReferenceData, getReferenceData } from "../reference/operations";
 import { tickHLC, hlcToString } from "../utils/hlc";
 import { generateEventId } from "../utils/uuid";
-import { insertCommand } from "../db/operations";
 
 describe.sequential("E2E TEST 1 — offline create → online sync", () => {
   it("offline order immediate local visibility, queue, restart persistence, replay, one order, queue drained", async () => {
     const bid = await resetHarness("biz-e2e");
-    const backend = createMockBackend();
-    const restore = installMockTransport(backend);
-    const engine = new SyncEngine({ transports: [restTransport, localNodeTransport] });
-    commandQueueService.setSyncEngine(engine);
+    // Mock HTTP backend: records POS creates by client UUID (idempotent).
+    const received = new Map<string, unknown>();
+    setHttpClient({
+      get: async () => ({ data: { data: [], pagination: { total_pages: 1 } } }) as unknown as never,
+      post: async (url: string, body?: unknown) => {
+        if (url.includes("/pos/orders")) {
+          const id = (body as { id?: string })?.id ?? "";
+          if (!received.has(id)) received.set(id, body);
+        }
+        return { data: {} } as unknown as never;
+      },
+      put: async () => ({ data: {} }) as unknown as never,
+      patch: async () => ({ data: {} }) as unknown as never,
+      delete: async () => ({ data: {} }) as unknown as never,
+    } as never);
 
     setConnectivityState({ isOnline: false, isCloudReachable: "unreachable" });
 
-    // offline create — should queue
+    // offline create — SQLite first, sync job queued
     const itemSnap = [{ menu_item_id: "item1", name: "Jollof", quantity: 1, unit_price_minor: 5000 }];
     const res = await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 1 }], item_snapshots: itemSnap as unknown as [], total_minor: 5000, pos_payment_method: "cash" } as unknown as Parameters<typeof posRepository.createOrder>[1]);
     expect((res as { order_number: string }).order_number).toMatch(/^07-[0-9]{3}-[0-9]{3}$/);
-    const cmdId = (res as { command_id?: string }).command_id ?? "";
-    // pending overlay should contain it
-    expect(usePendingOrdersStore.getState().orders.length).toBe(1);
-    const db = await openSyncDatabase();
-    const pending = await getPendingCommands(db);
-    expect(pending.length).toBe(1);
-    // is_paid independent — cash should be paid
-    expect((usePendingOrdersStore.getState().orders[0] as unknown as { is_paid: boolean }).is_paid).toBe(true);
+    // immediate local visibility + cash paid
+    expect((await getLocalOrder(bid, res.id))?.id).toBe(res.id);
+    expect(res.is_paid).toBe(true);
+    expect(await getSyncJobsPendingCount(bid)).toBe(1);
 
-    // simulate restart: close and reopen DB, hydrate pending
+    // simulate restart: close and reopen DB — order + job survive
     await closeSyncDatabase();
     await openSyncDatabase();
-    usePendingOrdersStore.getState().setHydrated(false);
-    await hydratePendingOrders();
-    expect(usePendingOrdersStore.getState().orders.length).toBe(1);
+    expect((await getLocalOrder(bid, res.id))?.id).toBe(res.id);
+    expect(await getSyncJobsPendingCount(bid)).toBe(1);
 
-    // go online and replay (auto-replay via connectivity may already be running)
+    // go online and drain — one backend order, same UUID, queue empty
     setConnectivityState({ isOnline: true, isCloudReachable: "reachable" });
-    await new Promise((r) => setTimeout(r, 600));
-    await commandQueueService.replay();
-    await new Promise((r) => setTimeout(r, 200));
-    const after = await getPendingCommands(await openSyncDatabase());
-    expect(after.length).toBe(0);
-    expect(backend.orders.size).toBe(1);
-    const orderId = [...backend.orders.keys()][0];
-    expect(orderId).toBe(usePendingOrdersStore.getState().orders[0]?.id ?? orderId);
-
-    restore();
+    await drainPending(bid);
+    expect(await getSyncJobsPendingCount(bid)).toBe(0);
+    expect(received.size).toBe(1);
+    expect(received.has(res.id)).toBe(true);
   });
 });
 
 describe.sequential("E2E TEST 2 — idempotent replay", () => {
   it("replaying same command twice keeps same UUID no duplicate", async () => {
     const bid = await resetHarness("biz-e2e");
-    const backend = createMockBackend();
-    const restore = installMockTransport(backend);
+    const received = new Map<string, unknown>();
+    setHttpClient({
+      get: async () => ({ data: { data: [], pagination: { total_pages: 1 } } }) as unknown as never,
+      post: async (url: string, body?: unknown) => {
+        if (url.includes("/pos/orders")) {
+          const id = (body as { id?: string })?.id ?? "";
+          if (!received.has(id)) received.set(id, body);
+        }
+        return { data: {} } as unknown as never;
+      },
+      put: async () => ({ data: {} } as unknown as never),
+      patch: async () => ({ data: {} } as unknown as never),
+      delete: async () => ({ data: {} } as unknown as never),
+    } as never);
     setConnectivityState({ isOnline: false, isCloudReachable: "unreachable" });
     const itemSnap = [{ menu_item_id: "item1", name: "Jollof", quantity: 1, unit_price_minor: 5000 }];
-    await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 1 }], item_snapshots: itemSnap as never, total_minor: 5000 } as never);
-    const uuid = (usePendingOrdersStore.getState().orders[0] as unknown as { id: string }).id;
+    const res = await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 1 }], item_snapshots: itemSnap as never, total_minor: 5000 } as never);
+    expect(await getSyncJobsPendingCount(bid)).toBe(1);
+    // simulate uncertain response: re-enqueue same sync job id (idempotent) — still one pending
     const db = await openSyncDatabase();
-    const before = await getPendingCommands(db);
-    expect(before.length).toBe(1);
-    const cmd = before[0];
-    // simulate uncertain response: re-insert same command_id (idempotent) — should not create duplicate row
-    const dup: Parameters<typeof insertCommand>[1] = { command: { command_id: cmd.command_id, command_type: cmd.command_type, command_version: cmd.command_version, business_id: cmd.business_id, entity_id: cmd.entity_id, user_id: cmd.user_id, device_id: cmd.device_id, timestamp: cmd.timestamp, payload: cmd.payload } as never, status: "pending" };
-    await insertCommand(db, dup);
-    const afterDup = await getPendingCommands(db);
-    expect(afterDup.length).toBe(1);
-    expect(afterDup[0].command_id).toBe(cmd.command_id);
+    const now = new Date().toISOString();
+    await db.runAsync(
+      `INSERT OR IGNORE INTO sync_jobs (id, business_id, command_type, entity_id, payload, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?);`,
+      res.id, bid, "order:create", res.id, JSON.stringify({ id: res.id }), now, now,
+    );
+    expect(await getSyncJobsPendingCount(bid)).toBe(1);
     setConnectivityState({ isOnline: true, isCloudReachable: "reachable" });
-    await new Promise((r) => setTimeout(r, 600));
-    await commandQueueService.replay();
-    await new Promise((r) => setTimeout(r, 200));
-    const after = await getPendingCommands(await openSyncDatabase());
-    expect(after.length).toBe(0);
-    expect(backend.orders.size).toBe(1);
-    expect([...backend.orders.keys()][0]).toBe(uuid);
-    restore();
+    await drainPending(bid);
+    expect(await getSyncJobsPendingCount(bid)).toBe(0);
+    expect(received.size).toBe(1);
+    expect([...received.keys()][0]).toBe(res.id);
   });
 });
 

@@ -17,6 +17,8 @@ import { orderSnapshotsService } from "../sync/order-snapshots.service";
 import { hydratePendingOrders, applyPendingOrderEvent, applyOrderStateChangeEvent } from "../sync/pending-orders.service";
 import { usePendingOrdersStore } from "../adapters/pending-orders";
 import { syncEngine } from "../sync/engine";
+import { setAuthProvider } from "../adapters/auth";
+import { seedOpenHours } from "../test-helpers/seed-hours";
 
 /** In-memory backend mock: stores orders by UUID PK, emits events. */
 export function createMockBackend() {
@@ -77,6 +79,9 @@ export async function resetHarness(businessId = "biz-e2e") {
   setItemSync("teinc_callout_seq:biz-e2e", 0);
   setItemSync("teinc_callout_seq:biz-A", 0);
   setItemSync("teinc_callout_seq:biz-B", 0);
+  try { setAuthProvider(() => "token-e2e"); } catch {}
+  // Creation is fail-closed on operating hours — seed 24/7 so e2e creates pass.
+  await seedOpenHours(businessId).catch(() => {});
   usePendingOrdersStore.setState({ orders: [], hydrated: false });
   if (!subscribed) {
     subscribed = true;
