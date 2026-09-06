@@ -9,11 +9,10 @@ function notImpl(name: string): never {
 
 import type { SellerOrdersResponse, SellerOrderDetailResponse, BusinessDeliveriesResponse } from "../types/api/seller.api";
 
-// pos.service
+// pos.service — NOTE: no createPOSOrder slot. Order creation has exactly one
+// path: createLocalOrder (domain/orders/service). Direct-REST creation was
+// removed so the operating-hours gate can never be bypassed.
 export const posService = {
-  createPOSOrder: async (_businessId: string, _payload: unknown): Promise<{ data: unknown }> => {
-    notImpl("posService.createPOSOrder");
-  },
   fetchPOSOrderPreview: async (_businessId: string, _payload: unknown): Promise<unknown> => {
     notImpl("posService.fetchPOSOrderPreview");
   },
