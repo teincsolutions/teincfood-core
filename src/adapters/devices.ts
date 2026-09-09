@@ -9,6 +9,19 @@ import { generateUUID } from "../utils/uuid";
 let appInstanceId: string | null = null;
 const APP_ID_KEY = "teinc_app_instance_id";
 
+// For Tauri desktop, try to restore from localStorage synchronously at import to avoid async race generating a new UUID on every cargo tauri dev restart
+try {
+  if (typeof localStorage !== "undefined") {
+    const ls = localStorage.getItem(APP_ID_KEY);
+    if (ls) {
+      let v: string = ls;
+      try { if (v.startsWith('"')) v = JSON.parse(v) as string; } catch {}
+      try { if (v.startsWith('"') && v.endsWith('"')) v = JSON.parse(v) as string; } catch {}
+      if (v.length > 8) appInstanceId = v;
+    }
+  }
+} catch {}
+
 export function setAppInstanceId(id: string): void {
   appInstanceId = id;
   try { setItemSync(APP_ID_KEY, id); } catch {}
