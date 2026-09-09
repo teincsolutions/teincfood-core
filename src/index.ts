@@ -105,7 +105,13 @@ export * from "./adapters/sqlite";
 export { KVDriver, setKVDriver, getKVDriver, kvGetItem, kvSetItem, kvRemoveItem, getItem, setItem, removeItem, getItemSync, setItemSync } from "./adapters/kv";
 export * from "./adapters/connectivity";
 export * from "./adapters/http";
-export * from "./adapters/local-node";
+export * from "./local-node/types";
+export * from "./local-node/store";
+export * from "./local-node/security";
+export * from "./local-node/adapters";
+export * from "./local-node/service";
+// adapters/local-node is compat shim — export only non-conflicting
+export { setLocalNodeState } from "./adapters/local-node";
 export * from "./adapters/services";
 export * from "./adapters/devices";
 export { setAuthProvider, getAuthToken, setAuthRefreshProvider, getRefreshToken, setAuthTokensProvider, setAuthTokens, setAuthClearProvider, clearAuth } from "./adapters/auth";

@@ -6,14 +6,15 @@
  */
 
 import type { Command, DomainEvent, Transport } from "./types";
-import { useLocalNodeStore, localNodeService } from "../adapters/local-node";
+import { localNodeStore } from "../local-node/store";
+import { localNodeService } from "../local-node/service";
 import { syncLogger } from "../utils/sync-logger";
 
 export class LocalNodeTransport implements Transport {
   readonly name = "local_node";
 
   isAvailable(): boolean {
-    const store = useLocalNodeStore.getState();
+    const store = localNodeStore.getState();
     if (!store.isLocalNodeEnabled) return false;
 
     // If this device is the Local Node, it is always available.

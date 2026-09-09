@@ -16,38 +16,73 @@ export function setAppInstanceId(id: string): void {
 
 export function getAppInstanceId(): string {
   if (appInstanceId) return appInstanceId;
+  // Check localStorage first (covers Tauri webview where KVDriver async may race)
+  try {
+    const ls = typeof localStorage !== "undefined" ? localStorage.getItem(APP_ID_KEY) : null;
+    if (ls) {
+      let v: string = ls;
+      try { if (v.startsWith('"')) v = JSON.parse(v) as string; } catch {}
+      try { if (v.startsWith('"') && v.endsWith('"')) v = JSON.parse(v) as string; } catch {}
+      if (v.length > 8) { appInstanceId = v; return v; }
+    }
+  } catch {}
   try {
     const stored = getItemSync<string>(APP_ID_KEY);
     if (stored && typeof stored === "string" && stored.length > 8) {
-      appInstanceId = stored;
-      return stored;
+      let v: string = stored;
+      try { if (v.startsWith('"') && v.endsWith('"')) v = JSON.parse(v) as string; } catch {}
+      if (v.length > 8) {
+        appInstanceId = v;
+        try { if (typeof localStorage !== "undefined") localStorage.setItem(APP_ID_KEY, JSON.stringify(v)); } catch {}
+        return v;
+      }
     }
   } catch {}
   const id = generateUUID();
   appInstanceId = id;
   try { setItemSync(APP_ID_KEY, id); } catch {}
+  try { if (typeof localStorage !== "undefined") localStorage.setItem(APP_ID_KEY, JSON.stringify(id)); } catch {}
   return id;
 }
 
 export async function getAppInstanceIdAsync(): Promise<string> {
   if (appInstanceId) return appInstanceId;
+  // Try localStorage directly first (covers desktop webview where KVDriver's async getItem may race with Tauri store load)
+  try {
+    const ls = typeof localStorage !== "undefined" ? localStorage.getItem(APP_ID_KEY) : null;
+    if (ls) {
+      let v: string = ls;
+      try { if (v.startsWith('"')) v = JSON.parse(v) as string; } catch {}
+      // Handle double-stringified "\"xxx\""
+      try { if (v.startsWith('"') && v.endsWith('"')) v = JSON.parse(v) as string; } catch {}
+      if (v.length > 8) { appInstanceId = v; return v; }
+    }
+  } catch {}
   try {
     const stored = await getItem<string>(APP_ID_KEY);
+    try { const { syncLogger } = require("../utils/sync-logger"); syncLogger.debug("Devices", "getAppInstanceIdAsync getItem", { stored, len: stored?.length }); } catch {}
     if (stored && typeof stored === "string" && stored.length > 8) {
-      appInstanceId = stored;
-      return stored;
+      // Handle double-stringified case "\"xxx\"" from older builds
+      let v: string = stored;
+      try { if (v.startsWith('"') && v.endsWith('"')) v = JSON.parse(v) as string; } catch {}
+      if (v.length > 8) { appInstanceId = v; // also prime localStorage for sync fallback
+        try { if (typeof localStorage !== "undefined") localStorage.setItem(APP_ID_KEY, JSON.stringify(v)); } catch {} return v; }
     }
   } catch {}
   // fallback to sync check
   try {
     const s = getItemSync<string>(APP_ID_KEY);
+    try { const { syncLogger } = require("../utils/sync-logger"); syncLogger.debug("Devices", "getAppInstanceIdAsync getItemSync", { s, len: s?.length }); } catch {}
     if (s && typeof s === "string" && s.length > 8) {
-      appInstanceId = s;
-      return s;
+      let v: string = s;
+      try { if (v.startsWith('"') && v.endsWith('"')) v = JSON.parse(v) as string; } catch {}
+      if (v.length > 8) { appInstanceId = v; return v; }
     }
   } catch {}
   const id = generateUUID();
   appInstanceId = id;
+  try { const { syncLogger } = require("../utils/sync-logger"); syncLogger.info("Devices", "generated new appInstanceId", { id }); } catch {}
   try { await setItem(APP_ID_KEY, id); } catch { try { setItemSync(APP_ID_KEY, id); } catch {} }
+  try { if (typeof localStorage !== "undefined") localStorage.setItem(APP_ID_KEY, JSON.stringify(id)); } catch {}
   return id;
 }

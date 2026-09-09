@@ -20,18 +20,19 @@ interface LogEntry {
 function emit(entry: LogEntry): void {
   const { level, namespace, message, data } = entry;
   const tag = `[${namespace}] ${message}`;
+  const hasData = data !== undefined && data !== null && Object.keys(data as Record<string, unknown>).length > 0;
   switch (level) {
     case "debug":
-      console.debug(tag, data);
+      hasData ? console.debug(tag, data) : console.debug(tag);
       break;
     case "info":
-      console.info(tag, data);
+      hasData ? console.info(tag, data) : console.info(tag);
       break;
     case "warn":
-      console.warn(tag, data);
+      hasData ? console.warn(tag, data) : console.warn(tag);
       break;
     case "error":
-      console.error(tag, data);
+      hasData ? console.error(tag, data) : console.error(tag);
       break;
   }
 }
