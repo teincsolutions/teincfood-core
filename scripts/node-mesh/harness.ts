@@ -222,6 +222,22 @@ async function handleLine(line: string): Promise<void> {
     if (cmd === "/ready") { await doTransition(rest[0], "order:mark_ready"); return; }
     if (cmd === "/pickup") { await doTransition(rest[0], "order:complete_pickup"); return; }
     if (cmd === "/orders") { await doOrders(); return; }
+    if (cmd === "/ref") {
+      const svc = localNodeService as unknown as { peers: Map<string, { isConnected: () => boolean; requestReferenceData?: (b: string, k: string[]) => Promise<{ data?: unknown }> }> };
+      const keys = rest.length ? rest : ["menu:items", "operating-hours"];
+      let done = 0;
+      for (const [, c] of svc.peers) {
+        try {
+          if (!c.isConnected() || !c.requestReferenceData) continue;
+          const res = await c.requestReferenceData(businessId, keys);
+          const data = (res?.data ?? {}) as Record<string, unknown>;
+          console.log(`[${deviceId}] reference_response keys=${Object.keys(data).join(",") || "(empty)"}`);
+          done++;
+        } catch (e) { console.log(`[${deviceId}] reference fetch failed: ${String(e)}`); }
+      }
+      if (!done) console.log(`[${deviceId}] reference fetch: no connected peers`);
+      return;
+    }
     if (cmd === "/peers") {
       const svc = localNodeService as unknown as { peers: Map<string, { isConnected: () => boolean }> };
       if (!svc.peers || svc.peers.size === 0) { console.log(`[${deviceId}] peers: (none)`); return; }
