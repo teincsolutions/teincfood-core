@@ -12,7 +12,7 @@ import type {
   TransportAdapter,
 } from "../../src/local-node/adapters";
 import type { DiscoveredNode } from "../../src/local-node/store";
-import { deriveLanSecret, computeProof, generateNonce } from "../../src/local-node/security";
+import { computeProof, generateNonce } from "../../src/local-node/security";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 // bonjour-service is CJS
@@ -39,6 +39,8 @@ function loadTlsMaterial(): { cert: string; key: string; ca: string } | null {
   return null;
 }
 const TLS_MAT = loadTlsMaterial();
+const T = () => new Date().toISOString().slice(11, 23);
+const nlog = (...a: unknown[]) => console.log(`[${T()}]`, ...a);
 if (!TLS_MAT) console.warn("[NodeTransport] TLS material not found — falling back to plain TCP (not production-faithful)");
 
 // ---- Discovery: production-faithful mDNS via bonjour-service (_teincnode._tcp.local.) ----
@@ -115,15 +117,28 @@ export class NodeDiscovery implements DiscoveryAdapter {
         lastSeenAt: new Date().toISOString(),
       };
       this.seen.set(deviceId, node);
+      // Re-seen: cancel any pending down report.
+      const pd = (this as unknown as { _pendingDown?: Map<string, ReturnType<typeof setTimeout>> })._pendingDown;
+      const pending = pd?.get(deviceId);
+      if (pending) { clearTimeout(pending); pd!.delete(deviceId); }
       target(node);
     };
+    // Grace before reporting lost: bonjour `down`/expiry events flap, and the
+    // core service no longer kills live sockets on loss anyway — but the grace
+    // keeps the store/UI stable too. Cancelled if the peer is re-seen.
+    const pendingDown = new Map<string, ReturnType<typeof setTimeout>>();
+    (this as unknown as { _pendingDown?: typeof pendingDown })._pendingDown = pendingDown;
     const onDown = (service: { name: string; txt?: Record<string, string> }) => {
       const deviceId = service.txt?.deviceId ?? service.name;
-      if (this.seen.has(deviceId)) {
+      if (!this.seen.has(deviceId) || pendingDown.has(deviceId)) return;
+      const t = setTimeout(() => {
+        pendingDown.delete(deviceId);
+        if (!this.seen.has(deviceId)) return;
         this.seen.delete(deviceId);
-        const target = this.pub ? this.opts?.onNodeLost : this.opts?.onNodeLost;
-        target?.(deviceId);
-      }
+        this.opts?.onNodeLost?.(deviceId);
+      }, 8000);
+      if ((t as unknown as { unref?: () => void }).unref) (t as unknown as { unref: () => void }).unref();
+      pendingDown.set(deviceId, t);
     };
     (this.browser as unknown as { on: (e: string, fn: (s: unknown) => void) => void }).on("up", onUp as unknown as (s: unknown) => void);
     (this.browser as unknown as { on: (e: string, fn: (s: unknown) => void) => void }).on("down", onDown as unknown as (s: unknown) => void);
@@ -138,6 +153,8 @@ export class NodeDiscovery implements DiscoveryAdapter {
 
   stop(): void {
     this.stopScanning();
+    const pd = (this as unknown as { _pendingDown?: Map<string, ReturnType<typeof setTimeout>> })._pendingDown;
+    if (pd) { for (const t of pd.values()) clearTimeout(t); pd.clear(); }
     if (this.publishedService) {
       try { (this.publishedService as unknown as { stop: () => void }).stop?.(); } catch {}
       this.publishedService = null;
@@ -176,7 +193,7 @@ export class NodeTransport implements TransportAdapter {
     let listening = false;
 
     const handleConn = (sock: net.Socket | tls.TLSSocket) => {
-      console.log(`[NodeTransport] incoming ${sock.remoteAddress}:${sock.remotePort} -> ${opts.port} (TLS=${!!(sock as unknown as { encrypted?: boolean }).encrypted})`);
+      nlog(`[NodeTransport] incoming ${sock.remoteAddress}:${sock.remotePort} -> ${opts.port} (TLS=${!!(sock as unknown as { encrypted?: boolean }).encrypted})`);
       let buf = "";
       let authedDevice: string | null = null;
       let authed = false;
@@ -189,15 +206,16 @@ export class NodeTransport implements TransportAdapter {
           buf = buf.slice(nl + 1);
           if (!line) continue;
           let msg: unknown;
-          try { msg = JSON.parse(line); } catch { console.log(`[NodeTransport] json parse fail`); continue; }
-          if (!isRustMsg(msg)) { console.log(`[NodeTransport] not Rust msg, ignoring`); continue; }
+          try { msg = JSON.parse(line); } catch { nlog(`[NodeTransport] json parse fail`); continue; }
+          if (!isRustMsg(msg)) { nlog(`[NodeTransport] not Rust msg, ignoring`); continue; }
           const m = msg as RustMsg;
-          console.log(`[NodeTransport] msg type=${m.type} id=${m.id}`);
+          nlog(`[NodeTransport] msg type=${m.type} id=${m.id}`);
           if (m.type === "hello") {
             const deviceId = String((m.payload as { deviceId?: unknown }).deviceId ?? "");
             const businessId = String((m.payload as { businessId?: unknown }).businessId ?? "");
-            if (businessId !== opts.businessId) { console.log(`[NodeTransport] business mismatch ${businessId} != ${opts.businessId}`); rustSend(sock, "auth_fail", { reason: "business_mismatch" }, m.id); continue; }
+            if (businessId !== opts.businessId) { nlog(`[NodeTransport] business mismatch ${businessId} != ${opts.businessId}`); rustSend(sock, "auth_fail", { reason: "business_mismatch" }, m.id); continue; }
             const nonce = await generateNonce();
+            nlog(`[NodeTransport] challenge to ${deviceId} nonce=${nonce}`);
             (sock as unknown as { _nonce?: string })._nonce = nonce;
             (sock as unknown as { _deviceId?: string })._deviceId = deviceId;
             (sock as unknown as { _deviceName?: string })._deviceName = String((m.payload as { deviceName?: unknown }).deviceName ?? "");
@@ -208,7 +226,7 @@ export class NodeTransport implements TransportAdapter {
             const expectedNonce = (sock as unknown as { _nonce?: string })._nonce;
             if (!expectedNonce || nonce !== expectedNonce) { rustSend(sock, "auth_fail", { reason: "bad_nonce" }, m.id); continue; }
             const expected = await computeProof(opts.secret, nonce);
-            console.log(`[NodeTransport] auth device=${(sock as unknown as { _deviceId?: string })._deviceId} proof ok=${expected===proof}`);
+            nlog(`[NodeTransport] auth device=${(sock as unknown as { _deviceId?: string })._deviceId} proof ok=${expected===proof} got=${proof} want=${expected}`);
             if (expected !== proof) { rustSend(sock, "auth_fail", { reason: "invalid_proof" }, m.id); sock.destroy(); return; }
             authed = true;
             authedDevice = (sock as unknown as { _deviceId?: string })._deviceId ?? null;
@@ -245,13 +263,13 @@ export class NodeTransport implements TransportAdapter {
       });
       sock.on("close", () => {
         const pid = (sock as unknown as { _peerId?: string })._peerId;
-        console.log(`[NodeTransport] close peer=${pid}`);
+        nlog(`[NodeTransport] close peer=${pid}`);
         if (pid) {
           clients.delete(pid);
           opts.onClientDisconnected(pid);
         }
       });
-      sock.on("error", (e) => console.log(`[NodeTransport] sock error ${e}`));
+      sock.on("error", (e) => nlog(`[NodeTransport] sock error ${e}`));
     };
 
     return {
@@ -263,7 +281,7 @@ export class NodeTransport implements TransportAdapter {
             server = net.createServer((sock) => handleConn(sock));
           }
           server.on("error", reject);
-          server.listen(opts.port, "0.0.0.0", () => { listening = true; console.log(`[NodeTransport] LISTEN ${opts.port} TLS=${!!TLS_MAT}`); resolve(); });
+          server.listen(opts.port, "0.0.0.0", () => { listening = true; nlog(`[NodeTransport] LISTEN ${opts.port} TLS=${!!TLS_MAT}`); resolve(); });
         }),
       stop: async () =>
         new Promise<void>((resolve) => {
@@ -341,14 +359,14 @@ export class NodeTransport implements TransportAdapter {
           try { msg = JSON.parse(line); } catch { continue; }
           if (!isRustMsg(msg)) continue;
           const m = msg as RustMsg;
-          console.log(`[NodeTransport client] recv type=${m.type} id=${m.id}`);
+          nlog(`[NodeTransport client] recv type=${m.type} id=${m.id}`);
           if (m.type === "challenge") {
             const nonce = String((m.payload as { nonce?: unknown }).nonce ?? "");
             const proof = await computeProof(opts.secret, nonce);
-            console.log(`[NodeTransport client] challenge nonce=${nonce.slice(0,8)} proof=${proof.slice(0,8)}`);
+            nlog(`[NodeTransport client] challenge nonce=${nonce.slice(0,8)} proof=${proof.slice(0,8)}`);
             rustSend(s!, "auth", { nonce, proof }, m.id);
           } else if (m.type === "auth_ok") {
-            console.log(`[NodeTransport client] auth_ok -> register`);
+            nlog(`[NodeTransport client] auth_ok -> register`);
             const callerId = (globalThis as unknown as { __teincDeviceId?: string }).__teincDeviceId ?? "unknown";
             const callerName = callerId;
             rustSend(s!, "register", { deviceId: callerId, deviceName: callerName, businessId: opts.businessId }, m.id);
@@ -356,9 +374,9 @@ export class NodeTransport implements TransportAdapter {
             connected = true;
             opts.onConnected();
           } else if (m.type === "register_ack") {
-            console.log(`[NodeTransport client] register_ack`);
+            nlog(`[NodeTransport client] register_ack`);
           } else if (m.type === "auth_fail") {
-            console.log(`[NodeTransport client] auth_fail ${JSON.stringify(m.payload)}`);
+            nlog(`[NodeTransport client] auth_fail ${JSON.stringify(m.payload)}`);
             opts.onError(new Error(`auth_fail ${JSON.stringify(m.payload)}`));
             try { s!.destroy(); } catch {}
           } else if (m.type === "event") {
@@ -376,12 +394,12 @@ export class NodeTransport implements TransportAdapter {
       };
       s.setEncoding("utf-8");
       s.on("data", onData as unknown as (d: Buffer) => void);
-      s.on("close", () => { console.log(`[NodeTransport client] close`); connected = false; opts.onDisconnected(); });
-      s.on("error", (e) => { console.log(`[NodeTransport client] error ${e}`); opts.onError(e); });
+      s.on("close", () => { nlog(`[NodeTransport client] close`); connected = false; opts.onDisconnected(); });
+      s.on("error", (e) => { nlog(`[NodeTransport client] error ${e}`); opts.onError(e); });
       // Rust hello: {type:"hello", id, payload:{deviceId, deviceName, businessId}}
       const callerId = (globalThis as unknown as { __teincDeviceId?: string }).__teincDeviceId ?? "unknown";
       helloId = `${Date.now()}`;
-      console.log(`[NodeTransport client] hello device=${callerId} business=${opts.businessId}`);
+      nlog(`[NodeTransport client] hello device=${callerId} business=${opts.businessId}`);
       rustSend(s, "hello", { deviceId: callerId, deviceName: callerId, businessId: opts.businessId }, helloId);
     };
 

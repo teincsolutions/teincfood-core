@@ -52,7 +52,7 @@ const deviceId = arg("id") ?? `dev-${Math.random().toString(36).slice(2, 6)}`;
 const port = parseInt(arg("port") ?? "44621", 10);
 const deviceName = arg("name") ?? deviceId;
 const businessId = arg("business") ?? "0f0764da-53aa-48e4-ac40-3bfd8a52b0ec";
-const ownerId = arg("ownerId") ?? arg("owner_id") ?? ""; // match Desktop persisted business_data (no owner_id field) -> secret ""
+// Lib-central contract: business id only. Owner is never an input (core security.ts).
 
 (globalThis as unknown as { __teincDeviceId?: string }).__teincDeviceId = deviceId;
 setAppInstanceId(deviceId);
@@ -67,7 +67,7 @@ const transport = new NodeTransport();
 initLocalNodeService({
   getDeviceId: () => deviceId,
   getDeviceName: () => deviceName,
-  getBusiness: () => ({ id: businessId, ownerId }),
+  getBusiness: () => ({ id: businessId }),
   getAuth: () => ({ user: { id: "u1" }, accessToken: "tok" }),
   discovery,
   transport,
@@ -117,7 +117,7 @@ try {
   process.exit(1);
 }
 
-console.log(`[${deviceId}] appInstanceId=${getAppInstanceId()} port=${port} business=${businessId} owner=${ownerId.slice(0,8)}`);
+console.log(`[${deviceId}] appInstanceId=${getAppInstanceId()} port=${port} business=${businessId}`);
 console.log(`[${deviceId}] isLocalNode=${localNodeService.isLocalNode()} isConnected=${localNodeService.isConnectedToNode()}`);
 console.log(`[${deviceId}] mesh: every isLocalNodeEnabled is server+client, discovery _teincnode._tcp.local. mDNS + TLS pinned teinc-local-node (production-faithful)`);
 if (process.stdin.isTTY) console.log(`[${deviceId}] Type a line and press enter to send; peer will echo. Ctrl+C to quit.\n`);

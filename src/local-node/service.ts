@@ -89,7 +89,8 @@ class LocalNodeServiceCore {
     }
     if (this.mode !== "idle") await this.runShutdown();
     this.businessId = business.id;
-    this.secret = await deriveSecretCore(business as { id: string; ownerId?: string; owner_id?: string });
+    // Sole derivation point: lib-owned, business-only (security.ts).
+    this.secret = await deriveSecretCore({ id: business.id });
     this.mode = "mesh";
     await this.startAsNode(store.localNodePort);
     this.startDiscovery();
@@ -117,6 +118,7 @@ class LocalNodeServiceCore {
     if (this.mode === "idle") this.initialize().catch(() => undefined);
   }
   private async runShutdown(): Promise<void> {
+    this.teardownStoreSubscriptions();
     for (const c of this.peers.values()) try { c.disconnect(); } catch {}
     this.peers.clear();
     this.peerInfos.clear();
@@ -158,10 +160,11 @@ class LocalNodeServiceCore {
     // Also via server broadcast to connected clients
     try { this.server?.broadcast(event); } catch {}
   }
+  private storeUnsub: (() => void) | null = null;
   private setupStoreSubscriptions(): void {
     if (this.subscribed) return;
     this.subscribed = true;
-    localNodeStore.subscribe((state, prev) => {
+    this.storeUnsub = localNodeStore.subscribe((state, prev) => {
       if (this.mode !== "mesh") return;
       // New discovered nodes -> connect
       if (state.discoveredNodes !== prev.discoveredNodes) {
@@ -170,10 +173,16 @@ class LocalNodeServiceCore {
           if (this.peers.has(n.deviceId)) continue;
           this.connectToPeer(n);
         }
-        // Removed nodes -> disconnect
+        // Removed nodes -> drop the peer entry, but NEVER tear down a live
+        // socket on discovery loss. mDNS scans flap (a peer missing from one
+        // browse window is usually still there); killing the authenticated
+        // connection on every miss causes an infinite connect/kill loop and
+        // the UI never shows Connected. Socket close/error drives teardown
+        // (see onDisconnected); discovery only governs (re)connect attempts.
         for (const pid of [...this.peers.keys()]) {
           if (!state.discoveredNodes.find((n) => n.deviceId === pid)) {
             const c = this.peers.get(pid);
+            if (c?.isConnected()) continue;
             try { c?.disconnect(); } catch {}
             this.peers.delete(pid);
             this.peerInfos.delete(pid);
@@ -181,6 +190,11 @@ class LocalNodeServiceCore {
         }
       }
     });
+  }
+  private teardownStoreSubscriptions(): void {
+    try { this.storeUnsub?.(); } catch {}
+    this.storeUnsub = null;
+    this.subscribed = false;
   }
   private async startAsNode(port: number): Promise<void> {
     if (!this.businessId || !this.secret) throw new Error("LocalNodeService: business context missing");
@@ -228,6 +242,13 @@ class LocalNodeServiceCore {
     if (this.peers.has(node.deviceId)) {
       const c = this.peers.get(node.deviceId);
       if (c?.isConnected()) return;
+      // Stale attempt (failed/in-flight): release it before replacing so
+      // listeners/sockets don't accumulate across scan cycles. The Rust side
+      // only tears down the named connection (connId check), so a newer
+      // attempt can never be killed by this.
+      try { c?.disconnect(); } catch {}
+      this.peers.delete(node.deviceId);
+      this.peerInfos.delete(node.deviceId);
     }
     if (!this.businessId || !this.secret) { syncLogger.warn("LocalNodeService", "Cannot connect: no business context", {}); return; }
     const deps = this.getDeps();

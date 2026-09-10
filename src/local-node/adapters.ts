@@ -73,7 +73,9 @@ export interface KeepAliveAdapter {
 export interface LocalNodeDeps {
   getDeviceId: () => string | Promise<string>;
   getDeviceName?: () => string | undefined;
-  getBusiness: () => { id: string; ownerId?: string; owner_id?: string } | null;
+  // Lib-central contract: apps provide ONLY the business id. Owner fields are
+  // deliberately absent — the mesh secret is business-only (see security.ts).
+  getBusiness: () => { id: string } | null;
   getAuth: () => { user: unknown | null; accessToken: string | null };
   discovery: DiscoveryAdapter;
   transport: TransportAdapter;

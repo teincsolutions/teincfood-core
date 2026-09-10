@@ -114,6 +114,32 @@ describe("mesh local-node core", () => {
     expect(localNodeService.isConnectedToNode()).toBe(true);
   });
 
+  it("discovery flap must not kill a live peer connection", async () => {
+    const business = { id: "biz-123" };
+    const discovery = new MockDiscovery();
+    const transport = new MockTransport();
+    setAppInstanceId("device-mesh-1");
+    localNodeStore.getState().setIsLocalNodeEnabled(true);
+    initLocalNodeService({
+      getDeviceId: () => "device-mesh-1",
+      getBusiness: () => business as any,
+      getAuth: () => ({ user: { id: "u1" }, accessToken: "tok" }),
+      discovery: discovery as any,
+      transport: transport as any,
+    });
+    await localNodeService.initialize();
+    const peer = { deviceId: "device-mesh-2", name: "peer", host: "192.168.1.11", port: 44621, deviceName: "Peer 2", lastSeenAt: new Date().toISOString() };
+    localNodeStore.getState().addDiscoveredNode(peer as any);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(localNodeService.isConnectedToNode()).toBe(true);
+    // mDNS misses the peer on the next scan (flap) -> store drops it...
+    localNodeStore.getState().removeDiscoveredNode("device-mesh-2");
+    await new Promise((r) => setTimeout(r, 50));
+    // ...but the live socket must survive: still connected, no reconnect storm.
+    expect(localNodeService.isConnectedToNode()).toBe(true);
+    expect(transport.clients.length).toBe(1);
+  });
+
   it("discovery filters self and fe80", async () => {
     const discovery = new MockDiscovery();
     const transport = new MockTransport();
