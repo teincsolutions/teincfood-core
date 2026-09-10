@@ -1,6 +1,6 @@
 # LAN Mesh — single source of truth
 
-> `@teincfood/core@0.7.31`. This doc owns the mesh. Anything contradicting it
+> `@teincfood/core@0.7.32`. This doc owns the mesh. Anything contradicting it
 > (elected node, owner-derived secret, single-client, `rejectUnauthorized` bypass)
 > is stale — see cleanup log at the bottom.
 
@@ -87,6 +87,9 @@ Steady-state messages: `command {Command}` → `command_response {DomainEvent[]}
   `lan-client-connected/disconnected`, `lan-node-disconnected`).
 - Reconnect: store subscription dials new discoveries; scan-cycle redial only for
   missing/failed peers; backoff via discovery cadence + bootstrap retry (2s×30).
+  Dead (never-connected) entries never block redial — the subscription skips only
+  actually-connected peers and `connectToPeer` stale-releases the rest (`0.7.32`,
+  regression-tested: first dial refused → re-announce redials → connects).
 - Vite HMR full-reload re-runs `initialize()` → handover shutdowns + redials are
   expected in dev, not a bug. Steady state: ~0 redials.
 
@@ -131,6 +134,13 @@ business `0f0764da-53aa-48e4-ac40-3bfd8a52b0ec` · desktop
 - Harness (`scripts/node-mesh/`): two Node processes, real mDNS+TLS, same Rust
   protocol; `chat:message` echo proves the `broadcastToClients/onEvent` path.
   Hold bar: `2×LISTEN + 2×ESTABLISHED`, `0 closes/60s`, `proof ok` both ways.
+- Order flow (`/order /prepare /ready /pickup /orders`, real `node:sqlite` DB,
+  seeded DD lease + 24/7 hours, cloud forced unreachable — proven `0.7.32`):
+  A→B `01-637-001` `accepted→preparing→ready` converged same UUID both sides;
+  B→A `02-985-001` converged; single rows, no dupes.
+  Design note: LAN has no order catch-up for devices offline during the event —
+  a restarted/returning device converges via cloud replay (same UUID idempotent),
+  reference pull covers reference keys only.
 - Triangle (phone↔desktop↔harness): all cards `Connected`, echo both ways,
   redials ≈ 0 in steady state.
 
