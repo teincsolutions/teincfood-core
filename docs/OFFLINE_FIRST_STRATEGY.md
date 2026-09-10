@@ -30,15 +30,28 @@ Come online after miss: EventsService connect with {last_sequence} → EventsCha
 If transition hit while B on Dashboard (no order screen): global useRealtimeInvalidation (core single hook at app/_layout.tsx:95 / Desktop App.tsx:121) still flushes — no per-screen rootKey needed.
 ```
 
-### C. LAN mesh (>1 device, local-node, cloud may be unreachable)
+### C. LAN mesh (>1 device, every enabled device is server + client, cloud may be unreachable)
+
+> Spec: `docs/MESH.md`. No election — `isLocalNode()` means mesh active + server
+> listening, not "I am the elected one".
 ```
-Election: localNodeService.isLocalNode sync (store.electedNodeDeviceId===getAppInstanceId()) (Business sync, Desktop memoized getDeviceId).
-B (client) creates offline → same as A 1 → local publish: if !isLocalNode() getClient().publishEvent(event) (use-sync-reconciliation:85-97 reference path) + order.* local insertEvent origin:local → node's onRelayEvent receive.
-Relay: node A isLocalNode → broadcastToClients(event) → clients B/C applyPendingOrderEvent origin:lan + applyQueuedStatusEvent origin:lan + upsert pending + debounced invalidate, with business_id filter if payload.business_id !== activeBusinessId → drop (subnet shared by two businesses).
-Online+LAN mixed: B queued, A online replay → business:{id} broadcast → LAN clients dedup by (type,_sequence) and event_id ON CONFLICT, one flush. B later online replay dedup by UUIDv4 PK idempotent.
-Menu/tax LAN: bump_version reference_data.ex:86 → Events.emit reference_data.changed nil,business_id {keys:[k], version} on business:{id} → LAN peers applyReferenceChangeEvent → referenceSyncService.sync via fetcher: Desktop if isLocalNode getReferenceData(db) else client.requestReferenceData (bootstrap 340 vs Business 289 node-serve added).
+B (mesh-enabled) creates offline → same as A 1 (queue + insertEvent origin:local + pending overlay).
+Engine strategy: cloud (reachable or unknown) → local_node (mesh active) → queue, so B routes
+order:create through LocalNodeTransport → handleNodeCommand → createLocalOrder (lib guards)
+→ order:sync event with FULL order payload → broadcastToClients → A/C apply via insertOrder
++ applyPendingOrderEvent origin:lan + debounced invalidate, with business_id filter
+(payload.business_id !== activeBusinessId → drop, subnet may be shared by two businesses).
+Transitions (accept/preparing/ready/cash): originator → transitionLocalOrder →
+order:sync {action, orderId} → broadcast → peers transitionLocalOrder + applyOrderStateChangeEvent.
+Online+LAN mixed: any mesh-active device replays queue to cloud → business:{id} broadcast →
+LAN peers dedup by event_id ON CONFLICT + PHX sequence, one flush. Late-online device replays
+same UUIDv4 idempotent.
+Menu/tax LAN: reference_data.changed events relay via onRelayEvent → applyReferenceChangeEvent
+→ referenceSyncService.sync; explicit pull via requestReferenceData (reference_fetch/response)
+when a peer needs keys.
 Per-field LWW not used; per-key last-HLC via reference_versions version wall-counter-backend.
-Filtering: both applyOrderStatusToReadModelInternal and getEntitySnapshotsByType are business_id strict, so device viewing B never sees A's orders even on shared subnet.
+Filtering: applyOrderStatusToReadModelInternal + getEntitySnapshotsByType are business_id strict,
+so a device on business B never sees A's orders even on a shared subnet.
 ```
 
 ## 3. Real-Time Events — How, When, Where

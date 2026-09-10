@@ -1,6 +1,6 @@
 # @teincfood/core — Architecture
 
-> `@teincfood/core@0.7.10` Food-specific, platform-independent. Business/Desktop share sync semantics via adapters.
+> `@teincfood/core@0.7.31` Food-specific, platform-independent. Business/Desktop share sync semantics via adapters. LAN mesh spec: `docs/MESH.md` (this doc's §11 is a summary; MESH.md wins on conflict).
 
 ## 1. @teincfood/core Architecture
 UI → Hooks (`hooks/orders.hooks`) → Repository (`repositories/order, pos`) → `@teincfood/core` → SQLite (`db/connection`, `db/operations`) → SyncEngine (`sync/engine`) → Cloud/LAN/Phoenix → Reconciliation (`sync/use-sync-reconciliation` 400ms Set) → SQLite → UI. See `docs/AUDIT.md:I`.
@@ -32,8 +32,13 @@ Commands→events→queue→journal→retry→replay→idempotency→reconciliat
 ## 10. Phoenix Realtime
 `business:{id}` (`events.ex:79`→`events_channel:77`→`realtime/events.service:17` `events:<userId> {business_id,last_sequence}`) with `lastSequence` dedup. Flow: Phoenix → Realtime adapter → core event handling → Event journal → SQLite → Reconciliation → UI. No per-screen hooks.
 
-## 11. LAN / Local Node
-`localNodeTransport` (§28) `isLocalNode` election via `devices` + `local-node` adapter. `publishEvent` if client, `broadcastToClients` if node, business_id strict filter (`use-sync-reconciliation:108`), no echo loop, origin preserved.
+## 11. LAN / Local Node (mesh — full spec `docs/MESH.md`)
+Mesh, no election: every `isLocalNodeEnabled` device runs a TLS server + dials peers.
+`localNodeService.isLocalNode()` = mesh active + server listening. `handleNodeCommand`
+executes `order:create`/transitions via lib guards and broadcasts `order:sync`;
+`LocalNodeTransport` routes engine commands to it (self) or the first connected peer.
+`broadcastToClients` fans out to all peers; `business_id` strict filter
+(`use-sync-reconciliation:108`), no echo loop, origin preserved (`local/lan/cloud`).
 
 ## 12. Cloud + LAN Convergence
 Same `id:UUIDv4` via 3 paths (local/lan/cloud). `event_id ON CONFLICT`, `entity UUID`, `Phoenix sequence`, `origin`, persistent journal, dedup, no echo loop (§31). `event_id` + `DD-RRR-CCC` RRR regen same UUID on 409.

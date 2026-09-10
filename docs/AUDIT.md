@@ -1,5 +1,12 @@
 # Pre-Implementation Audit — @teincfood/core vs Offline-First Strategy
 
+> HISTORICAL SNAPSHOT as of `0.7.10`. Kept for audit trail only.
+> Current mesh spec is `docs/MESH.md` — in particular §Q below describes the old
+> elected-node model and is SUPERSEDED (mesh: no election, `isLocalNode()` =
+> mesh active + server listening, secret = `SHA256("teinc-lan:{businessId}:")`).
+> Current architecture: `docs/CORE_ARCHITECTURE.md`. Current strategy:
+> `docs/OFFLINE_FIRST_STRATEGY.md`.
+
 > Package: `@teincfood/core` `0.7.10` (`src/index.ts:1`). Never `@teinc/core`.
 
 ## A. Existing Architecture — CONFIRMED FROM EXISTING CODE
