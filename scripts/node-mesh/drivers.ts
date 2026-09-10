@@ -318,10 +318,11 @@ export class NodeTransport implements TransportAdapter {
       if (TLS_MAT) {
         try {
           s = await new Promise<tls.TLSSocket>((resolve, reject) => {
-            // Use IP ServerName for 192.168.x, DNS for *.local — same as Rust client.rs
-            // Present client cert to satisfy Rust server's AcceptAnyClient (avoids "certificate required" alert)
+            // Server uses with_no_client_auth (proof is the auth) — present no
+            // client cert. (A leftover cert here once interacted badly with the
+            // Rust acceptor, stalling the handshake with no server reply.)
             const serverName = /^\d+\.\d+\.\d+\.\d+$/.test(opts.node.host) ? undefined : "teinc-local-node";
-            const tlsOpts: tls.ConnectionOptions = { host: opts.node.host, port: opts.node.port, ca: TLS_MAT!.ca, cert: TLS_MAT!.cert, key: TLS_MAT!.key, rejectUnauthorized: false };
+            const tlsOpts: tls.ConnectionOptions = { host: opts.node.host, port: opts.node.port, ca: TLS_MAT!.ca, rejectUnauthorized: false };
             if (serverName) tlsOpts.servername = serverName;
             const tlsSock = tls.connect(tlsOpts, () => resolve(tlsSock as tls.TLSSocket));
             tlsSock.once("error", reject);
@@ -363,8 +364,13 @@ export class NodeTransport implements TransportAdapter {
           if (m.type === "challenge") {
             const nonce = String((m.payload as { nonce?: unknown }).nonce ?? "");
             const proof = await computeProof(opts.secret, nonce);
-            nlog(`[NodeTransport client] challenge nonce=${nonce.slice(0,8)} proof=${proof.slice(0,8)}`);
-            rustSend(s!, "auth", { nonce, proof }, m.id);
+            nlog(`[NodeTransport client] challenge nonce=${nonce.slice(0,8)} proof=${proof.slice(0,8)} -> ${opts.node.host}:${opts.node.port}`);
+            try {
+              rustSend(s!, "auth", { nonce, proof }, m.id);
+              nlog(`[NodeTransport client] auth sent -> ${opts.node.host}:${opts.node.port}`);
+            } catch (e) {
+              nlog(`[NodeTransport client] auth send FAILED -> ${opts.node.host}:${opts.node.port}: ${String(e)}`);
+            }
           } else if (m.type === "auth_ok") {
             nlog(`[NodeTransport client] auth_ok -> register`);
             const callerId = (globalThis as unknown as { __teincDeviceId?: string }).__teincDeviceId ?? "unknown";
@@ -399,7 +405,7 @@ export class NodeTransport implements TransportAdapter {
       // Rust hello: {type:"hello", id, payload:{deviceId, deviceName, businessId}}
       const callerId = (globalThis as unknown as { __teincDeviceId?: string }).__teincDeviceId ?? "unknown";
       helloId = `${Date.now()}`;
-      nlog(`[NodeTransport client] hello device=${callerId} business=${opts.businessId}`);
+      nlog(`[NodeTransport client] hello device=${callerId} business=${opts.businessId} -> ${opts.node.host}:${opts.node.port}`);
       rustSend(s, "hello", { deviceId: callerId, deviceName: callerId, businessId: opts.businessId }, helloId);
     };
 

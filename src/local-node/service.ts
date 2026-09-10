@@ -94,6 +94,7 @@ class LocalNodeServiceCore {
     this.mode = "mesh";
     await this.startAsNode(store.localNodePort);
     this.startDiscovery();
+    this.startPeerSweep();
     // Connect to already discovered peers
     for (const n of localNodeStore.getState().discoveredNodes) {
       if (n.deviceId !== thisDeviceId) this.connectToPeer(n);
@@ -119,6 +120,10 @@ class LocalNodeServiceCore {
   }
   private async runShutdown(): Promise<void> {
     this.teardownStoreSubscriptions();
+    this.stopPeerSweep();
+    this.dialInFlight.clear();
+    for (const t of this.dialTimers.values()) try { clearTimeout(t); } catch {}
+    this.dialTimers.clear();
     for (const c of this.peers.values()) try { c.disconnect(); } catch {}
     this.peers.clear();
     this.peerInfos.clear();
@@ -239,8 +244,37 @@ class LocalNodeServiceCore {
     });
     deps.discovery.startScanning();
   }
+  private dialInFlight = new Set<string>();
+  private dialTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  private startPeerSweep(): void {
+    // mDNS is lossy: browse windows miss peers and re-announces are not
+    // guaranteed, so discovery events alone cannot drive (re)dial. Sweep
+    // every 15s; connectToPeer self-guards (connected or in-flight → skip),
+    // so the steady state cost is one connected-check per known peer.
+    this.stopPeerSweep();
+    this.sweepTimer = setInterval(() => {
+      try {
+        if (this.mode !== "mesh") return;
+        for (const n of localNodeStore.getState().discoveredNodes) {
+          if (n.deviceId === this.cachedDeviceId) continue;
+          if (this.peers.get(n.deviceId)?.isConnected()) continue;
+          this.connectToPeer(n);
+        }
+      } catch {}
+    }, 15_000);
+    try { (this.sweepTimer as unknown as { unref?: () => void }).unref?.(); } catch {}
+  }
+  private stopPeerSweep(): void {
+    if (this.sweepTimer) { try { clearInterval(this.sweepTimer); } catch {} this.sweepTimer = null; }
+  }
   private connectToPeer(node: DiscoveredNode): void {
     if (this.mode !== "mesh") return;
+    // One dial per peer at a time: discovery fires in bursts (initial browse,
+    // re-announces) and parallel dials destroy each other's sockets mid-
+    // handshake — a livelock where nothing ever completes. A second attempt
+    // while one is in flight is always redundant.
+    if (this.dialInFlight.has(node.deviceId)) return;
     if (this.peers.has(node.deviceId)) {
       const c = this.peers.get(node.deviceId);
       if (c?.isConnected()) return;
@@ -281,11 +315,13 @@ class LocalNodeServiceCore {
         applyOrderStateChangeEvent(event, "lan").catch((e) => syncLogger.error("LocalNodeService", "Failed to apply LAN order state", { error: String(e), event_type: event.event_type }));
       },
       onConnected: () => {
+        this.settleDial(node.deviceId);
         syncLogger.info("LocalNodeService", "Connected to peer", { deviceId: node.deviceId });
         this.peerInfos.set(node.deviceId, { deviceId: node.deviceId, host: node.host, port: node.port });
         localNodeStore.getState().addConnectedClient({ deviceId: node.deviceId, deviceName: node.deviceName, host: node.host, connectedAt: new Date().toISOString() });
       },
       onDisconnected: () => {
+        this.settleDial(node.deviceId);
         syncLogger.warn("LocalNodeService", "Disconnected from peer", { deviceId: node.deviceId });
         this.peers.delete(node.deviceId);
         this.peerInfos.delete(node.deviceId);
@@ -295,11 +331,37 @@ class LocalNodeServiceCore {
     });
     this.peers.set(node.deviceId, client);
     this.peerInfos.set(node.deviceId, { deviceId: node.deviceId, host: node.host, port: node.port });
+    this.dialInFlight.add(node.deviceId);
+    // Wedged-handshake reaper: if neither connected nor failed within the TTL
+    // (no callback ever fires), release the socket so the next discovery
+    // redials instead of piling up parallel attempts.
+    try { clearTimeout(this.dialTimers.get(node.deviceId)); } catch {}
+    const ttl = setTimeout(() => {
+      this.dialTimers.delete(node.deviceId);
+      if (!this.dialInFlight.has(node.deviceId)) return;
+      this.dialInFlight.delete(node.deviceId);
+      const c = this.peers.get(node.deviceId);
+      if (c && !c.isConnected()) {
+        syncLogger.debug("LocalNodeService", "Dial TTL expired, reaping wedged attempt", { deviceId: node.deviceId });
+        try { c.disconnect(); } catch {}
+        this.peers.delete(node.deviceId);
+        this.peerInfos.delete(node.deviceId);
+      }
+    }, 10_000);
+    // Never hold the process (or test runner) open for a wedged peer.
+    try { (ttl as unknown as { unref?: () => void }).unref?.(); } catch {}
+    this.dialTimers.set(node.deviceId, ttl);
     client.connect().catch((e) => {
+      this.settleDial(node.deviceId);
       syncLogger.debug("LocalNodeService", "Peer connect failed, will retry on next discovery", { error: String(e), deviceId: node.deviceId });
       // Keep peer entry so next discovery will retry; or remove to allow fresh connect
       // For mesh, keep and let discovery re-add
     });
+  }
+  private settleDial(deviceId: string): void {
+    this.dialInFlight.delete(deviceId);
+    const t = this.dialTimers.get(deviceId);
+    if (t) { try { clearTimeout(t); } catch {} this.dialTimers.delete(deviceId); }
   }
   async handleNodeCommand(command: Command): Promise<DomainEvent | null> {
     syncLogger.command(command, "executing", { via: "local_node" });

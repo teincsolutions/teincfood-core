@@ -222,6 +222,32 @@ async function handleLine(line: string): Promise<void> {
     if (cmd === "/ready") { await doTransition(rest[0], "order:mark_ready"); return; }
     if (cmd === "/pickup") { await doTransition(rest[0], "order:complete_pickup"); return; }
     if (cmd === "/orders") { await doOrders(); return; }
+    if (cmd === "/peers") {
+      const svc = localNodeService as unknown as { peers: Map<string, { isConnected: () => boolean }> };
+      if (!svc.peers || svc.peers.size === 0) { console.log(`[${deviceId}] peers: (none)`); return; }
+      for (const [id, c] of svc.peers) {
+        let conn = "?";
+        try { conn = String(c.isConnected()); } catch (e) { conn = `err ${String(e)}`; }
+        console.log(`[${deviceId}] peer ${id} connected=${conn}`);
+      }
+      return;
+    }
+    if (cmd === "/redial") {
+      const target = rest[0];
+      const svc = localNodeService as unknown as { peers: Map<string, { disconnect: () => void }>; reconnectNow: () => void };
+      if (target) {
+        const s = localNodeStore.getState();
+        const node = s.discoveredNodes.find((n) => n.deviceId === target || n.deviceId.startsWith(target));
+        if (!node) { console.log(`[${deviceId}] redial: unknown peer ${target}`); return; }
+        try { svc.peers.get(node.deviceId)?.disconnect(); } catch {}
+        (svc.peers as Map<string, unknown>).delete(node.deviceId);
+        console.log(`[${deviceId}] redial: dropped entry for ${node.deviceId}, reconnecting now`);
+      } else {
+        console.log(`[${deviceId}] redial: reconnecting all missing peers now`);
+      }
+      try { svc.reconnectNow(); } catch (e) { console.log(`[${deviceId}] reconnectNow failed: ${String(e)}`); }
+      return;
+    }
     const ev: DomainEvent = {
       event_id: `${deviceId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       event_type: "chat:message" as unknown as DomainEvent["event_type"],

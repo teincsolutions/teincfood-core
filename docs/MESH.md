@@ -1,6 +1,6 @@
 # LAN Mesh — single source of truth
 
-> `@teincfood/core@0.7.32`. This doc owns the mesh. Anything contradicting it
+> `@teincfood/core@0.7.33`. This doc owns the mesh. Anything contradicting it
 > (elected node, owner-derived secret, single-client, `rejectUnauthorized` bypass)
 > is stale — see cleanup log at the bottom.
 
@@ -90,6 +90,15 @@ Steady-state messages: `command {Command}` → `command_response {DomainEvent[]}
   Dead (never-connected) entries never block redial — the subscription skips only
   actually-connected peers and `connectToPeer` stale-releases the rest (`0.7.32`,
   regression-tested: first dial refused → re-announce redials → connects).
+- One dial per peer at a time (`dialInFlight` + 10s wedged-handshake reaper +
+  15s peer sweep so quiet mDNS can't strand dead peers, `0.7.33`, all
+  regression-tested). Discovery bursts used to spawn parallel dials that
+  destroyed each other mid-handshake — a livelock where nothing completed.
+  Rust mirrors this: one handshake per host:port (`connecting` set, fail fast).
+- Rust lock discipline: never hold the server `peers` guard across `.await`
+  (tokio Mutex). A nested lock in the auth path silently stalled every
+  same-business handshake after `auth ok`; `broadcast/respond` paths cloned
+  senders first for the same reason. Server `send_to`/write-pump log drops.
 - Vite HMR full-reload re-runs `initialize()` → handover shutdowns + redials are
   expected in dev, not a bug. Steady state: ~0 redials.
 

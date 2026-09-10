@@ -189,6 +189,89 @@ describe("mesh local-node core", () => {
     expect(localNodeService.isConnectedToNode()).toBe(true);
   });
 
+  it("discovery bursts collapse to one dial per peer", async () => {
+    const business = { id: "biz-123" };
+    const discovery = new MockDiscovery();
+    const transport = new MockTransport();
+    let dials = 0;
+    transport.createClient = () => {
+      dials++;
+      const c = {
+        // Hang forever: handshake never settles (the wedged-socket case).
+        connect: async () => { await new Promise(() => {}); },
+        disconnect: () => {},
+        isConnected: () => false,
+        execute: async () => [],
+        requestReferenceData: async () => ({ data: {} }),
+      };
+      transport.clients.push(c);
+      return c;
+    };
+    setAppInstanceId("device-mesh-1");
+    localNodeStore.getState().setIsLocalNodeEnabled(true);
+    initLocalNodeService({
+      getDeviceId: () => "device-mesh-1",
+      getBusiness: () => business as any,
+      getAuth: () => ({ user: { id: "u1" }, accessToken: "tok" }),
+      discovery: discovery as any,
+      transport: transport as any,
+    });
+    await localNodeService.initialize();
+    const peer = { deviceId: "device-mesh-2", name: "peer", host: "192.168.1.11", port: 44621, deviceName: "Peer 2", lastSeenAt: new Date().toISOString() };
+    // Initial browse burst: same peer announced 4x in milliseconds.
+    localNodeStore.getState().addDiscoveredNode(peer as any);
+    localNodeStore.getState().removeDiscoveredNode("device-mesh-2");
+    localNodeStore.getState().addDiscoveredNode({ ...peer } as any);
+    localNodeStore.getState().removeDiscoveredNode("device-mesh-2");
+    localNodeStore.getState().addDiscoveredNode({ ...peer } as any);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(dials).toBe(1);
+    expect(transport.clients.length).toBe(1);
+  });
+
+  it("peer sweep redials quiet-network dead peers without discovery events", async () => {
+    const { vi } = await import("vitest");
+    vi.useFakeTimers();
+    try {
+      const business = { id: "biz-123" };
+      const discovery = new MockDiscovery();
+      const transport = new MockTransport();
+      let dials = 0;
+      transport.createClient = () => {
+        dials++;
+        const c = {
+          connect: async () => { throw new Error("connect ECONNREFUSED"); },
+          disconnect: () => {},
+          isConnected: () => false,
+          execute: async () => [],
+          requestReferenceData: async () => ({ data: {} }),
+        };
+        transport.clients.push(c);
+        return c;
+      };
+      setAppInstanceId("device-mesh-1");
+      localNodeStore.getState().setIsLocalNodeEnabled(true);
+      initLocalNodeService({
+        getDeviceId: () => "device-mesh-1",
+        getBusiness: () => business as any,
+        getAuth: () => ({ user: { id: "u1" }, accessToken: "tok" }),
+        discovery: discovery as any,
+        transport: transport as any,
+      });
+      await localNodeService.initialize();
+      const peer = { deviceId: "device-mesh-2", name: "peer", host: "192.168.1.11", port: 44621, deviceName: "Peer 2", lastSeenAt: new Date().toISOString() };
+      localNodeStore.getState().addDiscoveredNode(peer as any);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(dials).toBe(1);
+      // No further discovery events, no mDNS traffic at all: the 15s sweep
+      // alone must redial (TTL reaps the dead entry at 10s, sweep redials).
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(dials).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("discovery filters self and fe80", async () => {
     const discovery = new MockDiscovery();
     const transport = new MockTransport();
