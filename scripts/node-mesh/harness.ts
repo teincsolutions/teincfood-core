@@ -2,23 +2,31 @@
 /**
  * Two-process LAN proof — lib alone.
  * Each process gets its own --id (assumed deviceId already set), its own --port, own KV.
+ * Real mDNS + TLS (production-faithful), real in-memory SQLite (node:sqlite) with
+ * migrations + seeded DD lease + 24/7 hours, cloud forced unreachable.
  * Usage:
- *   node -r tsx scripts/node-mesh/harness.ts --id device-A --port 44621
- *   node -r tsx scripts/node-mesh/harness.ts --id device-B --port 44622
- * Then type a line in one, the other prints and echoes `echo: <line>` back.
- * Both go over real TCP (127.0.0.1) via file rendezvous discovery, no Business/Desktop.
+ *   node -r tsx scripts/node-mesh/harness.ts --id device-A --port 44631 [--dd 01]
+ *   node -r tsx scripts/node-mesh/harness.ts --id device-B --port 44632 [--dd 02]
+ * Chat: type a line, peer prints and echoes `echo: <line>` back.
+ * Orders: /order [label] → order:create via handleNodeCommand → order:sync to peer
+ *   /prepare <id> /ready <id> /pickup <id> → transitions → order:sync {action}
+ *   /orders → local orders table. Peer prints order:sync receipt + local verify.
  */
 
 import * as readline from "node:readline";
 import * as fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import { localNodeStore } from "../../src/local-node/store";
 import { localNodeService, initLocalNodeService } from "../../src/local-node/service";
 import { setKVDriver } from "../../src/adapters/kv";
 import { setAppInstanceId, getAppInstanceId } from "../../src/adapters/devices";
 import { setConnectivityState } from "../../src/adapters/connectivity";
 import { syncLogger } from "../../src/utils/sync-logger";
+import { openSyncDatabase } from "../../src/db/connection";
+import { getOrderById } from "../../src/db/operations";
 import { NodeDiscovery, NodeTransport } from "./drivers";
-import type { DomainEvent } from "../../src/sync/types";
+import { installNodeSqlite, seedHarness } from "./sqlite-node";
+import type { DomainEvent, Command } from "../../src/sync/types";
 
 // In-memory KV per process
 const mem = new Map<string, string>();
@@ -31,15 +39,9 @@ const drv = {
 };
 setKVDriver(drv as unknown as Parameters<typeof setKVDriver>[0]);
 
-// In-memory SQLite no-op so openSyncDatabase not needed for chat flow
-// The service's handleNodeCommand fallback to commandQueue needs DB; we stub it for chat.
-import { setSqliteDriver } from "../../src/adapters/sqlite";
-setSqliteDriver({
-  getFirstAsync: async () => null,
-  getAllAsync: async () => [],
-  runAsync: async () => ({ lastInsertRowId: 0, changes: 0 }),
-  execAsync: async () => {},
-} as unknown as Parameters<typeof setSqliteDriver>[0]);
+// Real in-memory SQLite (node:sqlite) so order flows run production code:
+// migrations, guards, insertOrder/transitionLocalOrder all execute.
+installNodeSqlite();
 
 function arg(name: string, def?: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -56,6 +58,12 @@ const businessId = arg("business") ?? "0f0764da-53aa-48e4-ac40-3bfd8a52b0ec";
 
 (globalThis as unknown as { __teincDeviceId?: string }).__teincDeviceId = deviceId;
 setAppInstanceId(deviceId);
+
+// Simulate offline terminal: cloud unreachable → engine/LAN paths stay local,
+// DD lease + 24/7 hours seeded so lib guards pass without a backend.
+setConnectivityState({ isOnline: false, isCloudReachable: "unreachable" });
+const dd = arg("dd") ?? (deviceId.endsWith("A") ? "01" : "02");
+await seedHarness(businessId, dd);
 
 // Make store believe enabled before init
 localNodeStore.getState().setIsLocalNodeEnabled(true);
@@ -80,7 +88,22 @@ const origEvent: (e: unknown, ...a: unknown[]) => void = (syncLogger as unknown 
 (syncLogger as unknown as { event: unknown }).event = ((ev: unknown, ...rest: unknown[]) => {
   origEvent(ev as DomainEvent, ...rest);
   const e = ev as DomainEvent;
-  if ((e.event_type as string) === "chat:message") {
+  if ((e.event_type as string) === "order:sync") {
+    const p = e.payload as { order_number?: string; status?: string; action?: string; orderId?: string; id?: string };
+    const num = p.order_number ?? (p.id as string | undefined) ?? e.entity_id;
+    const detail = p.action ? `action=${p.action} order=${p.orderId}` : `order=${num} status=${p.status}`;
+    console.log(`\n[${deviceId}] <- order:sync from ${e.device_id}: ${detail}`);
+    // Verify convergence: the apply path should have written our local DB.
+    void (async () => {
+      try {
+        const db = await openSyncDatabase();
+        const row = await getOrderById(db, businessId, e.entity_id);
+        console.log(`[${deviceId}]    local verify: ${row ? `FOUND ${row.order_number} status=${row.status}` : "NOT YET (apply in flight)"}`);
+      } catch (err) { console.log(`[${deviceId}]    local verify failed: ${String(err)}`); }
+    })();
+    setTimeout(() => { try { const r = (globalThis as unknown as { __rl?: readline.Interface }).__rl; if (r && !(r as unknown as { closed?: boolean }).closed) r.prompt(true); } catch {} }, 0);
+    return;
+  }  if ((e.event_type as string) === "chat:message") {
     const p = e.payload as { text?: string; from?: string; echo?: boolean; id?: string };
     if (p.from === deviceId) return; // own broadcast
     const text = String(p.text ?? "");
@@ -135,31 +158,89 @@ setInterval(() => {
   // quiet unless changed, but heartbeat every 5s
 }, 5000).unref();
 
-rl.on("line", (line) => {
-  const text = line.trim();
-  if (!text) { rl.prompt(); return; }
-  if (text === "/status") {
-    const s = localNodeStore.getState();
-    console.log(`  isLocalNodeEnabled=${s.isLocalNodeEnabled} port=${s.localNodePort} discovered=${s.discoveredNodes.length} connected=${s.connectedClients.length} isLocalNode=${localNodeService.isLocalNode()} isConnected=${localNodeService.isConnectedToNode()}`);
-    console.log(`  discovered: ${s.discoveredNodes.map((n) => `${n.deviceId}@${n.host}:${n.port}`).join(", ") || "(none)"}`);
-    console.log(`  clients: ${s.connectedClients.map((c) => c.deviceId).join(", ") || "(none)"}`);
-    rl.prompt();
-    return;
-  }
-  if (text === "/quit" || text === "/exit") { process.exit(0); }
-  const ev: DomainEvent = {
-    event_id: `${deviceId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    event_type: "chat:message" as unknown as DomainEvent["event_type"],
-    event_version: "1",
-    entity_id: deviceId,
+function buildCommand(type: string, entityId: string, payload: Record<string, unknown>): Command {
+  return {
+    command_id: randomUUID(),
+    command_type: type,
+    business_id: businessId,
+    entity_id: entityId,
     user_id: "u1",
     device_id: deviceId,
-    payload: { text, from: deviceId, echo: false, id: deviceId } as unknown as Record<string, unknown>,
-    timestamp: new Date().toISOString(),
-  };
-  console.log(`[${deviceId}] → broadcast: ${text}`);
-  localNodeService.broadcastToClients(ev);
-  rl.prompt();
+    created_at: new Date().toISOString(),
+    payload,
+  } as Command;
+}
+
+async function doOrder(label: string): Promise<void> {
+  const id = randomUUID();
+  const evt = await localNodeService.handleNodeCommand(buildCommand("order:create", id, {
+    items: [{ menu_item_id: "m-jollof", quantity: 1 }],
+    item_snapshots: [{ menu_item_id: "m-jollof", name: "Jollof Rice", quantity: 1, unit_price_minor: 5000 }],
+    total_minor: 5000,
+    subtotal_minor: 5000,
+    pos_payment_method: "cash",
+    order_type: "takeout",
+    customer_name: label || "Walk-in",
+  }));
+  const o = evt?.payload as { id?: string; order_number?: string; status?: string } | undefined;
+  console.log(`[${deviceId}] order created id=${o?.id} number=${o?.order_number} status=${o?.status}`);
+}
+
+async function doTransition(orderId: string, commandType: string): Promise<void> {
+  const evt = await localNodeService.handleNodeCommand(buildCommand(commandType, orderId, { orderId }));
+  const p = evt?.payload as { action?: string; orderId?: string } | undefined;
+  const db = await openSyncDatabase();
+  const row = await getOrderById(db, businessId, orderId);
+  console.log(`[${deviceId}] ${commandType} → broadcast action=${p?.action} local status=${row?.status} (${row?.order_number})`);
+}
+
+async function doOrders(): Promise<void> {
+  const db = await openSyncDatabase();
+  const rows = await db.getAllAsync<{ id: string; order_number: string; status: string }>(
+    `SELECT id, order_number, status FROM orders WHERE business_id = ? ORDER BY inserted_at;`,
+    businessId,
+  );
+  if (!rows.length) { console.log(`[${deviceId}] orders: (none)`); return; }
+  for (const r of rows) console.log(`[${deviceId}] order ${r.order_number} ${r.id.slice(0, 8)} status=${r.status}`);
+}
+
+async function handleLine(line: string): Promise<void> {
+  const text = line.trim();
+  if (!text) return;
+  const [cmd, ...rest] = text.split(/\s+/);
+  try {
+    if (cmd === "/status") {
+      const s = localNodeStore.getState();
+      console.log(`  isLocalNodeEnabled=${s.isLocalNodeEnabled} port=${s.localNodePort} discovered=${s.discoveredNodes.length} connected=${s.connectedClients.length} isLocalNode=${localNodeService.isLocalNode()} isConnected=${localNodeService.isConnectedToNode()}`);
+      console.log(`  discovered: ${s.discoveredNodes.map((n) => `${n.deviceId}@${n.host}:${n.port}`).join(", ") || "(none)"}`);
+      console.log(`  clients: ${s.connectedClients.map((c) => c.deviceId).join(", ") || "(none)"}`);
+      return;
+    }
+    if (cmd === "/quit" || cmd === "/exit") { process.exit(0); }
+    if (cmd === "/order") { await doOrder(rest.join(" ")); return; }
+    if (cmd === "/prepare") { await doTransition(rest[0], "order:start_preparing"); return; }
+    if (cmd === "/ready") { await doTransition(rest[0], "order:mark_ready"); return; }
+    if (cmd === "/pickup") { await doTransition(rest[0], "order:complete_pickup"); return; }
+    if (cmd === "/orders") { await doOrders(); return; }
+    const ev: DomainEvent = {
+      event_id: `${deviceId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      event_type: "chat:message" as unknown as DomainEvent["event_type"],
+      event_version: "1",
+      entity_id: deviceId,
+      user_id: "u1",
+      device_id: deviceId,
+      payload: { text, from: deviceId, echo: false, id: deviceId } as unknown as Record<string, unknown>,
+      timestamp: new Date().toISOString(),
+    };
+    console.log(`[${deviceId}] → broadcast: ${text}`);
+    localNodeService.broadcastToClients(ev);
+  } catch (e) {
+    console.log(`[${deviceId}] command failed: ${String(e)}`);
+  }
+}
+
+rl.on("line", (line) => {
+  void handleLine(line).finally(() => { try { rl.prompt(); } catch {} });
 });
 
 // Keep process alive even when stdin is not a TTY (backgrounded proof).
@@ -168,25 +249,14 @@ if (!process.stdin.isTTY) {
   // Background mode: keep alive, also accept commands via FIFO /tmp/mesh-<id>.cmd
   const fifo = `/tmp/mesh-${deviceId}.cmd`;
   try { fs.writeFileSync(fifo, ""); } catch {}
-  // Poll fifo for commands
+  // Poll fifo for commands (chat lines or /order /prepare /ready /pickup /orders /status)
   setInterval(() => {
     try {
       const txt = fs.readFileSync(fifo, "utf-8").trim();
       if (txt) {
         fs.writeFileSync(fifo, "");
-        // treat fifo content as a line to send
-        const ev: DomainEvent = {
-          event_id: `${deviceId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          event_type: "chat:message" as unknown as DomainEvent["event_type"],
-          event_version: "1",
-          entity_id: deviceId,
-          user_id: "u1",
-          device_id: deviceId,
-          payload: { text: txt, from: deviceId, echo: false, id: deviceId } as unknown as Record<string, unknown>,
-          timestamp: new Date().toISOString(),
-        };
-        console.log(`[${deviceId}] -> broadcast (via fifo): ${txt}`);
-        localNodeService.broadcastToClients(ev);
+        console.log(`[${deviceId}] <- fifo: ${txt}`);
+        void handleLine(txt).finally(() => { try { rl.prompt(true); } catch {} });
       }
     } catch {}
   }, 500).unref();

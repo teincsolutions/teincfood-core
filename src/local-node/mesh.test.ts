@@ -140,6 +140,55 @@ describe("mesh local-node core", () => {
     expect(transport.clients.length).toBe(1);
   });
 
+  it("dead peer entry does not block redial on next discovery", async () => {
+    const business = { id: "biz-123" };
+    const discovery = new MockDiscovery();
+    const transport = new MockTransport();
+    let attempts = 0;
+    transport.createClient = (opts: any) => {
+      attempts++;
+      const mine = attempts;
+      let up = false;
+      const c = {
+        connect: async () => {
+          // First attempt: peer server not up yet (ECONNREFUSED). The dead
+          // entry stays in the peers map (onDisconnected never fires).
+          if (mine === 1) throw new Error("connect ECONNREFUSED");
+          up = true;
+          opts.onConnected();
+        },
+        disconnect: () => { up = false; },
+        isConnected: () => up,
+        execute: async () => [],
+        requestReferenceData: async () => ({ data: {} }),
+      };
+      transport.clients.push(c);
+      return c;
+    };
+    setAppInstanceId("device-mesh-1");
+    localNodeStore.getState().setIsLocalNodeEnabled(true);
+    initLocalNodeService({
+      getDeviceId: () => "device-mesh-1",
+      getBusiness: () => business as any,
+      getAuth: () => ({ user: { id: "u1" }, accessToken: "tok" }),
+      discovery: discovery as any,
+      transport: transport as any,
+    });
+    await localNodeService.initialize();
+    const peer = { deviceId: "device-mesh-2", name: "peer", host: "192.168.1.11", port: 44621, deviceName: "Peer 2", lastSeenAt: new Date().toISOString() };
+    localNodeStore.getState().addDiscoveredNode(peer as any);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(attempts).toBe(1);
+    expect(localNodeService.isConnectedToNode()).toBe(false);
+    // Next mDNS browse window re-announces the peer (remove + re-add) → the
+    // dead entry must not block the redial; stale-release replaces it.
+    localNodeStore.getState().removeDiscoveredNode("device-mesh-2");
+    localNodeStore.getState().addDiscoveredNode({ ...peer, lastSeenAt: new Date().toISOString() } as any);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(attempts).toBe(2);
+    expect(localNodeService.isConnectedToNode()).toBe(true);
+  });
+
   it("discovery filters self and fe80", async () => {
     const discovery = new MockDiscovery();
     const transport = new MockTransport();

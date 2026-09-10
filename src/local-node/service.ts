@@ -166,11 +166,13 @@ class LocalNodeServiceCore {
     this.subscribed = true;
     this.storeUnsub = localNodeStore.subscribe((state, prev) => {
       if (this.mode !== "mesh") return;
-      // New discovered nodes -> connect
+      // New discovered nodes -> connect. Dead entries (failed/in-flight, never
+      // connected) must NOT block redial: connectToPeer self-heals via
+      // stale-release, so only skip peers that are actually connected.
       if (state.discoveredNodes !== prev.discoveredNodes) {
         for (const n of state.discoveredNodes) {
           if (n.deviceId === this.cachedDeviceId) continue;
-          if (this.peers.has(n.deviceId)) continue;
+          if (this.peers.get(n.deviceId)?.isConnected()) continue;
           this.connectToPeer(n);
         }
         // Removed nodes -> drop the peer entry, but NEVER tear down a live
