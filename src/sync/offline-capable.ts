@@ -15,6 +15,7 @@ import { syncEngine } from "./engine";
 import { buildCommand } from "./command-builder";
 import { syncLogger } from "../utils/sync-logger";
 import { ApiError } from "../adapters/http";
+import { getConnectivityState } from "../adapters/connectivity";
 import { CAPABILITY_BY_COMMAND } from "../reference/capabilities";
 import { openSyncDatabase } from "../db/connection";
 import { getReferenceData } from "../reference/operations";
@@ -47,6 +48,12 @@ export async function runOfflineCapableMutation<TService, TCommandPayload>(
     }
   }
   try {
+    // Cloud already known unreachable (or no network): skip the direct REST
+    // attempt entirely — it would only burn a timeout before falling back.
+    const cs = getConnectivityState();
+    if (!cs.isOnline || cs.isCloudReachable === "unreachable") {
+      throw new Error("offline-capable: cloud known unreachable, engine route");
+    }
     return await options.run();
   } catch (error) {
     if (error instanceof ApiError && error.status >= 400 && error.status < 500) {

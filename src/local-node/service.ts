@@ -7,6 +7,8 @@ import { syncLogger } from "../utils/sync-logger";
 import { restTransport } from "../sync/transport-rest";
 import { commandQueueService } from "../sync/command-queue.service";
 import { applyPendingOrderEvent, applyOrderStateChangeEvent, notifyPendingOrdersChanged } from "../sync/pending-orders.service";
+import { applyMenuCommandLocal } from "../reference/menu-apply";
+import { REFERENCE_CHANGED_EVENT_TYPE } from "../reference/events";
 import { applyReferenceChangeEvent } from "../reference/events";
 import { openSyncDatabase } from "../db/connection";
 import { insertOrder } from "../db/operations";
@@ -369,6 +371,26 @@ class LocalNodeServiceCore {
   }
   async handleNodeCommand(command: Command): Promise<DomainEvent | null> {
     syncLogger.command(command, "executing", { via: "local_node" });
+    // Menu writes apply to the durable reference cache (NOT the cloud) so a
+    // dark LAN converges; peers pull via reference_fetch after the
+    // reference_data.changed fan-out below. Cloud replay re-applies through
+    // the cloud path where the backend owns versions.
+    if (command.command_type.startsWith("menu:")) {
+      const { keys } = await applyMenuCommandLocal(command.business_id, command);
+      if (!keys.length) return null;
+      const evt: DomainEvent = {
+        event_id: `lan-${command.command_id}`,
+        event_type: REFERENCE_CHANGED_EVENT_TYPE as DomainEvent["event_type"],
+        event_version: "1",
+        entity_id: command.business_id,
+        user_id: command.user_id,
+        device_id: command.device_id,
+        payload: { business_id: command.business_id, keys } as unknown as Record<string, unknown>,
+        timestamp: new Date().toISOString(),
+      };
+      this.broadcastToClients(evt);
+      return evt;
+    }
     if (command.command_type.startsWith("order:") || command.command_type.startsWith("payment:")) {
       try {
         const bid = command.business_id;

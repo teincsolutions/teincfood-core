@@ -85,6 +85,12 @@ export const menuService = {
   createCategory: async (_businessId: string, _payload: Record<string, unknown>): Promise<unknown> => {
     notImpl("menuService.createCategory");
   },
+  updateCategory: async (_categoryId: string, _payload: Record<string, unknown>): Promise<unknown> => {
+    notImpl("menuService.updateCategory");
+  },
+  deleteCategory: async (_categoryId: string): Promise<unknown> => {
+    notImpl("menuService.deleteCategory");
+  },
 };
 
 export const businessService = {

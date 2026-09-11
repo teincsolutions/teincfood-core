@@ -103,6 +103,33 @@ export class SyncEngine {
     if (strategy === "queue") {
       const event = await commandQueueService.enqueue(command);
       this.broadcast(event);
+      // Menu writes need a visible local effect while queued: patch the
+      // durable reference cache optimistically and fan out
+      // reference_data.changed so reconciliation applies it locally and
+      // relays it to LAN peers (replay re-applies idempotently; the backend
+      // owns versions on cloud convergence).
+      if (command.command_type.startsWith("menu:")) {
+        try {
+          const { applyMenuCommandLocal } = await import("../reference/menu-apply");
+          const { keys } = await applyMenuCommandLocal(command.business_id, command);
+          if (keys.length) {
+            const { REFERENCE_CHANGED_EVENT_TYPE } = await import("../reference/events");
+            const { generateEventId } = await import("../utils/uuid");
+            this.broadcast({
+              event_id: generateEventId(),
+              event_type: REFERENCE_CHANGED_EVENT_TYPE as DomainEvent["event_type"],
+              event_version: "1.0",
+              entity_id: command.business_id,
+              user_id: command.user_id,
+              device_id: command.device_id,
+              payload: { business_id: command.business_id, keys } as unknown as Record<string, unknown>,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        } catch (e) {
+          syncLogger.debug("SyncEngine", "queued menu optimistic apply failed", { err: String(e) });
+        }
+      }
       return [event];
     }
 

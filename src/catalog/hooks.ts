@@ -165,3 +165,53 @@ export function useDeleteMenuItemMutation() {
     },
   });
 }
+export function useToggleItemAvailabilityMutation() {
+  const businessId = useBusinessId();
+  const qc = useQueryClient();
+  return useMutation({
+    // Availability is an update_item with an availability patch — same engine
+    // route (cloud → LAN → queue), same cache convergence.
+    mutationFn: ({ id, available }: { id: string; available: boolean }) =>
+      runOfflineCapableMutation({ run: () => (menuService as unknown as { updateMenuItem: (id: string, p: unknown) => Promise<unknown> }).updateMenuItem(id, { available }), commandType: "menu:update_item", businessId: businessId!, entityId: id, payload: { id, available } }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: CATALOG_KEYS.items(businessId) });
+      if (businessId) emitReferenceChanged(businessId, ["menu:items"]);
+    },
+  });
+}
+export function useCreateMenuCategoryMutation() {
+  const businessId = useBusinessId();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: Record<string, unknown>) =>
+      runOfflineCapableMutation({ run: () => (menuService as unknown as { createCategory: (b: string, p: unknown) => Promise<unknown> }).createCategory(businessId!, payload), commandType: "menu:create_category", businessId: businessId!, payload }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: CATALOG_KEYS.categories(businessId) });
+      if (businessId) emitReferenceChanged(businessId, ["menu:categories"]);
+    },
+  });
+}
+export function useUpdateMenuCategoryMutation() {
+  const businessId = useBusinessId();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, payload }: { id: string; payload: Record<string, unknown> }) =>
+      runOfflineCapableMutation({ run: () => (menuService as unknown as { updateCategory: (id: string, p: unknown) => Promise<unknown> }).updateCategory(id, payload), commandType: "menu:update_category", businessId: businessId!, entityId: id, payload: { ...payload, id } }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: CATALOG_KEYS.categories(businessId) });
+      if (businessId) emitReferenceChanged(businessId, ["menu:categories"]);
+    },
+  });
+}
+export function useDeleteMenuCategoryMutation() {
+  const businessId = useBusinessId();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      runOfflineCapableMutation({ run: () => (menuService as unknown as { deleteCategory: (id: string) => Promise<unknown> }).deleteCategory(id), commandType: "menu:delete_category", businessId: businessId!, entityId: id, payload: { id } }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: CATALOG_KEYS.categories(businessId) });
+      if (businessId) emitReferenceChanged(businessId, ["menu:categories"]);
+    },
+  });
+}

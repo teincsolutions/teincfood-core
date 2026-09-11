@@ -131,6 +131,16 @@ export class RestTransport implements Transport {
         return this.wrapResponse("menu.category_created", response as unknown as Record<string, unknown>, command.command_id, timestamp, command);
       }
 
+      case "menu:update_category": {
+        const response = await (menuService as unknown as { updateCategory: (id: string, p: unknown) => Promise<unknown> }).updateCategory(entity_id!, payload as Record<string, unknown>);
+        return this.wrapResponse("menu.category_updated", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
+      }
+
+      case "menu:delete_category": {
+        const response = await (menuService as unknown as { deleteCategory: (id: string) => Promise<unknown> }).deleteCategory(entity_id!);
+        return this.wrapResponse("menu.category_deleted", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
+      }
+
       case "payment:confirm_cash": {
         return this.executeOrderTransition(command, "confirm_cash", timestamp, () => sellerService.confirmCashPayment(entity_id!), "payment.completed");
       }
