@@ -1,6 +1,6 @@
 # LAN Mesh — single source of truth
 
-> `@teincfood/core@0.7.37`. This doc owns the mesh. Anything contradicting it
+> `@teincfood/core@0.7.38`. This doc owns the mesh. Anything contradicting it
 > (elected node, owner-derived secret, single-client, `rejectUnauthorized` bypass)
 > is stale — see cleanup log at the bottom.
 
@@ -212,3 +212,12 @@ spinners); migration fidelity is pinned by a real-SQLite test so no future
 migration can drop a table the sync system writes (v8 dropped
 `commands/events` as "legacy" while the outbox/journal depended on them —
 v9 recreates; that breakage made offline queue throw on fresh DBs).
+
+**Long-outage backoff (0.7.38).** Sync retries share one curve —
+`2s` doubling to a `5min` cap with ±20% jitter, attempts reset on any
+success or regain. Probes stay a steady 60s heartbeat (cheap, stateless).
+Regain (NetInfo online / browser online / foreground) clears backoff and
+probes+drains immediately. Outbox rows never dead-letter on transport
+failure (only definitive 4xx consumes retries); `replay()` and `drainOne()`
+join in-flight work instead of skipping it, so concurrent triggers converge
+instead of racing.
