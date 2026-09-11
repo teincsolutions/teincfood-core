@@ -1,6 +1,6 @@
 # LAN Mesh — single source of truth
 
-> `@teincfood/core@0.7.36`. This doc owns the mesh. Anything contradicting it
+> `@teincfood/core@0.7.37`. This doc owns the mesh. Anything contradicting it
 > (elected node, owner-derived secret, single-client, `rejectUnauthorized` bypass)
 > is stale — see cleanup log at the bottom.
 
@@ -95,6 +95,9 @@ Steady-state messages: `command {Command}` → `command_response {DomainEvent[]}
   regression-tested). Discovery bursts used to spawn parallel dials that
   destroyed each other mid-handshake — a livelock where nothing completed.
   Rust mirrors this: one handshake per host:port (`connecting` set, fail fast).
+- Foreign-business peers (test rigs, neighboring shops) back off 60s after a
+  `business_mismatch` rejection instead of redialing every discovery event
+  (`0.7.37`, regression-tested).
 - Rust lock discipline: never hold the server `peers` guard across `.await`
   (tokio Mutex). A nested lock in the auth path silently stalled every
   same-business handshake after `auth ok`; `broadcast/respond` paths cloned
