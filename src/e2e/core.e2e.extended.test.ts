@@ -6,10 +6,12 @@ import { setConnectivityState } from "../adapters/connectivity";
 import { setHttpClient } from "../adapters/http";
 import { getLocalOrder } from "../domain/orders/service";
 import { getSyncJobsPendingCount, drainPending } from "../sync/sync-jobs.service";
+import { commandQueueService } from "../sync/command-queue.service";
 import { closeSyncDatabase, openSyncDatabase } from "../db/connection";
 import { orderSnapshotsService } from "../sync/order-snapshots.service";
 import { resetHarness } from "./harness";
-import { applyOrderStateChangeEvent } from "../sync/pending-orders.service";
+import { applyOrderStateChangeEvent, hydratePendingOrders } from "../sync/pending-orders.service";
+import { usePendingOrdersStore } from "../adapters/pending-orders";
 import { posRepository } from "../repositories/pos.repository";
 import { setFileSystemAdapter } from "../adapters/filesystem";
 import { cacheImageBatch } from "../image-cache/service";
@@ -67,7 +69,7 @@ describe.sequential("E2E TEST 4 — global reconciliation idle dashboard", () =>
 });
 
 describe.sequential("E2E TEST 5 — LAN mesh", () => {
-  it("B offline creates, LAN node relays to A/C, restart keeps same UUID", async () => {
+  it("B offline creates twice via engine outbox, restart keeps UUIDs, replay lands both", async () => {
     const bid = await resetHarness("biz-e2e");
     const received = new Map<string, unknown>();
     setHttpClient({
@@ -89,22 +91,26 @@ describe.sequential("E2E TEST 5 — LAN mesh", () => {
     const o1 = await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 1 }], item_snapshots: itemSnap as never, total_minor: 5000 } as never);
     const o2 = await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 2 }], item_snapshots: itemSnap as never, total_minor: 10000 } as never);
     expect(o1.id).not.toBe(o2.id);
-    expect((await getLocalOrder(bid, o1.id))?.id).toBe(o1.id);
-    expect((await getLocalOrder(bid, o2.id))?.id).toBe(o2.id);
-    expect(await getSyncJobsPendingCount(bid)).toBe(2);
-    // Simulate restart — both UUIDs stable, both jobs survive
+    expect(o1.order_number).not.toBe(o2.order_number);
+    expect(await commandQueueService.getPendingCount()).toBe(2);
+    // Simulate restart — both UUIDs stable in the outbox, pending rehydrates
     await closeSyncDatabase();
     await openSyncDatabase();
-    expect((await getLocalOrder(bid, o1.id))?.id).toBe(o1.id);
-    expect((await getLocalOrder(bid, o2.id))?.id).toBe(o2.id);
-    expect(await getSyncJobsPendingCount(bid)).toBe(2);
-    // Online drain — both land on the backend under their own UUIDs
+    expect(await commandQueueService.getPendingCount()).toBe(2);
+    await hydratePendingOrders();
+    const ids = usePendingOrdersStore.getState().orders.map((o) => o.id);
+    expect(ids).toContain(o1.id);
+    expect(ids).toContain(o2.id);
+    // Online replay — both land on the backend under their own UUIDs
     setConnectivityState({ isOnline: true, isCloudReachable: "reachable" });
+    await commandQueueService.replay();
     await drainPending(bid);
-    expect(await getSyncJobsPendingCount(bid)).toBe(0);
+    expect(await commandQueueService.getPendingCount()).toBe(0);
     expect(received.size).toBe(2);
     expect(received.has(o1.id)).toBe(true);
     expect(received.has(o2.id)).toBe(true);
+    expect((await getLocalOrder(bid, o1.id))?.id).toBe(o1.id);
+    expect((await getLocalOrder(bid, o2.id))?.id).toBe(o2.id);
   });
 });
 
@@ -172,18 +178,20 @@ describe.sequential("E2E TEST 10 — missed events replay", () => {
 });
 
 describe.sequential("E2E TEST 11 — restart preserves queue/journal", () => {
-  it("queue + journal + snapshot survive restart", async () => {
+  it("outbox + journal + pending survive restart", async () => {
     const bid = await resetHarness("biz-e2e");
     setConnectivityState({ isOnline: false, isCloudReachable: "unreachable" });
     const itemSnap = [{ menu_item_id: "item1", name: "Jollof", quantity: 1, unit_price_minor: 5000 }];
     const o1 = await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 1 }], item_snapshots: itemSnap as never, total_minor: 5000 } as never);
     const o2 = await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 1 }], item_snapshots: itemSnap as never, total_minor: 5000 } as never);
-    expect(await getSyncJobsPendingCount(bid)).toBe(2);
-    // restart — orders + sync jobs survive
+    expect(await commandQueueService.getPendingCount()).toBe(2);
+    // restart — outbox rows + journal survive; pending store rehydrates
     await closeSyncDatabase();
     await openSyncDatabase();
-    expect((await getLocalOrder(bid, o1.id))?.id).toBe(o1.id);
-    expect((await getLocalOrder(bid, o2.id))?.id).toBe(o2.id);
-    expect(await getSyncJobsPendingCount(bid)).toBe(2);
+    expect(await commandQueueService.getPendingCount()).toBe(2);
+    await hydratePendingOrders();
+    const ids = usePendingOrdersStore.getState().orders.map((o) => o.id);
+    expect(ids).toContain(o1.id);
+    expect(ids).toContain(o2.id);
   });
 });

@@ -6,13 +6,16 @@ import { useEffect } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
 import { useSyncExternalStore } from "react";
-import { createLocalOrder, transitionLocalOrder, listLocalOrders, getLocalOrder } from "../domain/orders/service";
+import { listLocalOrders, getLocalOrder } from "../domain/orders/service";
 import { getDeviceNumber, ensureLease } from "../sync/device-lease.service";
 import { getConnectivityState } from "../adapters/connectivity";
 import { SELLER_DASHBOARD_KEYS } from "../adapters/query-keys";
 import { openSyncDatabase } from "../db/connection";
 import { getReferenceData } from "../reference/operations";
 import { calculatePricing } from "../pricing/engine";
+import { generateUUID } from "../utils/uuid";
+import { subscribePendingOrders, getPendingOrdersSnapshot } from "../adapters/pending-orders";
+import { hydratePendingOrders, mergePendingIntoList } from "../sync/pending-orders.service";
 import type { POSOrderCreateRequest, POSOrderPreviewResponse, POSCartItem, POSOrderType, POSOrderItemRequest } from "../types/pos.types";
 import type { SellerOrder } from "../types/api/seller.api";
 import { posRepository } from "../repositories/pos.repository";
@@ -33,8 +36,11 @@ export function usePOSOrdersQuery(filters?: Record<string,string>, enabled=true)
     queryFn: async ({ pageParam=1 }) => {
       if (!bid) return { data: [], pagination: { page:1, page_size:20, total_pages:1, total_count:0 } };
       const { data, total } = await listLocalOrders(bid, filters as unknown as { status?: string; q?: string }, pageParam as number, 20);
+      // Offline overlay: pending creations + queued statuses (page 1). Refetch
+      // is driven by the pending-orders invalidator on every apply path.
+      const merged = await mergePendingIntoList(data, bid, pageParam as number);
       const totalPages = Math.max(1, Math.ceil(total/20));
-      return { data, pagination: { page: pageParam as number, page_size:20, total_pages: totalPages, total_count: total } };
+      return { data: merged, pagination: { page: pageParam as number, page_size:20, total_pages: totalPages, total_count: total + (merged.length - data.length) } };
     },
     initialPageParam: 1,
     getNextPageParam: (lastPage) => {
@@ -56,8 +62,9 @@ export function useSellerOrdersQuery(enabled=true, filters?: { status?: string; 
       if (!bid) return { data: [], pagination: { page:1, page_size:20, total_pages:1, total_count:0 } };
       const q = filters?.q ?? filters?.search;
       const { data, total } = await listLocalOrders(bid, { status: filters?.status, q }, pageParam as number, 20);
+      const merged = await mergePendingIntoList(data, bid, pageParam as number);
       const totalPages = Math.max(1, Math.ceil(total/20));
-      return { data, pagination: { page: pageParam as number, page_size:20, total_pages: totalPages, total_count: total } };
+      return { data: merged, pagination: { page: pageParam as number, page_size:20, total_pages: totalPages, total_count: total + (merged.length - data.length) } };
     },
     initialPageParam: 1,
     getNextPageParam: (lastPage) => {
@@ -94,7 +101,9 @@ export function useCreatePOSOrderMutation() {
       if (!bid) throw new Error("No business");
       const dn = getDeviceNumber(bid);
       if (!dn) { const leased = await ensureLease(bid); if (!leased) throw new Error("No device number leased — connect online once"); }
-      return createLocalOrder(bid, data as unknown as POSOrderCreateRequest & { is_pos?: boolean });
+      // Engine route: cloud → LAN node → queue. Never createLocalOrder
+      // directly — it bypasses sync and peers never see the order.
+      return orderRepository.createOrder({ businessId: bid, data, entityId: generateUUID() });
     },
     onSuccess: () => { qc.invalidateQueries({ queryKey: POS_KEYS.orders(bid) }); qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); },
   });
@@ -138,15 +147,15 @@ function makeOrderActionMutation(build: (p:{orderId:string;businessId:string})=>
   };
 }
 
-export const useAcceptOrderMutation = makeOrderActionMutation(({orderId,businessId}) => transitionLocalOrder(businessId, orderId, "accept"));
-export const useRejectOrderMutation = makeOrderActionMutation(({orderId,businessId}) => transitionLocalOrder(businessId, orderId, "reject"));
-export const useStartPreparingOrderMutation = makeOrderActionMutation(({orderId,businessId}) => transitionLocalOrder(businessId, orderId, "start_preparing"));
-export const useMarkOrderReadyMutation = makeOrderActionMutation(({orderId,businessId}) => transitionLocalOrder(businessId, orderId, "mark_ready"));
-export const useCompletePickupMutation = makeOrderActionMutation(({orderId,businessId}) => transitionLocalOrder(businessId, orderId, "complete_pickup"));
-export const useCancelOrderMutation = makeOrderActionMutation(({orderId,businessId}) => transitionLocalOrder(businessId, orderId, "cancel"));
+export const useAcceptOrderMutation = makeOrderActionMutation(({orderId,businessId}) => orderRepository.acceptOrder({orderId,businessId}));
+export const useRejectOrderMutation = makeOrderActionMutation(({orderId,businessId}) => orderRepository.rejectOrder({orderId,businessId}));
+export const useStartPreparingOrderMutation = makeOrderActionMutation(({orderId,businessId}) => orderRepository.startPreparingOrder({orderId,businessId}));
+export const useMarkOrderReadyMutation = makeOrderActionMutation(({orderId,businessId}) => orderRepository.markOrderReady({orderId,businessId}));
+export const useCompletePickupMutation = makeOrderActionMutation(({orderId,businessId}) => orderRepository.completePickup({orderId,businessId}));
+export const useCancelOrderMutation = makeOrderActionMutation(({orderId,businessId}) => orderRepository.cancelOrder({orderId,businessId}));
 export function useConfirmHandoverMutation() {
   const bid = useBusinessId(); const qc = useQueryClient();
-  return useMutation({ mutationFn: (deliveryId: string) => { if(!bid) throw new Error("No business"); return transitionLocalOrder(bid, deliveryId, "confirm_handover"); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); }});
+  return useMutation({ mutationFn: (deliveryId: string) => { if(!bid) throw new Error("No business"); return orderRepository.confirmHandover({deliveryId,businessId:bid}); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); }});
 }
 export function useAssignRiderMutation() {
   const bid = useBusinessId(); const qc = useQueryClient();
@@ -154,8 +163,25 @@ export function useAssignRiderMutation() {
 }
 export function useConfirmCashPaymentMutation() {
   const bid = useBusinessId(); const qc = useQueryClient();
-  return useMutation({ mutationFn: (orderId:string)=>{ if(!bid) throw new Error("No business"); return transitionLocalOrder(bid, orderId, "confirm_cash"); }, onSuccess: (_d,_e,orderId)=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); if(orderId) qc.invalidateQueries({ queryKey: SELLER_KEYS.order(orderId as string)}); }});
+  return useMutation({ mutationFn: (orderId:string)=>{ if(!bid) throw new Error("No business"); return orderRepository.confirmCashPayment({orderId,businessId:bid}); }, onSuccess: (_d,_e,orderId)=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); if(orderId) qc.invalidateQueries({ queryKey: SELLER_KEYS.order(orderId as string)}); }});
 }
 export function useUpdateOrderStatusMutation() { const accept=useAcceptOrderMutation(); const reject=useRejectOrderMutation(); const preparing=useStartPreparingOrderMutation(); const ready=useMarkOrderReadyMutation(); const complete=useCompletePickupMutation(); const cancel=useCancelOrderMutation(); return { mutate: (orderId:string,status:string)=>{ const s=String(status); if(!["accepted","preparing","ready","delivered","cancelled","rejected"].includes(s)) throw new Error(`Unknown status ${s}`); switch(s){case "accepted":return accept.mutateAsync(orderId);case "preparing":return preparing.mutateAsync(orderId);case "ready":return ready.mutateAsync(orderId);case "delivered":return complete.mutateAsync(orderId);case "cancelled":return cancel.mutateAsync(orderId);case "rejected":return reject.mutateAsync(orderId);default:throw new Error(`Unknown status ${s}`);} }, isPending: accept.isPending||reject.isPending||preparing.isPending||ready.isPending||complete.isPending||cancel.isPending, }; }
 export function isQueuedTransition(result: unknown): boolean { const r=result as {status?:string;command_id?:string;id?:string}|null; return !!r && r.status==="pending" && !!r.command_id && !r.id; }
-export function usePendingOrders(): never[] { return []; }
+
+/**
+ * Reactive view of locally queued (unconfirmed) order creations.
+ * Hydrates persisted optimistic events once (survives restart offline).
+ */
+export function usePendingOrders(): SellerOrder[] {
+  const snap = useSyncExternalStore(
+    subscribePendingOrders,
+    () => getPendingOrdersSnapshot().orders,
+    () => [],
+  );
+  useEffect(() => {
+    if (!getPendingOrdersSnapshot().hydrated) {
+      hydratePendingOrders().catch(() => undefined);
+    }
+  }, []);
+  return snap;
+}

@@ -15,7 +15,7 @@ import { syncLogger } from "../utils/sync-logger";
 import { generateOrderNumber } from "./order-number";
 import { orderSnapshotsService } from "./order-snapshots.service";
 
-const inflight = new Set<string>();
+const inflight = new Map<string, Promise<void>>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const retryAttempts = new Map<string, number>();
 
@@ -144,11 +144,18 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
     return;
   }
   const key = `${businessId}:${entityId}`;
-  if (inflight.has(key)) {
-    syncLogger.debug("SyncJobs", "drainOne inflight skip", { key });
+  // Join an in-flight drain instead of skipping: concurrent drains (e.g. the
+  // fire-and-forget drainOne after a write racing an awaited drainPending)
+  // must converge on the same outcome, otherwise callers observe "drained"
+  // while the POST is still flying.
+  const ongoing = inflight.get(key);
+  if (ongoing) {
+    syncLogger.debug("SyncJobs", "drainOne joining inflight", { key });
+    try { await ongoing; } catch {}
     return;
   }
-  inflight.add(key);
+  let resolveInflight!: () => void;
+  inflight.set(key, new Promise<void>((r) => { resolveInflight = r; }));
   try {
     const db = await openSyncDatabase();
     const row = await db.getFirstAsync<{ id: string; business_id: string; command_type: string; payload: string }>(`SELECT * FROM sync_jobs WHERE business_id = ? AND entity_id = ? AND status='pending' ORDER BY created_at LIMIT 1;`, businessId, entityId);
@@ -266,6 +273,7 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
     scheduleRetry(businessId);
   } finally {
     inflight.delete(key);
+    try { resolveInflight(); } catch {}
     syncLogger.debug("SyncJobs", "drainOne exit", { businessId, entityId });
   }
 }

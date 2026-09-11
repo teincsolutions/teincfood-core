@@ -84,7 +84,7 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
   }
   if (!dd) throw new Error("No device number leased (99 max) — connect online once to lease DD");
 
-  const id = (input as unknown as { command_id?: string }).command_id ?? generateUUID();
+  const id = ((input as unknown as { id?: string }).id ?? (input as unknown as { command_id?: string }).command_id ?? generateUUID());
   const orderNumber = (input as unknown as { order_number?: string }).order_number?.toString() ?? generateOrderNumberForBusiness(businessId);
   const callout = parseInt(orderNumber.split("-")[2] ?? "0", 10) || 0;
   const now = new Date().toISOString();

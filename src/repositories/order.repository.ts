@@ -13,7 +13,7 @@ import { buildCommand } from "../sync/command-builder";
 import type { Command } from "../sync/types";
 import type { POSOrderCreateRequest } from "../types/pos.types";
 import type { SellerOrder } from "../types/api/seller.api";
-import { createLocalOrder } from "../domain/orders/service";
+import { generateUUID } from "../utils/uuid";
 
 export interface CreateOrderInput {
   businessId: string;
@@ -66,16 +66,25 @@ async function executeCommand(command: Command): Promise<SellerOrder> {
 
 export const orderRepository = {
   /**
-   * @deprecated Single create path is `createLocalOrder` (domain/orders/service)
-   * — SQLite + sync_jobs + operating-hours gate. This delegate is kept for
-   * backward compatibility and forwards there directly (no engine round-trip).
+   * Single create path: build an `order:create` command and route it through
+   * the SyncEngine (cloud → LAN node → queue). Every path returns an
+   * order-shaped payload: cloud/LAN execute the real create, queue returns
+   * the optimistic order (same UUID + DD-RRR-CCC, replayed idempotently).
+   * Direct `createLocalOrder` bypasses sync — never call it from UI flows.
    */
   async createOrder(input: CreateOrderInput): Promise<SellerOrder> {
-    return createLocalOrder(input.businessId, {
-      ...(input.data as unknown as Record<string, unknown>),
-      command_id: input.entityId,
-      id: input.entityId,
-    } as unknown as POSOrderCreateRequest & { is_pos?: boolean });
+    const entityId = input.entityId ?? generateUUID();
+    const command = buildCommand<Record<string, unknown>>({
+      commandType: "order:create",
+      businessId: input.businessId,
+      entityId,
+      payload: {
+        ...(input.data as unknown as Record<string, unknown>),
+        id: entityId,
+        command_id: entityId,
+      },
+    });
+    return executeCommand(command);
   },
 
   async acceptOrder(input: OrderActionInput): Promise<SellerOrder> {

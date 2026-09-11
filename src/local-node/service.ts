@@ -6,7 +6,7 @@ import { localNodeStore, type DiscoveredNode } from "./store";
 import { syncLogger } from "../utils/sync-logger";
 import { restTransport } from "../sync/transport-rest";
 import { commandQueueService } from "../sync/command-queue.service";
-import { applyPendingOrderEvent, applyOrderStateChangeEvent } from "../sync/pending-orders.service";
+import { applyPendingOrderEvent, applyOrderStateChangeEvent, notifyPendingOrdersChanged } from "../sync/pending-orders.service";
 import { applyReferenceChangeEvent } from "../reference/events";
 import { openSyncDatabase } from "../db/connection";
 import { insertOrder } from "../db/operations";
@@ -301,13 +301,17 @@ class LocalNodeServiceCore {
               if (p && typeof p.order_number === "string" && (p as { id?: unknown }).id) {
                 const db = await openSyncDatabase();
                 await insertOrder(db, p as unknown as SellerOrder & { hlc?: string });
-                return;
+              } else {
+                const action = (p as { action?: string }).action;
+                const orderId = (p as { orderId?: string }).orderId;
+                const bid = deps.getBusiness()?.id;
+                if (action && orderId && bid) { try { await transitionLocalOrder(bid, String(orderId), action); } catch {} }
               }
-              const action = (p as { action?: string }).action;
-              const orderId = (p as { orderId?: string }).orderId;
-              const bid = deps.getBusiness()?.id;
-              if (action && orderId && bid) { try { await transitionLocalOrder(bid, String(orderId), action); } catch {} }
             } catch (e) { syncLogger.debug("LocalNodeService", "LAN order:sync apply failed", { err: String(e) }); }
+            // The row is in SQLite now — invalidate so lists/detail refetch.
+            // (order:sync bypasses the engine pipeline, so no subscriber does
+            // this for us.)
+            notifyPendingOrdersChanged();
           })();
         }
         applyPendingOrderEvent(event, "lan").catch((e) => syncLogger.error("LocalNodeService", "Failed to apply LAN event", { error: String(e), event_type: event.event_type }));
@@ -393,7 +397,7 @@ class LocalNodeServiceCore {
         const action = map[command.command_type] ?? command.command_type.replace(/^order:/, "");
         const orderId = command.entity_id ?? (payload as { orderId?: string }).orderId ?? (payload as { order_id?: string }).order_id;
         if (orderId) {
-          await transitionLocalOrder(bid, String(orderId), action);
+          const updated = await transitionLocalOrder(bid, String(orderId), action);
           const evt: DomainEvent = {
             event_id: `lan-${command.command_id}`,
             event_type: "order:sync" as DomainEvent["event_type"],
@@ -401,7 +405,11 @@ class LocalNodeServiceCore {
             entity_id: String(orderId),
             user_id: command.user_id,
             device_id: command.device_id,
-            payload: { action, orderId: String(orderId) },
+            // Full updated order (not just action+id) so repository callers
+            // awaiting engine results get an order-shaped payload on every
+            // path (cloud / LAN / queue-optimistic). Peers still apply via
+            // transitionLocalOrder for their own read models.
+            payload: { action, orderId: String(orderId), order: updated as unknown as Record<string, unknown>, ...(updated as unknown as Record<string, unknown>) },
             timestamp: new Date().toISOString(),
           };
           this.broadcastToClients(evt);

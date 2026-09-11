@@ -20,6 +20,7 @@ import {
   insertEvent,
   getUnsyncedEvents,
   markEventsSynced,
+  getEntitySnapshotsByType,
 } from "../db/operations";
 import { usePendingOrdersStore } from "../adapters/pending-orders";
 import { orderSnapshotsService } from "./order-snapshots.service";
@@ -60,6 +61,67 @@ export function registerPendingOrdersInvalidator(fn: () => void): () => void {
   return () => {
     if (invalidator === fn) invalidator = null;
   };
+}
+
+/**
+ * Fire the registered query invalidator (lists refetch from SQLite).
+ * Used after LAN-applied writes (order:sync) that bypass the engine event
+ * pipeline, so peers' UIs converge without waiting for a cloud echo.
+ */
+export function notifyPendingOrdersChanged(): void {
+  try {
+    invalidator?.();
+  } catch {}
+}
+
+/**
+ * Merge optimistic (queued, unconfirmed) state into a page of listed orders.
+ * Called by list queryFns (page 1 only) so offline work is visible:
+ *  1. Pending creations (order.create_queued, local or LAN) missing from the
+ *     SQLite page are prepended — deduped by id/order_number.
+ *  2. Queued transitions only patch the snapshot read model, never the
+ *     orders table — overlay snapshot statuses onto base rows so the list
+ *     reflects the queued status immediately (converges on replay).
+ * Reactivity comes from the invalidator: every apply path above refetches.
+ */
+export async function mergePendingIntoList(
+  base: SellerOrder[],
+  businessId: string,
+  page: number,
+): Promise<SellerOrder[]> {
+  if (page !== 1) return base;
+  let merged = base;
+  try {
+    const pending = usePendingOrdersStore.getState().orders;
+    if (pending.length) {
+      const seen = new Set(merged.map((o) => String(o.id ?? o.order_number)));
+      const fresh = pending.filter((p) => !seen.has(String(p.id ?? p.order_number)));
+      if (fresh.length) merged = [...fresh, ...merged];
+    }
+  } catch {}
+  try {
+    const db = await openSyncDatabase();
+    const snaps = await getEntitySnapshotsByType<{ data?: SellerOrder[] }>(db, "seller_orders", businessId);
+    if (!snaps.length) return merged;
+    const statusById = new Map<string, string>();
+    for (const s of snaps) {
+      const arr = (s.payload as { data?: SellerOrder[] })?.data ?? [];
+      for (const o of arr) {
+        if (o?.id && o.status) statusById.set(String(o.id), String(o.status));
+      }
+    }
+    if (!statusById.size) return merged;
+    let patched = false;
+    merged = merged.map((o) => {
+      const want = statusById.get(String(o.id));
+      if (want && want !== o.status) { patched = true; return { ...o, status: want as SellerOrder["status"] }; }
+      return o;
+    });
+    if (patched) {
+      syncLogger.debug("PendingOrders", "overlaid queued statuses onto list", { businessId, count: merged.length });
+    }
+  } catch {}
+  return merged;
 }
 
 /**

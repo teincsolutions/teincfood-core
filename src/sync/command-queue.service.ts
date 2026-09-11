@@ -202,7 +202,7 @@ function injectLocalOrderNumber(command: Command): Command {
 }
 
 class CommandQueueService {
-  private replaying = false;
+  private replaying: Promise<void> | null = null;
   private syncEngine: SyncEngine | null = null;
 
   setSyncEngine(engine: SyncEngine): void {
@@ -358,12 +358,18 @@ class CommandQueueService {
    * ordering consistent; the next replay will retry from the failed command.
    */
   async replay(): Promise<void> {
+    // Join an in-flight replay instead of no-op'ing: concurrent replays
+    // (connectivity auto-replay racing an explicit replay) must converge on
+    // the same outcome, otherwise callers observe a drained queue while work
+    // is still flying.
     if (this.replaying) {
-      syncLogger.debug("CommandQueueService", "Replay already in progress");
+      syncLogger.debug("CommandQueueService", "Replay already in progress, joining");
+      try { await this.replaying; } catch {}
       return;
     }
 
-    this.replaying = true;
+    let resolveReplay!: () => void;
+    this.replaying = new Promise<void>((r) => { resolveReplay = r; });
     try {
       // Await open (not getSyncDatabase) so a cold-start replay triggered by a
       // connectivity event that fires before the DB open completes does not
@@ -395,7 +401,8 @@ class CommandQueueService {
         }
       }
     } finally {
-      this.replaying = false;
+      this.replaying = null;
+      try { resolveReplay(); } catch {}
     }
   }
 
