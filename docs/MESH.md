@@ -1,6 +1,6 @@
 # LAN Mesh — single source of truth
 
-> `@teincfood/core@0.7.33`. This doc owns the mesh. Anything contradicting it
+> `@teincfood/core@0.7.36`. This doc owns the mesh. Anything contradicting it
 > (elected node, owner-derived secret, single-client, `rejectUnauthorized` bypass)
 > is stale — see cleanup log at the bottom.
 
@@ -155,9 +155,57 @@ business `0f0764da-53aa-48e4-ac40-3bfd8a52b0ec` · desktop
 
 ## 10. Cleanup log (docs aligned 2026-09-10)
 
-- `README.md` rewritten (was frozen at `v0.1.0` backbone + old `LanTransport` shape).
+- `README.md` rewritten (was frozen at `v0.1.0` + old `LanTransport` shape).
 - `OFFLINE_FIRST_STRATEGY.md §C` rewritten (was election model).
-- `AUDIT.md` bannered as `0.7.10` pre-implementation snapshot (§Q superseded here).
+- `AUDIT.md` bannered as `0.7.10` historical snapshot (§Q superseded here).
 - `CORE_ARCHITECTURE.md §11` rewritten (was election); header version bumped.
 - `scripts/node-mesh/README.md` secret formula fixed (owner segment empty).
 - App `AGENTS.md` LAN sections annotated/extended (Phase 10 mesh).
+
+## 11. Offline-first approach — backend must never block (0.7.34+, 2026-09-11)
+
+Premise: as long as a device has a business, cached data, capabilities, a
+leased device number, and is logged in, it offers the FULL experience with
+the backend down. LAN exchange keeps terminals continuous; the cloud is a
+best-effort fast path, never a gate.
+
+**Single write path.** Every mutation — order create, every status
+transition, cash, menu item/category CRUD, availability — builds a command
+and runs `SyncEngine.execute` (cloud → LAN node → durable outbox). Direct
+SQLite writes from UI flows are banned: they bypass sync and peers never
+converge. The single exception is the LAN executor itself
+(`handleNodeCommand`), which IS the local write for that leg.
+
+**Orders are transitions, never updates.** No `order:update` exists.
+`orderRepository` exposes only `create/accept/reject/start_preparing/
+mark_ready/complete_pickup/cancel/confirm_cash/...`. Convergence is by
+same-UUID upsert (HLC-guarded) and transition replay — never field merges.
+
+**Reads are SQLite + optimistic overlay.** Lists read the `orders` table
+(filtered by business) merged with the pending store (queued creations,
+page 1) plus snapshot status overlay (queued transitions). Reactivity comes
+from the pending-orders invalidator, which every apply path fires — engine
+events, LAN `order:sync`, reference changes.
+
+**Backend-down behavior.** Probes (`GET /api/health`, 4s) settle cloud
+state at boot/regain/cooldown; confirmed-unreachable skips the cloud attempt
+entirely (no per-command timeout burn). Guard rejections that ARE business
+decisions (`BUSINESS_CLOSED/HOURS_NOT_SYNCED/FORBIDDEN`) stand and never
+queue-fallback; everything else falls back to LAN then outbox.
+`drainOne` joins in-flight drains and `replay()` joins in-flight replays —
+no skip-on-busy races. Capabilities fail open when uncached; DD lease and
+operating hours work from durable cache with clear "connect online once"
+errors only when truly absent.
+
+**Menu convergence.** Menu `menu:*` commands apply to the durable
+`menu:items/menu:categories` cache locally (LAN executor and queued
+optimistic alike, idempotent by id), fan out `reference_data.changed`,
+and peers pull via `reference_fetch/response`. Versions stay backend-owned;
+LAN never invents versions.
+
+**No silent failures.** Global mutation error toasts in both apps; detail
+screens read SQLite-first with explicit error states (never infinite
+spinners); migration fidelity is pinned by a real-SQLite test so no future
+migration can drop a table the sync system writes (v8 dropped
+`commands/events` as "legacy" while the outbox/journal depended on them —
+v9 recreates; that breakage made offline queue throw on fresh DBs).
