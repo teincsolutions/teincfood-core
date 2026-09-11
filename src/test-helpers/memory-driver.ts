@@ -107,9 +107,13 @@ export function createMemoryDriver(): SqliteDriver {
         return { lastInsertRowId: row.id, changes: 1 };
       }
 
-      // commands update status
+      // commands update status (4- or 5-placeholder variants — always take the
+      // LAST arg as command_id; older code assumed 5).
       if (s.includes("UPDATE commands SET status = ?")) {
-        const [status, error, _now, _now2, command_id] = args as any[];
+        const argv = args as any[];
+        const status = argv[0];
+        const error = argv[1];
+        const command_id = argv[argv.length - 1];
         // also handles variants with retry_count increment
         const row = tables.commands.find((r) => r.command_id === command_id);
         if (row) {

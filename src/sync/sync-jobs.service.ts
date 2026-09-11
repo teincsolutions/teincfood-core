@@ -12,12 +12,13 @@ import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
 import { getHttpClient } from "../adapters/http";
 import { phoenixSocket } from "../realtime/phoenix-socket";
 import { syncLogger } from "../utils/sync-logger";
+import { BackoffTracker } from "./backoff";
 import { generateOrderNumber } from "./order-number";
 import { orderSnapshotsService } from "./order-snapshots.service";
 
 const inflight = new Map<string, Promise<void>>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const retryAttempts = new Map<string, number>();
+const backoffTracker = new BackoffTracker();
 
 function isOnline(): boolean {
   const s = getConnectivityState();
@@ -35,10 +36,11 @@ function isOnlineForPhx(): boolean {
 
 function scheduleRetry(businessId: string): void {
   if (retryTimers.has(businessId)) return;
-  const attempts = retryAttempts.get(businessId) ?? 0;
-  const delay = Math.min(30_000, 2_000 * Math.pow(2, attempts)); // 2s,4s,8s,16s,30s cap
-  retryAttempts.set(businessId, attempts + 1);
-  syncLogger.debug("SyncJobs", "scheduleRetry backoff", { businessId, attempts, delay });
+  // Shared backoff curve: 2s doubling to a 5min cap with jitter. Attempts
+  // reset on any success (clearRetry) so long outages go quiet instead of
+  // hammering a down backend every 30s.
+  const delay = backoffTracker.next(businessId);
+  syncLogger.debug("SyncJobs", "scheduleRetry backoff", { businessId, delay });
   const t = setTimeout(() => {
     retryTimers.delete(businessId);
     if (isOnlineForRest() && getAuthToken() && getActiveBusiness()?.id === businessId) {
@@ -51,7 +53,7 @@ function scheduleRetry(businessId: string): void {
 function clearRetry(businessId: string): void {
   const t = retryTimers.get(businessId);
   if (t) { clearTimeout(t); retryTimers.delete(businessId); }
-  retryAttempts.delete(businessId);
+  backoffTracker.reset(businessId);
 }
 
 async function tryPhxPush(businessId: string, payload: Record<string, unknown>): Promise<boolean> {

@@ -67,7 +67,7 @@ export class SyncEngine {
    * internet connection falls back to the Local Node (or the offline outbox)
    * quickly instead of blocking the terminal for the full HTTP timeout.
    */
-  async execute(command: Command): Promise<DomainEvent[]> {
+  async execute(command: Command, opts?: { forReplay?: boolean }): Promise<DomainEvent[]> {
     syncLogger.command(command, "issued");
 
     // Perms guard (offline-capable): block before routing
@@ -101,6 +101,12 @@ export class SyncEngine {
     });
 
     if (strategy === "queue") {
+      // Replays must never re-enqueue-then-delete (the command would eat
+      // itself without executing). If no real transport is available, leave
+      // the row untouched for a later trigger.
+      if (opts?.forReplay) {
+        throw new Error("ReplayDeferred: no transport available, keeping command queued");
+      }
       const event = await commandQueueService.enqueue(command);
       this.broadcast(event);
       // Menu writes need a visible local effect while queued: patch the
@@ -177,7 +183,13 @@ export class SyncEngine {
         });
         setConnectivityState({ isCloudReachable: "unreachable" });
         strategy = this.resolveStrategy(command);
-        if (strategy === "queue") {
+    if (strategy === "queue") {
+      // Replays must never re-enqueue-then-delete (the command would eat
+      // itself without executing). If no real transport is available, leave
+      // the row untouched for a later trigger.
+      if (opts?.forReplay) {
+        throw new Error("ReplayDeferred: no transport available, keeping command queued");
+      }
           const event = await commandQueueService.enqueue(command);
           this.broadcast(event);
           return [event];

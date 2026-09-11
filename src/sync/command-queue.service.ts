@@ -293,7 +293,7 @@ class CommandQueueService {
     await markCommandInFlight(db, command.command_id);
 
     try {
-      const events = await this.syncEngine.execute(parsedCommand);
+      const events = await this.syncEngine.execute(parsedCommand, { forReplay: true });
       // Outbox is an ephemeral queue — remove the row on success so the
       // Diagnostics outbox count drops to 0 and old completed rows never
       // accumulate. The optimistic event stays in `events` (marked synced).
@@ -308,6 +308,14 @@ class CommandQueueService {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // Replay with no transport available: leave the row exactly as-is for
+      // the next trigger (do not mark, do not count). Must reset the
+      // in_flight flag first — rows stuck in_flight are invisible to the
+      // outbox query and would wedge the queue forever.
+      if (message.includes("ReplayDeferred")) {
+        await updateCommandStatus(db, command.command_id, "pending", "deferred:no-transport");
+        throw error;
+      }
       const apiErr = error as { status?: number; name?: string; code?: string; data?: unknown };
       // 409 ORDER_NUMBER_TAKEN is retryable once with new RRR
       const code = (apiErr as unknown as { code?: string })?.code ?? (apiErr?.data as unknown as { code?: string })?.code;
@@ -323,7 +331,9 @@ class CommandQueueService {
               const newPayload = { ...payload, order_number: newOn };
               await db.runAsync(`UPDATE commands SET payload = ?, error = ?, updated_at = ? WHERE command_id = ?;`, JSON.stringify(newPayload), `retry_random:${message}`, new Date().toISOString(), command.command_id);
               syncLogger.info("CommandQueueService", "Regenerated order_number after 409", { command_id: command.command_id, new_order_number: newOn });
-              // keep retry_count unchanged so next replay retries; do not mark failed twice
+              // keep retry_count unchanged so next replay retries; do not mark failed twice.
+              // Reset in_flight → pending so the row stays visible to the outbox query.
+              await updateCommandStatus(db, command.command_id, "pending", `retry_random:${message}`);
               return;
             }
           } catch {}
@@ -347,8 +357,12 @@ class CommandQueueService {
         // Do not throw — allow replay to continue to next command.
         return;
       }
-      await updateCommandStatus(db, command.command_id, "failed", message);
-      syncLogger.command(parsedCommand, "failed", { error: message });
+      // Network/timeout/5xx: NOT a rejection — keep the command retryable
+      // indefinitely (status back to pending, retry_count untouched) so a
+      // long outage never dead-letters the outbox via MAX_RETRIES. Replay
+      // stops here to preserve ordering; the next trigger retries.
+      await updateCommandStatus(db, command.command_id, "pending", `network:${message}`);
+      syncLogger.command(parsedCommand, "queued", { error: message, deferred: true });
       throw error;
     }
   }
