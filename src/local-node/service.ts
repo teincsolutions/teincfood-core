@@ -124,6 +124,7 @@ class LocalNodeServiceCore {
     this.teardownStoreSubscriptions();
     this.stopPeerSweep();
     this.dialInFlight.clear();
+    this.mismatchBackoff.clear();
     for (const t of this.dialTimers.values()) try { clearTimeout(t); } catch {}
     this.dialTimers.clear();
     for (const c of this.peers.values()) try { c.disconnect(); } catch {}
@@ -249,6 +250,11 @@ class LocalNodeServiceCore {
   private dialInFlight = new Set<string>();
   private dialTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  /** deviceId -> timestamp of last business_mismatch rejection. Foreign-business
+   * peers (test rigs, neighboring shops) would otherwise be redialed on every
+   * discovery event; back off quietly and re-probe after the window. */
+  private mismatchBackoff = new Map<string, number>();
+  private static readonly MISMATCH_BACKOFF_MS = 60_000;
   private startPeerSweep(): void {
     // mDNS is lossy: browse windows miss peers and re-announces are not
     // guaranteed, so discovery events alone cannot drive (re)dial. Sweep
@@ -272,6 +278,9 @@ class LocalNodeServiceCore {
   }
   private connectToPeer(node: DiscoveredNode): void {
     if (this.mode !== "mesh") return;
+    // Foreign-business backoff (see mismatchBackoff).
+    const mismatchedAt = this.mismatchBackoff.get(node.deviceId);
+    if (mismatchedAt && Date.now() - mismatchedAt < LocalNodeServiceCore.MISMATCH_BACKOFF_MS) return;
     // One dial per peer at a time: discovery fires in bursts (initial browse,
     // re-announces) and parallel dials destroy each other's sockets mid-
     // handshake — a livelock where nothing ever completes. A second attempt
@@ -322,6 +331,7 @@ class LocalNodeServiceCore {
       },
       onConnected: () => {
         this.settleDial(node.deviceId);
+        this.mismatchBackoff.delete(node.deviceId);
         syncLogger.info("LocalNodeService", "Connected to peer", { deviceId: node.deviceId });
         this.peerInfos.set(node.deviceId, { deviceId: node.deviceId, host: node.host, port: node.port });
         localNodeStore.getState().addConnectedClient({ deviceId: node.deviceId, deviceName: node.deviceName, host: node.host, connectedAt: new Date().toISOString() });
@@ -333,7 +343,12 @@ class LocalNodeServiceCore {
         this.peerInfos.delete(node.deviceId);
         localNodeStore.getState().removeConnectedClient(node.deviceId);
       },
-      onError: (error) => { syncLogger.debug("LocalNodeService", "Peer connect error", { error: String(error), deviceId: node.deviceId }); },
+      onError: (error) => {
+        if (String(error).includes("business_mismatch")) {
+          this.mismatchBackoff.set(node.deviceId, Date.now());
+        }
+        syncLogger.debug("LocalNodeService", "Peer connect error", { error: String(error), deviceId: node.deviceId });
+      },
     });
     this.peers.set(node.deviceId, client);
     this.peerInfos.set(node.deviceId, { deviceId: node.deviceId, host: node.host, port: node.port });
@@ -359,6 +374,9 @@ class LocalNodeServiceCore {
     this.dialTimers.set(node.deviceId, ttl);
     client.connect().catch((e) => {
       this.settleDial(node.deviceId);
+      if (String(e?.message ?? e).includes("business_mismatch")) {
+        this.mismatchBackoff.set(node.deviceId, Date.now());
+      }
       syncLogger.debug("LocalNodeService", "Peer connect failed, will retry on next discovery", { error: String(e), deviceId: node.deviceId });
       // Keep peer entry so next discovery will retry; or remove to allow fresh connect
       // For mesh, keep and let discovery re-add

@@ -272,6 +272,52 @@ describe("mesh local-node core", () => {
     }
   });
 
+  it("business_mismatch backs off redial for 60s", async () => {
+    const business = { id: "biz-123" };
+    const discovery = new MockDiscovery();
+    const transport = new MockTransport();
+    let dials = 0;
+    let failNext: ((e: unknown) => void) | null = null;
+    transport.createClient = (opts: any) => {
+      dials++;
+      const c = {
+        connect: async () => {
+          // Caller redials through the service; capture onError for mismatch.
+          failNext = opts.onError;
+        },
+        disconnect: () => {},
+        isConnected: () => false,
+        execute: async () => [],
+        requestReferenceData: async () => ({ data: {} }),
+      };
+      transport.clients.push(c);
+      return c;
+    };
+    setAppInstanceId("device-mesh-1");
+    localNodeStore.getState().setIsLocalNodeEnabled(true);
+    initLocalNodeService({
+      getDeviceId: () => "device-mesh-1",
+      getBusiness: () => business as any,
+      getAuth: () => ({ user: { id: "u1" }, accessToken: "tok" }),
+      discovery: discovery as any,
+      transport: transport as any,
+    });
+    await localNodeService.initialize();
+    const peer = { deviceId: "device-foreign", name: "peer", host: "192.168.1.11", port: 44621, deviceName: "F", lastSeenAt: new Date().toISOString() };
+    localNodeStore.getState().addDiscoveredNode(peer as any);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(dials).toBe(1);
+    // Server rejected: foreign business.
+    failNext!(new Error("auth_fail business_mismatch"));
+    // Re-announce storm must NOT redial within the backoff window.
+    localNodeStore.getState().removeDiscoveredNode("device-foreign");
+    localNodeStore.getState().addDiscoveredNode({ ...peer } as any);
+    localNodeStore.getState().removeDiscoveredNode("device-foreign");
+    localNodeStore.getState().addDiscoveredNode({ ...peer } as any);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(dials).toBe(1);
+  });
+
   it("discovery filters self and fe80", async () => {
     const discovery = new MockDiscovery();
     const transport = new MockTransport();
