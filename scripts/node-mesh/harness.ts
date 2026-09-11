@@ -26,6 +26,7 @@ import { openSyncDatabase } from "../../src/db/connection";
 import { getOrderById } from "../../src/db/operations";
 import { NodeDiscovery, NodeTransport } from "./drivers";
 import { installNodeSqlite, seedHarness } from "./sqlite-node";
+import { orderRepository } from "../../src/repositories/order.repository";
 import type { DomainEvent, Command } from "../../src/sync/types";
 
 // In-memory KV per process
@@ -186,8 +187,7 @@ async function doOrder(label: string): Promise<void> {
   console.log(`[${deviceId}] order created id=${o?.id} number=${o?.order_number} status=${o?.status}`);
 }
 
-async function doTransition(orderId: string, commandType: string): Promise<void> {
-  const evt = await localNodeService.handleNodeCommand(buildCommand(commandType, orderId, { orderId }));
+async function doTransition(orderId: string, commandType: string): Promise<void> {  const evt = await localNodeService.handleNodeCommand(buildCommand(commandType, orderId, { orderId }));
   const p = evt?.payload as { action?: string; orderId?: string } | undefined;
   const db = await openSyncDatabase();
   const row = await getOrderById(db, businessId, orderId);
@@ -218,6 +218,35 @@ async function handleLine(line: string): Promise<void> {
     }
     if (cmd === "/quit" || cmd === "/exit") { process.exit(0); }
     if (cmd === "/order") { await doOrder(rest.join(" ")); return; }
+    if (cmd === "/eng-order") {
+      // Full product path: repository -> SyncEngine -> LocalNodeTransport ->
+      // peer handleNodeCommand -> order:sync. Proves routing, not just the executor.
+      const { randomUUID: uuid } = await import("node:crypto");
+      try {
+        const o = await orderRepository.createOrder({ businessId, data: { items: [{ menu_item_id: "m-jollof", quantity: 1 }], item_snapshots: [{ menu_item_id: "m-jollof", name: "Jollof Rice", quantity: 1, unit_price_minor: 5000 }], total_minor: 5000, pos_payment_method: "cash", order_type: "takeout", customer_name: rest.join(" ") || "Eng" } as unknown as Parameters<typeof orderRepository.createOrder>[0]["data"], entityId: uuid() });
+        console.log(`[${deviceId}] eng-order created id=${o.id} number=${o.order_number} status=${o.status}`);
+      } catch (e) { console.log(`[${deviceId}] eng-order failed: ${String(e)}`); }
+      return;
+    }
+    if (cmd === "/eng-accept") {
+      // Engine-routed transition via repository (not direct handleNodeCommand).
+      // Use a valid action for the order's status (e.g. start_preparing on accepted).
+      const action = rest[1] ?? "accept";
+      const verbs: Record<string, (p: { orderId: string; businessId: string }) => Promise<unknown>> = {
+        accept: (p) => orderRepository.acceptOrder(p),
+        start_preparing: (p) => orderRepository.startPreparingOrder(p),
+        mark_ready: (p) => orderRepository.markOrderReady(p),
+        complete_pickup: (p) => orderRepository.completePickup(p),
+        cancel: (p) => orderRepository.cancelOrder(p),
+      };
+      try {
+        const run = verbs[action];
+        if (!run) throw new Error(`unknown action ${action}`);
+        const o = await run({ orderId: rest[0], businessId });
+        console.log(`[${deviceId}] eng-${action} ok status=${(o as { status?: string }).status}`);
+      } catch (e) { console.log(`[${deviceId}] eng-${action} failed: ${String(e)}`); }
+      return;
+    }
     if (cmd === "/prepare") { await doTransition(rest[0], "order:start_preparing"); return; }
     if (cmd === "/ready") { await doTransition(rest[0], "order:mark_ready"); return; }
     if (cmd === "/pickup") { await doTransition(rest[0], "order:complete_pickup"); return; }
@@ -278,6 +307,7 @@ async function handleLine(line: string): Promise<void> {
     localNodeService.broadcastToClients(ev);
   } catch (e) {
     console.log(`[${deviceId}] command failed: ${String(e)}`);
+    try { console.log((e as Error)?.stack?.split("\n").slice(1, 5).join("\n")); } catch {}
   }
 }
 

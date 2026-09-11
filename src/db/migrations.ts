@@ -330,4 +330,61 @@ export const MIGRATIONS: Migration[] = [
       try { await db.execAsync(`DELETE FROM sync_jobs WHERE payload LIKE '%TFL-%';`); } catch {}
     },
   },
+  {
+    version: 9,
+    up: async (db) => {
+      // v8 dropped commands/events as "legacy" while the engine outbox
+      // (commandQueueService.enqueue) and the event journal (insertEvent,
+      // hydrate, replay) still depend on them. On any DB that ran v8, every
+      // queue/journal write throws "no such table", breaking offline queue
+      // on all transports. Recreate exactly (IF NOT EXISTS: healthy DBs no-op).
+      await db.execAsync(`
+          CREATE TABLE IF NOT EXISTS commands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            command_id TEXT NOT NULL UNIQUE,
+            command_type TEXT NOT NULL,
+            command_version TEXT NOT NULL,
+            business_id TEXT NOT NULL,
+            entity_id TEXT,
+            user_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error TEXT,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            last_attempted_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+
+          CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status);
+          CREATE INDEX IF NOT EXISTS idx_commands_business ON commands(business_id);
+          CREATE INDEX IF NOT EXISTS idx_commands_entity ON commands(entity_id);
+          CREATE INDEX IF NOT EXISTS idx_commands_created_at ON commands(created_at);
+        `);
+
+      await db.execAsync(`
+          CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL UNIQUE,
+            event_type TEXT NOT NULL,
+            event_version TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            synced_to_cloud INTEGER NOT NULL DEFAULT 0,
+            timestamp TEXT NOT NULL,
+            persisted_at TEXT NOT NULL
+          );
+
+          CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+          CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_id);
+          CREATE INDEX IF NOT EXISTS idx_events_synced ON events(synced_to_cloud);
+          CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+          CREATE INDEX IF NOT EXISTS idx_events_origin ON events(origin);
+        `);
+    },
+  },
 ];

@@ -16,9 +16,10 @@ export function installNodeSqlite(): void {
       db.exec(sql);
     },
     runAsync: async (sql: string, ...args: unknown[]) => {
-      const info = db.prepare(sql).run(...(args as unknown[]));
+      const info = db.prepare(sql).run(...(args as unknown[])) as unknown as Record<string, unknown>;
+      const lastId = info.lastInsertRowId ?? info.lastInsertRowid ?? 0;
       return {
-        lastInsertRowId: Number(info.lastInsertRowId),
+        lastInsertRowId: Number(lastId),
         changes: Number(info.changes),
       };
     },
