@@ -142,3 +142,43 @@ export async function getAllReferenceDataKeys(
   );
   return rows.map((r) => r.key as ReferenceDataKey);
 }
+
+import { generateUUID } from "../utils/uuid";
+import { openSyncDatabase } from "../db/connection";
+import type { OperatingHoursEntry } from "../types/api/business.api";
+
+export async function setOperatingHoursLocal(
+  businessId: string,
+  entries: OperatingHoursEntry[],
+): Promise<void> {
+  const db = await openSyncDatabase();
+  const payload = { data: entries };
+  const now = new Date().toISOString();
+  const version = generateUUID();
+  await setReferenceData(db, businessId, {
+    key: "operating-hours",
+    version,
+    payload,
+    downloadedAt: now,
+    lastHlc: version,
+    lastEventId: `evt_${version}`,
+  });
+}
+
+export async function setBusinessProfileLocal(
+  businessId: string,
+  profile: Record<string, unknown>,
+): Promise<void> {
+  const db = await openSyncDatabase();
+  const payload = { data: profile };
+  const now = new Date().toISOString();
+  const version = generateUUID();
+  await setReferenceData(db, businessId, {
+    key: "business:profile",
+    version,
+    payload,
+    downloadedAt: now,
+    lastHlc: version,
+    lastEventId: `evt_${version}`,
+  });
+}

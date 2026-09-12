@@ -53,9 +53,34 @@ interface AggregateOptions {
  * Field names mirror orders.ex get_seller_analytics / get_revenue_summary
  * exactly so screens render identically online and offline.
  */
-function aggregateLocal(orders: LocalOrderRow[], period: string, opts: AggregateOptions) {
-  const total_revenue_minor = orders.reduce((s, o) => s + (o.total_minor ?? 0), 0);
-  const total_orders = orders.length;
+function filterByPeriod(orders: LocalOrderRow[], period: "today" | "this_week" | "this_month"): LocalOrderRow[] {
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+  if (period === "today") {
+    return orders.filter((o) => (o.inserted_at ?? "").slice(0, 10) === todayStr);
+  }
+  if (period === "this_week") {
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday
+    const startStr = startOfWeek.toISOString().slice(0, 10);
+    return orders.filter((o) => {
+      const d = (o.inserted_at ?? "").slice(0, 10);
+      return d >= startStr && d <= todayStr;
+    });
+  }
+  // this_month
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startStr = startOfMonth.toISOString().slice(0, 10);
+  return orders.filter((o) => {
+    const d = (o.inserted_at ?? "").slice(0, 10);
+    return d >= startStr && d <= todayStr;
+  });
+}
+
+function aggregateLocal(orders: LocalOrderRow[], period: "today" | "this_week" | "this_month", opts: AggregateOptions) {
+  const filtered = filterByPeriod(orders, period);
+  const total_revenue_minor = filtered.reduce((s, o) => s + (o.total_minor ?? 0), 0);
+  const total_orders = filtered.length;
   const average_order_value_minor = total_orders ? Math.round(total_revenue_minor / total_orders) : 0;
   const byMethod = new Map<string, { revenue_minor: number; count: number }>();
   const byType = new Map<string, { revenue_minor: number; count: number }>();
@@ -63,7 +88,7 @@ function aggregateLocal(orders: LocalOrderRow[], period: string, opts: Aggregate
   const byStatus: Record<string, number> = {};
   const itemQty = new Map<string, number>();
   const itemRev = new Map<string, number>();
-  for (const o of orders) {
+  for (const o of filtered) {
     const method = o.pos_payment_method ?? o.payment_mode ?? "cash";
     const m = byMethod.get(method) ?? { revenue_minor: 0, count: 0 };
     m.revenue_minor += o.total_minor ?? 0;
@@ -130,7 +155,7 @@ async function localOrders(businessId: string): Promise<LocalOrderRow[]> {
   return ((data as unknown as LocalOrderRow[]) ?? []);
 }
 
-export function useSellerAnalyticsQuery(period = "today", enabled = true) {
+export function useSellerAnalyticsQuery(period: "today" | "this_week" | "this_month" = "today", enabled = true) {
   const businessId = useBusinessId();
   const online = useIsEffectivelyOnline();
   return useQuery({
@@ -144,7 +169,25 @@ export function useSellerAnalyticsQuery(period = "today", enabled = true) {
         }
       }
       try {
-        return await analyticsService.fetchSellerAnalytics(businessId! as string, period);
+        const backendRes = await analyticsService.fetchSellerAnalytics(businessId! as string, period) as { data?: { period?: string; revenue_by_day?: unknown[] } };
+        // Safety net: if backend doesn't filter by period (returns all days regardless), filter locally
+        const backendData = backendRes.data;
+        const byDay = backendData?.revenue_by_day as Array<{ date?: string }> | undefined;
+        const shouldFilterLocally = 
+          !byDay?.length ||
+          (period === "today" && byDay.length > 1) ||
+          (period === "this_week" && byDay.some(d => {
+            const day = new Date(d.date ?? "");
+            const now = new Date();
+            const startOfWeek = new Date(now);
+            startOfWeek.setDate(now.getDate() - now.getDay());
+            return day < startOfWeek || day > now;
+          }));
+        if (shouldFilterLocally) {
+          const localOrdersData = await localOrders(businessId!);
+          return { data: aggregateLocal(localOrdersData, period, { forRevenueSummary: false }) };
+        }
+        return backendRes;
       } catch {
         return { data: aggregateLocal(await localOrders(businessId!), period, { forRevenueSummary: false }) };
       }
@@ -155,7 +198,7 @@ export function useSellerAnalyticsQuery(period = "today", enabled = true) {
   });
 }
 
-export function useRevenueSummaryQuery(period = "today", enabled = true) {
+export function useRevenueSummaryQuery(period: "today" | "this_week" | "this_month" = "today", enabled = true) {
   const businessId = useBusinessId();
   const online = useIsEffectivelyOnline();
   return useQuery({
@@ -169,7 +212,25 @@ export function useRevenueSummaryQuery(period = "today", enabled = true) {
         }
       }
       try {
-        return await analyticsService.fetchRevenueSummary(businessId! as string, period);
+        const backendRes = await analyticsService.fetchRevenueSummary(businessId! as string, period) as { data?: { period?: string; by_day?: unknown[] } };
+        // Safety net: if backend doesn't filter by period (returns all days regardless), filter locally
+        const backendData = backendRes.data;
+        const byDay = backendData?.by_day as Array<{ date?: string }> | undefined;
+        const shouldFilterLocally = 
+          !byDay?.length ||
+          (period === "today" && byDay.length > 1) ||
+          (period === "this_week" && byDay.some(d => {
+            const day = new Date(d.date ?? "");
+            const now = new Date();
+            const startOfWeek = new Date(now);
+            startOfWeek.setDate(now.getDate() - now.getDay());
+            return day < startOfWeek || day > now;
+          }));
+        if (shouldFilterLocally) {
+          const localOrdersData = await localOrders(businessId!);
+          return { data: aggregateLocal(localOrdersData, period, { forRevenueSummary: true }) };
+        }
+        return backendRes;
       } catch {
         return { data: aggregateLocal(await localOrders(businessId!), period, { forRevenueSummary: true }) };
       }

@@ -5,6 +5,9 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { isBusinessOpenNow, type BusinessOpenState } from "../utils/business-hours";
+import { getReferenceData } from "../reference/operations";
+import { openSyncDatabase } from "../db/connection";
+import type { OperatingHoursEntry } from "../types/api/business.api";
 
 export const BUSINESS_HOURS_KEYS = {
   all: ["business-hours"] as const,
@@ -21,6 +24,23 @@ export function useBusinessOpenNow(businessId?: string, enabled = true) {
     enabled: enabled && !!businessId,
     staleTime: 30 * 1000,
     refetchInterval: 60 * 1000,
+    networkMode: "offlineFirst" as const,
+  });
+}
+
+export function useOperatingHours(businessId?: string, enabled = true) {
+  return useQuery<OperatingHoursEntry[]>({
+    queryKey: BUSINESS_HOURS_KEYS.open(businessId).concat(["entries"]),
+    queryFn: async () => {
+      if (!businessId) throw new Error("No business");
+      const db = await openSyncDatabase();
+      const rec = await getReferenceData<unknown>(db, businessId, "operating-hours");
+      if (!rec) return [];
+      const payload = rec.payload as { data?: OperatingHoursEntry[] } | OperatingHoursEntry[];
+      return Array.isArray(payload) ? payload : (payload.data ?? []);
+    },
+    enabled: enabled && !!businessId,
+    staleTime: 30 * 1000,
     networkMode: "offlineFirst" as const,
   });
 }

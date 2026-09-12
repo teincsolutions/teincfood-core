@@ -83,3 +83,6 @@ export async function fetchReferenceChanges<T>(
   );
   return (response.data as DataWrapper<ReferenceChangeSet<T>>).data;
 }
+
+export { setReferenceData, mergeReferenceData } from "./operations";
+export { setOperatingHoursLocal, setBusinessProfileLocal } from "./operations";
