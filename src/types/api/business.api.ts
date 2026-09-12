@@ -163,3 +163,49 @@ export interface TaxRuleRequest {
     display_order?: number;
   };
 }
+
+// ─── Member invitations (matches backend invitation payloads) ───
+
+export interface BusinessMemberInvitation {
+  id: string;
+  business_id: string;
+  invited_email: string;
+  role: string;
+  status: string;
+  expires_at: string;
+  inserted_at: string;
+  invited_by?: { id: string; full_name: string; email: string } | null;
+}
+
+export interface BusinessMemberInvitationListResponse {
+  data: BusinessMemberInvitation[];
+}
+
+export interface UserInvitation {
+  id: string;
+  type: 'business_owner' | 'fleet_rider' | 'business_member' | 'rider_linked';
+  status: string;
+  business_name: string | null;
+  business_id: string | null;
+  code: string | null;
+  role?: string;
+  is_fleet_managed: boolean;
+  created_at: string | null;
+}
+
+// ─── Roles (matches backend roles payload) ───
+
+export interface RoleCapabilityItem {
+  key: string;
+  label: string;
+  description?: string;
+}
+
+export interface RoleCapability {
+  label: string;
+  capabilities: RoleCapabilityItem[];
+}
+
+export interface RolesResponse {
+  data: Record<string, RoleCapability>;
+}

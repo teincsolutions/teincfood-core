@@ -21,6 +21,7 @@ import {
   insertEvent,
 } from "../db/operations";
 import { syncLogger } from "../utils/sync-logger";
+import { recordAttempt } from "../utils/attempt-stats";
 import { generateEventId } from "../utils/uuid";
 import {
   generateLocalCalloutNumber,
@@ -354,6 +355,18 @@ class CommandQueueService {
           status: apiErr.status,
           error: message,
         });
+        // Loud toast + revert: the optimistic local write is rolled back so
+        // the UI never shows what the backend refused.
+        try {
+          const { notifyError } = await import("../adapters/notify");
+          notifyError(`Server rejected ${command.command_type}: ${message}`);
+        } catch {}
+        try {
+          if (command.command_type.startsWith("menu:") && command.entity_id) {
+            const { revertMenuCommand } = await import("../reference/menu-apply");
+            await revertMenuCommand(command.business_id, command.command_type, command.entity_id);
+          }
+        } catch {}
         // Do not throw — allow replay to continue to next command.
         return;
       }
@@ -372,6 +385,7 @@ class CommandQueueService {
    * ordering consistent; the next replay will retry from the failed command.
    */
   async replay(): Promise<void> {
+    recordAttempt("sync_drain", "replay");
     // Join an in-flight replay instead of no-op'ing: concurrent replays
     // (connectivity auto-replay racing an explicit replay) must converge on
     // the same outcome, otherwise callers observe a drained queue while work
@@ -438,6 +452,31 @@ class CommandQueueService {
     const db = getSyncDatabase();
     const commands = await getPendingCommands(db, Number.MAX_SAFE_INTEGER);
     return commands.length;
+  }
+
+  /**
+   * Debug dump of the engine outbox for Diagnostics screens (all statuses,
+   * newest last). Mirrors debugDumpSyncJobs.
+   */
+  async debugDumpCommands(
+    businessId: string,
+  ): Promise<Array<{ id: string; command_type: string; status: string; retry_count: number; error: string | null; created_at: string }>> {
+    try {
+      const db = getSyncDatabase();
+      const rows = await getPendingCommands(db, Number.MAX_SAFE_INTEGER);
+      return rows
+        .filter((c) => !businessId || c.business_id === businessId)
+        .map((c) => ({
+          id: c.command_id,
+          command_type: c.command_type,
+          status: c.status,
+          retry_count: c.retry_count,
+          error: c.error ?? null,
+          created_at: c.created_at ?? "",
+        }));
+    } catch {
+      return [];
+    }
   }
 }
 

@@ -55,9 +55,9 @@ export function filterSellerOrdersOffline(
   return filtered;
 }
 
-export function paginateOffline<T>(orders: T[], page: number, pageSize = 20): { data: T[]; pagination: { page: number; page_size: number; total_pages: number; total_count: number } } {
+export function paginateOffline<T>(orders: T[], page: number, pageSize = 20): { data: T[]; pagination: { page: number; page_size: number; total_pages: number; total_entries: number } } {
   const start = (page - 1) * pageSize;
   const slice = orders.slice(start, start + pageSize);
   const totalPages = Math.max(1, Math.ceil(orders.length / pageSize));
-  return { data: slice, pagination: { page, page_size: pageSize, total_pages: totalPages, total_count: orders.length } };
+  return { data: slice, pagination: { page, page_size: pageSize, total_pages: totalPages, total_entries: orders.length } };
 }

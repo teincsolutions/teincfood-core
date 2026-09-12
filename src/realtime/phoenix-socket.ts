@@ -1,5 +1,7 @@
 import { WS_BASE_URL } from "../utils/constants";
 import { getAuthToken } from "../adapters/auth";
+import { recordAttempt } from "../utils/attempt-stats";
+import { syncLogger } from "../utils/sync-logger";
 
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "reconnecting";
 export type PhoenixV2Frame = [string | null, string | null, string, string, Record<string, unknown>];
@@ -54,6 +56,7 @@ class PhoenixSocket {
   connect(): Promise<void> {
     if (this.socket?.readyState === WebSocket.OPEN) return Promise.resolve();
     if (this.connectPromise) return this.connectPromise;
+    recordAttempt("ws_connect");
     this.cancelReconnect();
     this.intentionalClose = false;
     this.setState("connecting");
@@ -94,6 +97,8 @@ class PhoenixSocket {
     this.setState("reconnecting");
     const delay = Math.min(RECONNECT_BASE * Math.pow(2, this.reconnectAttempt), RECONNECT_MAX);
     this.reconnectAttempt++;
+    recordAttempt("ws_reconnect", `delay=${delay} attempt=${this.reconnectAttempt}`);
+    try { syncLogger.debug("PhoenixSocket", "scheduleReconnect", { delay, attempt: this.reconnectAttempt }); } catch {}
     this.reconnectTimer = setTimeout(()=> this.connect().catch(()=>{}), delay);
   }
 
@@ -102,6 +107,7 @@ class PhoenixSocket {
   private startHeartbeat(): void {
     this.heartbeatPend = false; this.heartbeatMissed = 0;
     this.heartbeatTimer = setInterval(()=> {
+      recordAttempt("ws_heartbeat", `missed=${this.heartbeatMissed}`);
       if (this.heartbeatPend) { this.heartbeatMissed++; if (this.heartbeatMissed >= PhoenixSocket.MAX_MISSED) this.socket?.close(); return; }
       this.heartbeatPend = true; this.sendRaw({ topic: "phoenix", event: "heartbeat", payload: {} });
     }, HEARTBEAT_MS);

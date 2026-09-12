@@ -110,13 +110,19 @@ export class RestTransport implements Transport {
       }
 
       case "menu:create_item": {
-        const createPayload = { ...(payload as Record<string, unknown>), id: (payload as Record<string, unknown>).id ?? command.command_id, command_id: command.command_id };
+        // cacheRecord is local-cache only — strip it so the backend receives
+        // the flat wire payload it accepts (it owns canonical on converge).
+        const { cacheRecord: _omitCreate, ...wireCreate } = payload as Record<string, unknown>;
+        void _omitCreate;
+        const createPayload = { ...wireCreate, id: wireCreate.id ?? command.command_id, command_id: command.command_id };
         const response = await menuService.createMenuItem(business_id, createPayload);
         return this.wrapResponse("menu.item_created", response as unknown as Record<string, unknown>, command.command_id, timestamp, command);
       }
 
       case "menu:update_item": {
-        const response = await menuService.updateMenuItem(entity_id!, payload as Record<string, unknown>);
+        const { cacheRecord: _omitUpdate, ...wireUpdate } = payload as Record<string, unknown>;
+        void _omitUpdate;
+        const response = await menuService.updateMenuItem(entity_id!, wireUpdate);
         return this.wrapResponse("menu.item_updated", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
       }
 
@@ -126,13 +132,17 @@ export class RestTransport implements Transport {
       }
 
       case "menu:create_category": {
-        const createPayload = { ...(payload as Record<string, unknown>), id: (payload as Record<string, unknown>).id ?? command.command_id, command_id: command.command_id };
+        const { cacheRecord: _omitCatCreate, ...wireCatCreate } = payload as Record<string, unknown>;
+        void _omitCatCreate;
+        const createPayload = { ...wireCatCreate, id: wireCatCreate.id ?? command.command_id, command_id: command.command_id };
         const response = await menuService.createCategory(business_id, createPayload);
         return this.wrapResponse("menu.category_created", response as unknown as Record<string, unknown>, command.command_id, timestamp, command);
       }
 
       case "menu:update_category": {
-        const response = await (menuService as unknown as { updateCategory: (id: string, p: unknown) => Promise<unknown> }).updateCategory(entity_id!, payload as Record<string, unknown>);
+        const { cacheRecord: _omitCatUpdate, ...wireCatUpdate } = payload as Record<string, unknown>;
+        void _omitCatUpdate;
+        const response = await (menuService as unknown as { updateCategory: (id: string, p: unknown) => Promise<unknown> }).updateCategory(entity_id!, wireCatUpdate);
         return this.wrapResponse("menu.category_updated", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
       }
 

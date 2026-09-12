@@ -4,6 +4,7 @@
 
 import { localNodeStore, type DiscoveredNode } from "./store";
 import { syncLogger } from "../utils/sync-logger";
+import { recordAttempt } from "../utils/attempt-stats";
 import { restTransport } from "../sync/transport-rest";
 import { commandQueueService } from "../sync/command-queue.service";
 import { applyPendingOrderEvent, applyOrderStateChangeEvent, notifyPendingOrdersChanged } from "../sync/pending-orders.service";
@@ -264,7 +265,9 @@ class LocalNodeServiceCore {
     this.sweepTimer = setInterval(() => {
       try {
         if (this.mode !== "mesh") return;
-        for (const n of localNodeStore.getState().discoveredNodes) {
+        const nodes = localNodeStore.getState().discoveredNodes;
+        recordAttempt("sweep_tick", `known=${nodes.length}`);
+        for (const n of nodes) {
           if (n.deviceId === this.cachedDeviceId) continue;
           if (this.peers.get(n.deviceId)?.isConnected()) continue;
           this.connectToPeer(n);
@@ -353,6 +356,7 @@ class LocalNodeServiceCore {
     this.peers.set(node.deviceId, client);
     this.peerInfos.set(node.deviceId, { deviceId: node.deviceId, host: node.host, port: node.port });
     this.dialInFlight.add(node.deviceId);
+    recordAttempt("lan_dial", node.deviceId.slice(0, 8));
     // Wedged-handshake reaper: if neither connected nor failed within the TTL
     // (no callback ever fires), release the socket so the next discovery
     // redials instead of piling up parallel attempts.
@@ -363,6 +367,7 @@ class LocalNodeServiceCore {
       this.dialInFlight.delete(node.deviceId);
       const c = this.peers.get(node.deviceId);
       if (c && !c.isConnected()) {
+        recordAttempt("ttl_reap", node.deviceId.slice(0, 8));
         syncLogger.debug("LocalNodeService", "Dial TTL expired, reaping wedged attempt", { deviceId: node.deviceId });
         try { c.disconnect(); } catch {}
         this.peers.delete(node.deviceId);

@@ -1,0 +1,327 @@
+/**
+ * Members / invitations / roles / tax hooks — single source for both apps.
+ * Reads serve the SQLite reference cache instantly; network refreshes
+ * silently when online. Invites and management mutations require online.
+ */
+
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSyncExternalStore } from "react";
+import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
+import { businessService, rolesService, fleetService } from "../adapters/services";
+import { assertOnlineFor } from "../sync/online-gates";
+import { validateInviteInput } from "../validation/offline";
+import { notifySuccess, notifyError } from "../adapters/notify";
+import { extractApiErrorMessage } from "../utils/error";
+import { emitReferenceChanged } from "../reference/events";
+import { useReferenceData } from "../reference/hooks";
+import { useIsEffectivelyOnline } from "./use-infinite-list";
+import type { BusinessMemberListResponse, RolesResponse, TaxRuleListResponse } from "../types/api/business.api";
+
+function useBusinessId(): string | undefined {
+  const id = useSyncExternalStore(subscribeBusiness, () => getActiveBusiness()?.id ?? null, () => null);
+  return id ?? undefined;
+}
+
+const OFFLINE_FIRST = { retry: false, networkMode: "offlineFirst" } as const;
+
+// ─── Keys ───
+
+export const MEMBER_KEYS = {
+  all: ["business-members"] as const,
+  list: (businessId?: string) => [...MEMBER_KEYS.all, businessId] as const,
+  invitations: (businessId?: string) => [...MEMBER_KEYS.all, businessId, "invitations"] as const,
+};
+
+export const INVITATION_KEYS = {
+  all: ["invitations"] as const,
+  list: () => [...INVITATION_KEYS.all, "list"] as const,
+};
+
+export const ROLES_KEYS = {
+  all: ["business-roles"] as const,
+  forBusiness: (businessId?: string) => [...ROLES_KEYS.all, businessId] as const,
+};
+
+export const TAX_KEYS = {
+  all: ["tax-rules"] as const,
+  list: (businessId?: string) => [...TAX_KEYS.all, "list", businessId] as const,
+};
+
+// ─── Members ───
+
+export function useBusinessMembersQuery() {
+  const businessId = useBusinessId();
+  const cached = useReferenceData<BusinessMemberListResponse>("members");
+  const online = useIsEffectivelyOnline();
+
+  const q = useQuery({
+    queryKey: MEMBER_KEYS.list(businessId ?? ""),
+    queryFn: () => (businessService as unknown as { fetchBusinessMembers: (b: string) => Promise<unknown> }).fetchBusinessMembers(businessId!),
+    enabled: Boolean(businessId) && online,
+    staleTime: 30 * 1000,
+    ...OFFLINE_FIRST,
+    placeholderData: cached.data?.payload,
+  });
+  // Offline: SQLite cache directly so screens stay populated when down.
+  return { ...q, data: (q.data as unknown) ?? cached.data?.payload } as typeof q;
+}
+
+export function useInviteMemberMutation() {
+  const queryClient = useQueryClient();
+  const businessId = useBusinessId();
+
+  return useMutation({
+    mutationFn: (data: { email?: string; phone?: string; role?: string }) => {
+      assertOnlineFor("member:invite");
+      validateInviteInput({ email: data.email });
+      return (businessService as unknown as { inviteBusinessMember: (b: string, d: unknown) => Promise<unknown> }).inviteBusinessMember(businessId!, data);
+    },
+    onSuccess: () => {
+      notifySuccess("Invitation sent!");
+      queryClient.invalidateQueries({ queryKey: MEMBER_KEYS.list(businessId ?? "") });
+      if (businessId) emitReferenceChanged(businessId, ["members"]);
+    },
+    onError: (error) => {
+      notifyError(extractApiErrorMessage(error));
+    },
+  });
+}
+
+export function useRemoveMemberMutation() {
+  const queryClient = useQueryClient();
+  const businessId = useBusinessId();
+
+  return useMutation({
+    mutationFn: (userId: string) => {
+      assertOnlineFor("member:manage");
+      return (businessService as unknown as { removeBusinessMember: (b: string, u: string) => Promise<unknown> }).removeBusinessMember(businessId!, userId);
+    },
+    onSuccess: () => {
+      notifySuccess("Member removed");
+      queryClient.invalidateQueries({ queryKey: MEMBER_KEYS.list(businessId ?? "") });
+      if (businessId) emitReferenceChanged(businessId, ["members"]);
+    },
+    onError: (error) => {
+      notifyError(extractApiErrorMessage(error));
+    },
+  });
+}
+
+export function useBusinessMemberInvitationsQuery() {
+  const businessId = useBusinessId();
+
+  return useQuery({
+    queryKey: MEMBER_KEYS.invitations(businessId ?? ""),
+    queryFn: () =>
+      (businessService as unknown as { fetchBusinessMemberInvitations: (b: string) => Promise<unknown> }).fetchBusinessMemberInvitations(businessId!),
+    enabled: Boolean(businessId),
+    ...OFFLINE_FIRST,
+  });
+}
+
+export function useRevokeMemberInvitationMutation() {
+  const queryClient = useQueryClient();
+  const businessId = useBusinessId();
+
+  return useMutation({
+    mutationFn: (invitationId: string) => {
+      assertOnlineFor("member:manage");
+      return (businessService as unknown as { revokeBusinessMemberInvitation: (b: string, i: string) => Promise<unknown> }).revokeBusinessMemberInvitation(businessId!, invitationId);
+    },
+    onSuccess: () => {
+      notifySuccess("Invitation revoked");
+      queryClient.invalidateQueries({ queryKey: MEMBER_KEYS.invitations(businessId ?? "") });
+      if (businessId) emitReferenceChanged(businessId, ["members"]);
+    },
+    onError: (error) => {
+      notifyError(extractApiErrorMessage(error));
+    },
+  });
+}
+
+export function useDeleteMemberInvitationMutation() {
+  const queryClient = useQueryClient();
+  const businessId = useBusinessId();
+
+  return useMutation({
+    mutationFn: (invitationId: string) => {
+      assertOnlineFor("member:manage");
+      return (businessService as unknown as { deleteBusinessMemberInvitation: (b: string, i: string) => Promise<unknown> }).deleteBusinessMemberInvitation(businessId!, invitationId);
+    },
+    onSuccess: () => {
+      notifySuccess("Invitation deleted");
+      queryClient.invalidateQueries({ queryKey: MEMBER_KEYS.invitations(businessId ?? "") });
+      if (businessId) emitReferenceChanged(businessId, ["members"]);
+    },
+    onError: (error) => {
+      notifyError(extractApiErrorMessage(error));
+    },
+  });
+}
+
+// ─── User invitations ───
+
+export function useUserInvitationsQuery() {
+  return useQuery({
+    queryKey: INVITATION_KEYS.list(),
+    queryFn: () => (businessService as unknown as { fetchUserInvitations: () => Promise<unknown> }).fetchUserInvitations(),
+    staleTime: 15000,
+    ...OFFLINE_FIRST,
+  });
+}
+
+export function useLeaveBusinessMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (invitationId: string) => {
+      assertOnlineFor("member:manage");
+      return (businessService as unknown as { leaveBusiness: (i: string) => Promise<unknown> }).leaveBusiness(invitationId);
+    },
+    onSuccess: () => {
+      notifySuccess("Left the business");
+      queryClient.invalidateQueries({ queryKey: INVITATION_KEYS.list() });
+    },
+    onError: (error) => {
+      notifyError(extractApiErrorMessage(error));
+    },
+  });
+}
+
+export function useAcceptFleetInvitationMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { code: string }) => {
+      assertOnlineFor("member:manage");
+      return (fleetService as unknown as { acceptFleetInvitation: (d: unknown) => Promise<unknown> }).acceptFleetInvitation(data);
+    },
+    onSuccess: () => {
+      notifySuccess("You have joined the business!");
+      queryClient.invalidateQueries({ queryKey: INVITATION_KEYS.list() });
+    },
+    onError: (error) => {
+      notifyError(extractApiErrorMessage(error));
+    },
+  });
+}
+
+export function useAcceptBusinessInvitationMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { code: string }) => {
+      assertOnlineFor("member:manage");
+      return (businessService as unknown as { acceptBusinessInvitation: (d: unknown) => Promise<unknown> }).acceptBusinessInvitation(data);
+    },
+    onSuccess: () => {
+      notifySuccess("Invitation accepted!");
+      queryClient.invalidateQueries({ queryKey: INVITATION_KEYS.list() });
+    },
+    onError: (error) => {
+      notifyError(extractApiErrorMessage(error));
+    },
+  });
+}
+
+// ─── Roles ───
+
+export function useBusinessRolesQuery(enabled = true) {
+  const businessId = useBusinessId();
+  const cached = useReferenceData<RolesResponse>("roles");
+  const online = useIsEffectivelyOnline();
+  const q = useQuery({
+    queryKey: ROLES_KEYS.forBusiness(businessId),
+    queryFn: () => rolesService.fetchBusinessRoles(),
+    staleTime: Infinity,
+    enabled: enabled && !!businessId && online,
+    ...OFFLINE_FIRST,
+    placeholderData: cached.data?.payload,
+  });
+  return { ...q, data: (q.data as unknown) ?? cached.data?.payload } as typeof q;
+}
+
+// ─── Tax rules ───
+
+export function useBusinessTaxRulesQuery(enabled = true) {
+  const businessId = useBusinessId();
+  const cached = useReferenceData<TaxRuleListResponse>("tax-rules");
+  const online = useIsEffectivelyOnline();
+  const q = useQuery({
+    queryKey: TAX_KEYS.list(businessId),
+    queryFn: () =>
+      (businessService as unknown as { fetchBusinessTaxRules: (b: string) => Promise<unknown> }).fetchBusinessTaxRules(businessId!),
+    enabled: enabled && Boolean(businessId) && online,
+    staleTime: 30 * 1000,
+    ...OFFLINE_FIRST,
+    placeholderData: cached.data?.payload,
+  });
+  return { ...q, data: (q.data as unknown) ?? cached.data?.payload } as typeof q;
+}
+
+export function useCreateTaxRuleMutation() {
+  const queryClient = useQueryClient();
+  const businessId = useBusinessId();
+
+  return useMutation({
+    mutationFn: (data: Record<string, unknown>) => {
+      assertOnlineFor("settings:manage");
+      return (businessService as unknown as { createBusinessTaxRule: (b: string, d: unknown) => Promise<unknown> }).createBusinessTaxRule(businessId!, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: TAX_KEYS.list(businessId) });
+      notifySuccess("Tax rule created");
+      if (businessId) emitReferenceChanged(businessId, ["tax-rules"]);
+    },
+    onError: (err) => {
+      try {
+        console.debug("[TaxHook] Create failed", err);
+      } catch {}
+      notifyError(extractApiErrorMessage(err));
+    },
+  });
+}
+
+export function useUpdateTaxRuleMutation() {
+  const queryClient = useQueryClient();
+  const businessId = useBusinessId();
+
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => {
+      assertOnlineFor("settings:manage");
+      return (businessService as unknown as { updateTaxRule: (i: string, d: unknown) => Promise<unknown> }).updateTaxRule(id, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: TAX_KEYS.list(businessId) });
+      notifySuccess("Tax rule updated");
+      if (businessId) emitReferenceChanged(businessId, ["tax-rules"]);
+    },
+    onError: (err) => {
+      try {
+        console.debug("[TaxHook] Update failed", err);
+      } catch {}
+      notifyError(extractApiErrorMessage(err));
+    },
+  });
+}
+
+export function useDeleteTaxRuleMutation() {
+  const queryClient = useQueryClient();
+  const businessId = useBusinessId();
+
+  return useMutation({
+    mutationFn: (id: string) => {
+      assertOnlineFor("settings:manage");
+      return (businessService as unknown as { deleteTaxRule: (i: string) => Promise<unknown> }).deleteTaxRule(id);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: TAX_KEYS.list(businessId) });
+      notifySuccess("Tax rule removed");
+      if (businessId) emitReferenceChanged(businessId, ["tax-rules"]);
+    },
+    onError: (err) => {
+      try {
+        console.debug("[TaxHook] Delete failed", err);
+      } catch {}
+      notifyError(extractApiErrorMessage(err));
+    },
+  });
+}
+

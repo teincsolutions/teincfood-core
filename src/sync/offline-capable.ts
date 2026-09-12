@@ -13,6 +13,7 @@
 
 import { syncEngine } from "./engine";
 import { buildCommand } from "./command-builder";
+import { assertOnlineFor } from "./online-gates";
 import { syncLogger } from "../utils/sync-logger";
 import { ApiError } from "../adapters/http";
 import { getConnectivityState } from "../adapters/connectivity";
@@ -36,7 +37,24 @@ export async function runOfflineCapableMutation<TService, TCommandPayload>(
   // Per-command capability guard before even attempting direct call
   const required = CAPABILITY_BY_COMMAND[options.commandType];
   if (required) {
-    try {
+  // Online-required gate first: these commands can never succeed offline —
+  // throw loud immediately instead of queuing what no transport can fulfill.
+  assertOnlineFor(options.commandType, options.payload as Record<string, unknown>);
+  // Local-first for engine-routed domains (menu:*): commit locally via the
+  // engine and resolve immediately. Network is sync transport only — never a
+  // mutation delay. The engine cloud path carries the same 2.5s cap and
+  // returns the backend response when online.
+  if (options.commandType.startsWith("menu:")) {
+    const command = buildCommand({
+      commandType: options.commandType,
+      businessId: options.businessId,
+      entityId: options.entityId,
+      payload: options.payload,
+    });
+    const events = await syncEngine.execute(command);
+    return events[0]?.payload as TService;
+  }
+  try {
       const db = await openSyncDatabase();
       const rec = await getReferenceData(db, options.businessId, "capabilities");
       const caps: string[] = (rec?.payload as unknown as { data?: { capabilities?: string[] } })?.data?.capabilities ?? [];

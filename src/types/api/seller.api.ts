@@ -217,3 +217,26 @@ export interface BusinessDelivery {
 }
 
 export type BusinessDeliveriesResponse = PaginatedResponse<BusinessDelivery>;
+
+// ─── Seller dashboard (matches backend dashboard payload) ───
+
+export interface SellerDashboardMetrics {
+  today_orders: number;
+  today_revenue_minor: number;
+  pending_orders: number;
+  average_rating: number;
+  active_orders: number;
+}
+
+export interface SellerDashboardResponse {
+  data: {
+    metrics: SellerDashboardMetrics;
+    recent_orders: Array<{
+      id: string;
+      order_number: string;
+      status: string;
+      total_minor: number;
+      item_count: number;
+    }>;
+  };
+}

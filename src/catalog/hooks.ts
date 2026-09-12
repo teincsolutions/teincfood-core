@@ -16,6 +16,7 @@ import { referenceSyncService } from "../reference/service";
 import { emitReferenceChanged } from "../reference/events";
 import { runOfflineCapableMutation } from "../sync/offline-capable";
 import type { MenuItemListResponse, MenuCategoryListResponse } from "../types/api";
+import { useIsEffectivelyOnline } from "../hooks/use-infinite-list";
 
 export const CATALOG_KEYS = {
   all: ["menu"] as const,
@@ -26,11 +27,6 @@ export const CATALOG_KEYS = {
 function useBusinessId(): string | undefined {
   const id = useSyncExternalStore(subscribeBusiness, () => getActiveBusiness()?.id ?? null, () => null);
   return id ?? undefined;
-}
-function useIsEffectivelyOnline(): boolean {
-  const s = useSyncExternalStore(subscribeConnectivity, getConnectivityState, getConnectivityState);
-  // Offline = navigator offline OR /health probe says backend unreachable. Matches user's "health fails = device offline".
-  return s.isOnline && s.isCloudReachable !== "unreachable";
 }
 
 export function useMenuItemsQuery(filters?: { search?: string; category_ids?: string; sort?: string }, enabled = true) {
@@ -133,8 +129,12 @@ export function useCreateMenuItemMutation() {
   const businessId = useBusinessId();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (payload: Record<string, unknown>) =>
-      runOfflineCapableMutation({ run: () => (menuService as unknown as { createMenuItem: (p: unknown) => Promise<unknown> }).createMenuItem(payload), commandType: "menu:create_item", businessId: businessId!, payload }),
+    mutationFn: (payload: Record<string, unknown>) => {
+      // cacheRecord is local-cache only — never on the wire.
+      const { cacheRecord: _omit, ...wire } = payload;
+      void _omit;
+      return runOfflineCapableMutation({ run: () => (menuService as unknown as { createMenuItem: (p: unknown) => Promise<unknown> }).createMenuItem(wire), commandType: "menu:create_item", businessId: businessId!, entityId: (payload as { id?: string }).id, payload });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: CATALOG_KEYS.items(businessId) });
       if (businessId) emitReferenceChanged(businessId, ["menu:items"]);
@@ -145,8 +145,11 @@ export function useUpdateMenuItemMutation() {
   const businessId = useBusinessId();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, payload }: { id: string; payload: Record<string, unknown> }) =>
-      runOfflineCapableMutation({ run: () => (menuService as unknown as { updateMenuItem: (id: string, p: unknown) => Promise<unknown> }).updateMenuItem(id, payload), commandType: "menu:update_item", businessId: businessId!, entityId: id, payload }),
+    mutationFn: ({ id, payload }: { id: string; payload: Record<string, unknown> }) => {
+      const { cacheRecord: _omit, ...wire } = payload;
+      void _omit;
+      return runOfflineCapableMutation({ run: () => (menuService as unknown as { updateMenuItem: (id: string, p: unknown) => Promise<unknown> }).updateMenuItem(id, wire), commandType: "menu:update_item", businessId: businessId!, entityId: id, payload });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: CATALOG_KEYS.items(businessId) });
       if (businessId) emitReferenceChanged(businessId, ["menu:items"]);
@@ -183,8 +186,11 @@ export function useCreateMenuCategoryMutation() {
   const businessId = useBusinessId();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (payload: Record<string, unknown>) =>
-      runOfflineCapableMutation({ run: () => (menuService as unknown as { createCategory: (b: string, p: unknown) => Promise<unknown> }).createCategory(businessId!, payload), commandType: "menu:create_category", businessId: businessId!, payload }),
+    mutationFn: (payload: Record<string, unknown>) => {
+      const { cacheRecord: _omit, ...wire } = payload;
+      void _omit;
+      return runOfflineCapableMutation({ run: () => (menuService as unknown as { createCategory: (b: string, p: unknown) => Promise<unknown> }).createCategory(businessId!, wire), commandType: "menu:create_category", businessId: businessId!, entityId: (payload as { id?: string }).id, payload });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: CATALOG_KEYS.categories(businessId) });
       if (businessId) emitReferenceChanged(businessId, ["menu:categories"]);
@@ -195,8 +201,11 @@ export function useUpdateMenuCategoryMutation() {
   const businessId = useBusinessId();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, payload }: { id: string; payload: Record<string, unknown> }) =>
-      runOfflineCapableMutation({ run: () => (menuService as unknown as { updateCategory: (id: string, p: unknown) => Promise<unknown> }).updateCategory(id, payload), commandType: "menu:update_category", businessId: businessId!, entityId: id, payload: { ...payload, id } }),
+    mutationFn: ({ id, payload }: { id: string; payload: Record<string, unknown> }) => {
+      const { cacheRecord: _omit, ...wire } = payload;
+      void _omit;
+      return runOfflineCapableMutation({ run: () => (menuService as unknown as { updateCategory: (id: string, p: unknown) => Promise<unknown> }).updateCategory(id, wire), commandType: "menu:update_category", businessId: businessId!, entityId: id, payload: { ...payload, id } });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: CATALOG_KEYS.categories(businessId) });
       if (businessId) emitReferenceChanged(businessId, ["menu:categories"]);

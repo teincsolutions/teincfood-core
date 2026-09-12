@@ -17,6 +17,7 @@ import { getReferenceData, setReferenceData } from "./operations";
 import { businessService } from "../adapters/services";
 import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
 import type { BusinessMembershipResponse } from "../types/api/business.api";
+import { useIsEffectivelyOnline } from "../hooks/use-infinite-list";
 
 const MEMBERSHIP_KEYS = {
   all: ["my-membership"] as const,
@@ -45,10 +46,6 @@ function useCapabilitiesPlaceholder(businessId: string | null | undefined) {
   return cached;
 }
 
-function useIsEffectivelyOnline(): boolean {
-  const s = useSyncExternalStore(subscribeConnectivity, getConnectivityState, getConnectivityState);
-  return s.isOnline && s.isCloudReachable !== "unreachable";
-}
 
 /**
  * Standard hook for both apps — businessId comes from the host's active business store.

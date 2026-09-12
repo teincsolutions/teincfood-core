@@ -107,3 +107,26 @@ export interface CatalogItemRequest {
   available: boolean;
   image_url?: string | null;
 }
+
+// ─── Offline command envelope ────────────────────────────────────────────
+// The wire payload (CatalogItemRequest) is what the backend accepts — flat
+// price_minor/available. The reference cache holds backend-shaped MenuItem
+// records ONLY. Callers (form/mutation layers, which own every field) build
+// the cacheRecord alongside the wire payload; core never translates between
+// the two shapes. transport-rest strips cacheRecord before the REST call;
+// applyMenuCommandLocal + LAN peers cache it verbatim.
+
+/** menu:create_item / menu:update_item command payload. */
+export interface MenuItemCommandPayload extends CatalogItemRequest {
+  cacheRecord: MenuItem;
+}
+
+/** menu:create_category / menu:update_category command payload. */
+export interface MenuCategoryCommandPayload {
+  name: string;
+  description?: string;
+  sort_order?: number;
+  categoryId?: string;
+  id?: string;
+  cacheRecord: MenuCategory;
+}

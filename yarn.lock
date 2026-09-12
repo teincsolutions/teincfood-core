@@ -22,10 +22,30 @@
   resolved "https://registry.npmjs.org/@rollup/rollup-darwin-arm64/-/rollup-darwin-arm64-4.62.5.tgz"
   integrity sha512-bW7B8xMEq8n99Q3ieEcPRGuphurdZAaFzQc9Efyyw3FL6DZO6pMy9xhdN+kBoD7Sy05xNXSr4OyPPnpkYriS/A==
 
+"@tanstack/query-async-storage-persister@^5.102.8":
+  version "5.102.8"
+  resolved "https://registry.npmjs.org/@tanstack/query-async-storage-persister/-/query-async-storage-persister-5.102.8.tgz"
+  integrity sha512-9smqFJWyhRo+0l3NqaGFo6CQVr+3jpKOVZBQXI/LL+GoTIGhhxq1wTZegeI63dy0oResZx/EyazGzDjW8harbg==
+  dependencies:
+    "@tanstack/query-core" "5.102.8"
+    "@tanstack/query-persist-client-core" "5.102.8"
+
 "@tanstack/query-core@5.102.2":
   version "5.102.2"
   resolved "https://registry.npmjs.org/@tanstack/query-core/-/query-core-5.102.2.tgz"
   integrity sha512-zQ5794PXBlV5Wl7N23SR1/Ss+wPE/h2Ye4XlKpm3omN8i8b/Fd4DAdqpLS2AXj5M/RMObt3k5qy3E7kzt/AvBA==
+
+"@tanstack/query-core@5.102.8":
+  version "5.102.8"
+  resolved "https://registry.npmjs.org/@tanstack/query-core/-/query-core-5.102.8.tgz"
+  integrity sha512-ZNjkJ33CqvPNec/6lZBnHqLc3EVGPZ9ySLhYahU9TcuRFdmwXewuj0c4hwSWcGHqEUwcSrKeZ+oGcvPBqXcQcg==
+
+"@tanstack/query-persist-client-core@5.102.8":
+  version "5.102.8"
+  resolved "https://registry.npmjs.org/@tanstack/query-persist-client-core/-/query-persist-client-core-5.102.8.tgz"
+  integrity sha512-t3v4/D6ejo/BrPzM5gm/AT3c4CWPCxFa+0cIjAeHAeanGPG6rCjFS1hZnPZH/rf55qe3qYYgx5U6iBZMY1PQjA==
+  dependencies:
+    "@tanstack/query-core" "5.102.8"
 
 "@tanstack/react-query@^5.102.2":
   version "5.102.2"

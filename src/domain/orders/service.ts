@@ -10,8 +10,10 @@ import { getDeviceNumber, ensureLease } from "../../sync/device-lease.service";
 import { generateOrderNumberForBusiness } from "../../sync/order-number";
 import { generateUUID } from "../../utils/uuid";
 import { getConnectivityState } from "../../adapters/connectivity";
+import { assertOnlineFor } from "../../sync/online-gates";
 import { assertBusinessOpenForCreate } from "../../utils/business-hours";
 import { canTransition } from "../../utils/order-transitions";
+import { validateOrderCreateInput } from "../../validation/offline";
 import { drainOne, pullRemoteOrders } from "../../sync/sync-jobs.service";
 import { getAuthToken } from "../../adapters/auth";
 import { syncLogger } from "../../utils/sync-logger";
@@ -55,16 +57,12 @@ function isOnline(): boolean {
 
 export async function createLocalOrder(businessId: string, input: POSOrderCreateRequest & { is_pos?: boolean; delivery_params?: Record<string, unknown> }): Promise<SellerOrder> {
   const isPos = true; // POS terminal always is_pos
-  // Online payment gate: prepaid/mobile_money requires online, else cash
+  // Online-required gates (single source: sync/online-gates). Cash needs no
+  // connectivity; prepaid/mobile-money and delivery do.
+  assertOnlineFor("order:create", input as unknown as Record<string, unknown>);
+  // Offline validation mirror — backend Order.changeset rules, pre-commit.
+  validateOrderCreateInput(input as unknown as Parameters<typeof validateOrderCreateInput>[0]);
   const method = (input.pos_payment_method as string) ?? "cash";
-  const needsOnline = method !== "cash";
-  if (needsOnline && !isOnline()) {
-    throw new Error("Online payment requires online — use cash while offline");
-  }
-  // Delivery gate: delivery orders are online-only
-  if ((input.order_type as string) === "delivery" || (input as unknown as { delivery_params?: unknown }).delivery_params) {
-    if (!isOnline()) throw new Error("Delivery orders require online");
-  }
   // Operating-hours gate (fail-closed, offline-first): matches backend
   // validate_business_open. Throws BUSINESS_CLOSED / HOURS_NOT_SYNCED before
   // anything is written, so a doomed order never enters SQLite/sync_jobs.
@@ -150,10 +148,10 @@ export async function transitionLocalOrder(businessId: string, orderId: string, 
   const db = await openSyncDatabase();
   const order = await getOrderById(db, businessId, orderId);
   if (!order) throw new Error("Order not found");
-  // Delivery gate: assign/confirm_handover require online
-  if ((action === "assign_rider" || action === "confirm_handover" || order.order_type === "delivery") && !isOnline()) {
-    throw new Error("Delivery actions require online");
-  }
+  // Delivery transitions require online (single source: sync/online-gates).
+  if (action === "assign_rider") assertOnlineFor("order:assign_rider");
+  else if (action === "confirm_handover") assertOnlineFor("order:confirm_handover");
+  else if (order.order_type === "delivery") assertOnlineFor("order:create", { order_type: "delivery" });
   if (!canTransition(order, action as unknown as import("../../utils/order-transitions").OrderAction)) {
     throw new Error(`Cannot ${action} from ${order.status}`);
   }

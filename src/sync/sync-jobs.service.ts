@@ -12,6 +12,7 @@ import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
 import { getHttpClient } from "../adapters/http";
 import { phoenixSocket } from "../realtime/phoenix-socket";
 import { syncLogger } from "../utils/sync-logger";
+import { recordAttempt } from "../utils/attempt-stats";
 import { BackoffTracker } from "./backoff";
 import { generateOrderNumber } from "./order-number";
 import { orderSnapshotsService } from "./order-snapshots.service";
@@ -40,6 +41,7 @@ function scheduleRetry(businessId: string): void {
   // reset on any success (clearRetry) so long outages go quiet instead of
   // hammering a down backend every 30s.
   const delay = backoffTracker.next(businessId);
+  recordAttempt("sync_drain", `retry-scheduled delay=${delay}`);
   syncLogger.debug("SyncJobs", "scheduleRetry backoff", { businessId, delay });
   const t = setTimeout(() => {
     retryTimers.delete(businessId);
@@ -136,6 +138,7 @@ async function tryRest(businessId: string, payload: Record<string, unknown>, com
 }
 
 export async function drainOne(businessId: string, entityId: string): Promise<void> {
+  recordAttempt("sync_drain", `drainOne ${entityId.slice(0, 8)}`);
   const onlineForRest = isOnlineForRest();
   const onlineForPhx = isOnlineForPhx();
   const token = getAuthToken();
@@ -265,6 +268,20 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
         await db.runAsync(`UPDATE sync_jobs SET status='failed', last_error=?, updated_at=? WHERE id=?;`, `${rest.status} ${rest.code ?? ""} ${rest.message ?? ""}`.trim(), new Date().toISOString(), row.id);
       } catch {}
       clearRetry(businessId);
+      // Loud toast + revert: roll back the optimistic local write.
+      try {
+        const { notifyError } = await import("../adapters/notify");
+        notifyError(`Server rejected ${row.command_type}: ${rest.message ?? rest.code ?? rest.status}`);
+      } catch {}
+      try {
+        if (row.command_type === "order:create") {
+          // Never existed server-side — remove the optimistic row.
+          await db.runAsync(`DELETE FROM orders WHERE business_id=? AND id=?;`, businessId, entityId);
+        } else {
+          // Transition rejected — converge to server truth on next pull.
+          void pullRemoteOrders(businessId).catch(() => {});
+        }
+      } catch {}
       return;
     }
     // Keep pending for retry (5xx / network) — auto retry with backoff
@@ -299,7 +316,7 @@ export async function pullRemoteOrders(businessId: string): Promise<void> {
     let totalPages = 1;
     do {
       syncLogger.debug("SyncJobs", "pullRemoteOrders GET start", { businessId, page });
-      const res = await http.get<{ data: unknown[]; pagination: { total_pages: number; total_count?: number } }>(
+      const res = await http.get<{ data: unknown[]; pagination: { total_pages: number; total_entries?: number } }>(
         `/businesses/${businessId}/orders`,
         { params: { page, page_size: 20 } } as unknown as Record<string, unknown>,
       );
@@ -336,6 +353,7 @@ export async function pullRemoteOrders(businessId: string): Promise<void> {
 }
 
 export async function drainPending(businessId: string): Promise<void> {
+  recordAttempt("sync_drain", "drainPending");
   const onlineForRest = isOnlineForRest();
   const hasToken = !!getAuthToken();
   syncLogger.debug("SyncJobs", "drainPending entry", { businessId, onlineForRest, hasToken, connectivity: getConnectivityState() });

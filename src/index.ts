@@ -8,6 +8,9 @@
 // ── Types ──
 export * from "./types/api";
 export * from "./types/pos.types";
+export * from "./types/rider";
+export * from "./types/places";
+export * from "./adapters/notify";
 
 // ── Pricing (server-parity) ──
 export {
@@ -24,15 +27,34 @@ export * from "./utils/currency";
 export * from "./utils/error";
 export * from "./utils/uuid";
 export * from "./utils/sync-logger";
+export * from "./utils/debug-log";
+export * from "./utils/attempt-stats";
 export { PHONE_COUNTRIES, getDialCodeFromCountry, getCountryOption, normalizePhoneForCountry, isLikelyE164 } from "./utils/phone";
 export type { PhoneCountryOption } from "./utils/phone";
 export * from "./utils/formatCurrency";
 export { formatDate, formatRelativeTime } from "./utils/formatDate";
 export * from "./utils/validation";
-export * from "./utils/responsive";
+export * from "./validation/offline";
 export * from "./utils/copyToClipBoard";
 export * from "./utils/customer-display";
 export * from "./utils/order-filter";
+export { useReferenceData } from "./reference/hooks";
+export { setNotifyHandlers } from "./adapters/notify";
+export { walletService, riderService, fleetService, deliveryService, dashboardService, analyticsService, placesService } from "./adapters/services";
+export { buildMenuItemEnvelope, buildMenuCategoryEnvelope } from "./reference/menu-record";
+export { validateMenuItemInput, validateMenuCategoryInput, validateOrderCreateInput, validateInviteInput } from "./validation/offline";
+export { useBusinessDeliveriesQuery } from "./hooks/delivery.hooks";
+export { useBusinessReferenceDataSync } from "./reference/hooks";
+export { createAppQueryClient, createQueryPersister } from "./providers/query-client";
+export { useSellerAnalyticsQuery } from "./hooks/analytics.hooks";
+export { useSellerDashboardQuery } from "./hooks/dashboard.hooks";
+export { useRealtimeInvalidation, useOrderRealtimeUpdates } from "./hooks/realtime-stubs";
+export {
+  useAcceptFleetInvitationMutation,
+  useAcceptBusinessInvitationMutation,
+  useUserInvitationsQuery,
+} from "./hooks/members.hooks";
+export { useJoinRequestsQuery } from "./hooks/fleet.hooks";
 
 // ── DB ──
 export * from "./db/migrations";
@@ -42,6 +64,7 @@ export { openSyncDatabase, getSyncDatabase, closeSyncDatabase } from "./db/conne
 
 // ── Sync ──
 export * from "./sync/types";
+export * from "./sync/online-gates";
 export * from "./sync/use-sync-reconciliation";
 export { SyncEngine, syncEngine } from "./sync/engine";
 export * from "./sync/command-builder";
@@ -80,6 +103,19 @@ export type { POSOrderPreviewInput } from "./repositories/pos.repository";
 
 // ── Order lifecycle hooks (offline-first, device-owned outbox) ──
 export * from "./hooks/orders.hooks";
+export * from "./hooks/use-infinite-list";
+export * from "./hooks/wallet.hooks";
+export * from "./hooks/rider.hooks";
+export * from "./hooks/fleet.hooks";
+export * from "./hooks/delivery.hooks";
+export * from "./hooks/dashboard.hooks";
+export * from "./hooks/analytics.hooks";
+export * from "./hooks/members.hooks";
+export * from "./hooks/places.hooks";
+export * from "./hooks/offline-orders.hooks";
+export * from "./hooks/image.hooks";
+export * from "./hooks/realtime-stubs";
+export * from "./providers/query-client";
 export {
   KIOSK_KEYS,
   useKioskOrdersQuery,
@@ -97,7 +133,10 @@ export type { ReferenceLocalNodeFetcher } from "./reference/api";
 export { emitReferenceChanged, applyReferenceChangeEvent, syncReferenceDataOnReconnect, registerReferenceEventEngine, registerReferenceInvalidator } from "./reference/events";
 export * from "./reference/events";
 export * from "./reference/service";
+export * from "./reference/hooks";
 export { referenceSyncService } from "./reference/service";
+export * from "./reference/menu-record";
+export * from "./reference/menu-apply";
 export * from "./reference/capabilities";
 
 // ── Adapters (for host apps to supply) ──

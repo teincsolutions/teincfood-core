@@ -9,6 +9,7 @@ import { useSyncExternalStore } from "react";
 import { listLocalOrders, getLocalOrder } from "../domain/orders/service";
 import { getDeviceNumber, ensureLease } from "../sync/device-lease.service";
 import { getConnectivityState } from "../adapters/connectivity";
+import { assertOnlineFor } from "../sync/online-gates";
 import { SELLER_DASHBOARD_KEYS } from "../adapters/query-keys";
 import { openSyncDatabase } from "../db/connection";
 import { getReferenceData } from "../reference/operations";
@@ -34,13 +35,13 @@ export function usePOSOrdersQuery(filters?: Record<string,string>, enabled=true)
   return useInfiniteQuery({
     queryKey: [...POS_KEYS.orders(bid), filters],
     queryFn: async ({ pageParam=1 }) => {
-      if (!bid) return { data: [], pagination: { page:1, page_size:20, total_pages:1, total_count:0 } };
+      if (!bid) return { data: [], pagination: { page:1, page_size:20, total_pages:1, total_entries:0 } };
       const { data, total } = await listLocalOrders(bid, filters as unknown as { status?: string; q?: string }, pageParam as number, 20);
       // Offline overlay: pending creations + queued statuses (page 1). Refetch
       // is driven by the pending-orders invalidator on every apply path.
       const merged = await mergePendingIntoList(data, bid, pageParam as number);
       const totalPages = Math.max(1, Math.ceil(total/20));
-      return { data: merged, pagination: { page: pageParam as number, page_size:20, total_pages: totalPages, total_count: total + (merged.length - data.length) } };
+      return { data: merged, pagination: { page: pageParam as number, page_size:20, total_pages: totalPages, total_entries: total + (merged.length - data.length) } };
     },
     initialPageParam: 1,
     getNextPageParam: (lastPage) => {
@@ -59,12 +60,12 @@ export function useSellerOrdersQuery(enabled=true, filters?: { status?: string; 
   return useInfiniteQuery({
     queryKey: SELLER_KEYS.orders(bid, filters as Record<string,unknown>),
     queryFn: async ({ pageParam=1 }) => {
-      if (!bid) return { data: [], pagination: { page:1, page_size:20, total_pages:1, total_count:0 } };
+      if (!bid) return { data: [], pagination: { page:1, page_size:20, total_pages:1, total_entries:0 } };
       const q = filters?.q ?? filters?.search;
       const { data, total } = await listLocalOrders(bid, { status: filters?.status, q }, pageParam as number, 20);
       const merged = await mergePendingIntoList(data, bid, pageParam as number);
       const totalPages = Math.max(1, Math.ceil(total/20));
-      return { data: merged, pagination: { page: pageParam as number, page_size:20, total_pages: totalPages, total_count: total + (merged.length - data.length) } };
+      return { data: merged, pagination: { page: pageParam as number, page_size:20, total_pages: totalPages, total_entries: total + (merged.length - data.length) } };
     },
     initialPageParam: 1,
     getNextPageParam: (lastPage) => {
@@ -155,11 +156,11 @@ export const useCompletePickupMutation = makeOrderActionMutation(({orderId,busin
 export const useCancelOrderMutation = makeOrderActionMutation(({orderId,businessId}) => orderRepository.cancelOrder({orderId,businessId}));
 export function useConfirmHandoverMutation() {
   const bid = useBusinessId(); const qc = useQueryClient();
-  return useMutation({ mutationFn: (deliveryId: string) => { if(!bid) throw new Error("No business"); return orderRepository.confirmHandover({deliveryId,businessId:bid}); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); }});
+  return useMutation({ mutationFn: (deliveryId: string) => { if(!bid) throw new Error("No business"); assertOnlineFor("order:confirm_handover"); return orderRepository.confirmHandover({deliveryId,businessId:bid}); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); }});
 }
 export function useAssignRiderMutation() {
   const bid = useBusinessId(); const qc = useQueryClient();
-  return useMutation({ mutationFn: ({orderId,riderId}:{orderId:string;riderId:string})=>{ if(!bid) throw new Error("No business"); const s = getConnectivityState(); if(!s.isOnline || s.isCloudReachable === "unreachable") throw new Error("Assign rider requires online"); return orderRepository.assignRider({orderId,riderId,businessId:bid}); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); }});
+  return useMutation({ mutationFn: ({orderId,riderId}:{orderId:string;riderId:string})=>{ if(!bid) throw new Error("No business"); assertOnlineFor("order:assign_rider"); return orderRepository.assignRider({orderId,riderId,businessId:bid}); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); }});
 }
 export function useConfirmCashPaymentMutation() {
   const bid = useBusinessId(); const qc = useQueryClient();
