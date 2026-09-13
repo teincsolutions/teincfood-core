@@ -36,7 +36,7 @@ export function usePOSOrdersQuery(filters?: Record<string,string>, enabled=true)
     queryKey: [...POS_KEYS.orders(bid), filters],
     queryFn: async ({ pageParam=1 }) => {
       if (!bid) return { data: [], pagination: { page:1, page_size:20, total_pages:1, total_entries:0 } };
-      const { data, total } = await listLocalOrders(bid, filters as unknown as { status?: string; q?: string }, pageParam as number, 20);
+      const { data, total } = await listLocalOrders(bid, filters as { status?: string; q?: string; is_pos?: string; order_type?: string; date_from?: string; date_to?: string }, pageParam as number, 20);
       // Offline overlay: pending creations + queued statuses (page 1). Refetch
       // is driven by the pending-orders invalidator on every apply path.
       const merged = await mergePendingIntoList(data, bid, pageParam as number);

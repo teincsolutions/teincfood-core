@@ -177,7 +177,7 @@ export async function transitionLocalOrder(businessId: string, orderId: string, 
   return updated ?? order;
 }
 
-export async function listLocalOrders(businessId: string, filters?: { status?: string; q?: string; is_pos?: string; order_type?: string }, page = 1, pageSize = 20) {
+export async function listLocalOrders(businessId: string, filters?: { status?: string; q?: string; is_pos?: string; order_type?: string; date_from?: string; date_to?: string }, page = 1, pageSize = 20) {
   await ensureOrdersBackfilledFromSnapshots(businessId);
   const db = await openSyncDatabase();
   const res = await listOrders(db, businessId, filters, page, pageSize);
