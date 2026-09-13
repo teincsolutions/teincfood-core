@@ -167,14 +167,27 @@ class LocalNodeStore {
       setLocalNodePort: (port: number) => self.set({ localNodePort: port }),
       addDiscoveredNode: (node: DiscoveredNode) => {
         const prev = { ...self.state, discoveredNodes: [...self.state.discoveredNodes] };
-        const existing = self.state.discoveredNodes.find((n) => n.deviceId === node.deviceId);
+        // Dedup by deviceId (same peer re-announced) OR by host:port
+        // (TCP sweep's synthetic "lan-X.X.X.X" vs mDNS real UUID for same device).
+        const existingById = self.state.discoveredNodes.find((n) => n.deviceId === node.deviceId);
+        const existingByAddr = !existingById && node.host && node.port
+          ? self.state.discoveredNodes.find((n) => n.host === node.host && n.port === node.port)
+          : undefined;
+        const existing = existingById ?? existingByAddr;
         if (existing) {
+          // Prefer the real UUID entry over synthetic "lan-" prefix entries
+          const keep = (existing.deviceId.startsWith("lan-") && !node.deviceId.startsWith("lan-"))
+            ? node : existing;
           self.state = {
             ...self.state,
-            discoveredNodes: self.state.discoveredNodes.map((n) => (n.deviceId === node.deviceId ? { ...n, ...node } : n)),
+            discoveredNodes: self.state.discoveredNodes.map((n) =>
+              (n.deviceId === keep.deviceId || n.host === keep.host && n.port === keep.port)
+                ? { ...n, ...keep, lastSeenAt: new Date().toISOString() }
+                : n
+            ),
           };
         } else {
-          self.state = { ...self.state, discoveredNodes: [...self.state.discoveredNodes, node] };
+          self.state = { ...self.state, discoveredNodes: [...self.state.discoveredNodes, { ...node, lastSeenAt: new Date().toISOString() }] };
         }
         for (const l of self.listeners) { try { l(self.getState(), prev); } catch {} }
       },
