@@ -93,6 +93,10 @@ async function tryRest(businessId: string, payload: Record<string, unknown>, com
         customer_name: payload.customer_name,
         customer_phone: payload.customer_phone,
         notes: payload.notes,
+        total_minor: payload.total_minor,
+        subtotal_minor: payload.subtotal_minor,
+        tax_minor: payload.tax_minor,
+        tax_lines: payload.tax_lines,
         inserted_at: payload.inserted_at,
         updated_at: payload.updated_at,
       };
