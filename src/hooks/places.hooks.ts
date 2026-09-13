@@ -5,6 +5,8 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useSyncExternalStore } from "react";
+import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
 import { placesService } from "../adapters/services";
 import type { PlaceSuggestion, PlaceDetails } from "../types/places";
 
@@ -13,6 +15,9 @@ export function usePlacesSearch(debounceMs = 300) {
   const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Place search has no offline index — don't fire while unreachable.
+  const connectivity = useSyncExternalStore(subscribeConnectivity, getConnectivityState, getConnectivityState);
+  const online = connectivity.isOnline && connectivity.isCloudReachable !== "unreachable";
 
   useEffect(() => {
     let cancelled = false;
@@ -21,7 +26,7 @@ export function usePlacesSearch(debounceMs = 300) {
       clearTimeout(debounceRef.current);
     }
 
-    if (!query || query.length < 3) {
+    if (!query || query.length < 3 || !online) {
       setSuggestions([]);
       setIsLoading(false);
       return;
@@ -82,9 +87,11 @@ export function usePlacesSearch(debounceMs = 300) {
 export function usePlaceDetails(placeId: string | null) {
   const [details, setDetails] = useState<PlaceDetails | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const connectivity = useSyncExternalStore(subscribeConnectivity, getConnectivityState, getConnectivityState);
+  const online = connectivity.isOnline && connectivity.isCloudReachable !== "unreachable";
 
   useEffect(() => {
-    if (!placeId) {
+    if (!placeId || !online) {
       setDetails(null);
       return;
     }

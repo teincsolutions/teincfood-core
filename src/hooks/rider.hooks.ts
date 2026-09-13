@@ -8,7 +8,13 @@ import { riderService } from "../adapters/services";
 import { notifySuccess, notifyError } from "../adapters/notify";
 import { assertOnlineFor } from "../sync/online-gates";
 import { extractApiErrorMessage } from "../utils/error";
-import { useInfiniteList } from "./use-infinite-list";
+import { useInfiniteList, useIsEffectivelyOnline } from "./use-infinite-list";
+
+// No SQLite rider mirror — the persisted query cache is the offline source.
+// Reads never fire while unreachable; the OfflineBanner marks not-live.
+function useOnline(): boolean {
+  return useIsEffectivelyOnline();
+}
 import type { RiderDelivery } from "../types/api/rider.api";
 import type { DeliveryZone, NavigationSettings } from "../types/rider";
 
@@ -34,13 +40,14 @@ export const RIDER_KEYS = {
 // ─── Available Orders ───
 
 export function useAvailableOrdersQuery(enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: [...RIDER_KEYS.all, "available-orders"],
     queryFn: async () => {
       const res = (await riderService.fetchAvailableOrders()) as { data: unknown };
       return res.data;
     },
-    enabled,
+    enabled: enabled && online,
     staleTime: 15000,
     retry: false,
     networkMode: "offlineFirst" as const,
@@ -80,13 +87,14 @@ export function useSelfAssignMutation() {
 // ─── Metrics & Dashboard Hooks ───
 
 export function useRiderProfileQuery(enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: RIDER_KEYS.profile(),
     queryFn: async () => {
       const res = (await riderService.fetchRiderProfile()) as { data: unknown };
       return res.data;
     },
-    enabled,
+    enabled: enabled && online,
     staleTime: 30000,
     retry: false,
     networkMode: "offlineFirst" as const,
@@ -94,26 +102,28 @@ export function useRiderProfileQuery(enabled = true) {
 }
 
 export function useRiderMetricsQuery(enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: RIDER_KEYS.metrics(),
     queryFn: async () => {
       const res = (await riderService.fetchRiderDashboard()) as { data: unknown };
       return res.data;
     },
-    enabled,
+    enabled: enabled && online,
     retry: false,
     networkMode: "offlineFirst" as const,
   });
 }
 
 export function useActiveDeliveryQuery(enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: RIDER_KEYS.activeDelivery(),
     queryFn: async () => {
       const res = (await riderService.fetchActiveDelivery()) as { data: unknown };
       return res.data;
     },
-    enabled,
+    enabled: enabled && online,
     retry: false,
     networkMode: "offlineFirst" as const,
   });
@@ -125,9 +135,10 @@ export function useRiderDeliveriesQuery(
   enabled = true,
   filters?: { q?: string; status?: string; order_number?: string; date_from?: string; date_to?: string },
 ) {
+  const online = useOnline();
   return useInfiniteList<RiderDelivery>({
     key: [...RIDER_KEYS.deliveries(), filters],
-    enabled,
+    enabled: enabled && online,
     pageSize: 20,
     onlineFetch: async (page, pageSize) => {
       const res = (await riderService.fetchRiderDeliveries(page, pageSize, filters as Record<string, unknown>)) as {
@@ -140,10 +151,11 @@ export function useRiderDeliveriesQuery(
 }
 
 export function useRiderDeliveryDetailQuery(deliveryId: string, enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: RIDER_KEYS.deliveryDetail(deliveryId),
     queryFn: () => riderService.fetchDeliveryDetail(deliveryId),
-    enabled: enabled && Boolean(deliveryId),
+    enabled: enabled && Boolean(deliveryId) && online,
     retry: false,
     networkMode: "offlineFirst" as const,
   });
@@ -194,39 +206,43 @@ export function useAcceptDeliveryMutation() {
 // ─── Earnings Hooks ───
 
 export function useRiderEarningsQuery(enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: RIDER_KEYS.earnings(),
     queryFn: () => riderService.fetchRiderEarnings(),
-    enabled,
+    enabled: enabled && online,
     retry: false,
     networkMode: "offlineFirst" as const,
   });
 }
 
 export function useEarningsBreakdownQuery(enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: RIDER_KEYS.earningsBreakdown(),
     queryFn: () => riderService.fetchEarningsBreakdown(),
-    enabled,
+    enabled: enabled && online,
     retry: false,
     networkMode: "offlineFirst" as const,
   });
 }
 
 export function useRiderEarningsSummaryQuery(period: "today" | "this_week" | "this_month", enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: RIDER_KEYS.earningsSummary(period),
     queryFn: () => riderService.fetchRiderEarningsSummary(period),
-    enabled,
+    enabled: enabled && online,
     retry: false,
     networkMode: "offlineFirst" as const,
   });
 }
 
 export function useRiderWalletHistoryQuery(enabled = true) {
+  const online = useOnline();
   return useInfiniteList<Record<string, unknown>>({
     key: RIDER_KEYS.transactions(),
-    enabled,
+    enabled: enabled && online,
     pageSize: 20,
     onlineFetch: async (page, pageSize) => {
       const res = (await riderService.fetchWalletHistory(page, pageSize)) as {
@@ -253,10 +269,11 @@ export function useRequestPayoutMutation() {
 // ─── Statistics Hooks ───
 
 export function useRiderStatisticsQuery(enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: RIDER_KEYS.statistics(),
     queryFn: () => riderService.fetchRiderStatistics(),
-    enabled,
+    enabled: enabled && online,
     retry: false,
     networkMode: "offlineFirst" as const,
   });
@@ -265,10 +282,11 @@ export function useRiderStatisticsQuery(enabled = true) {
 // ─── Vehicle Info Hooks ───
 
 export function useVehicleInfoQuery(enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: RIDER_KEYS.vehicleInfo(),
     queryFn: () => riderService.fetchVehicleInfo(),
-    enabled,
+    enabled: enabled && online,
     retry: false,
     networkMode: "offlineFirst" as const,
   });
@@ -292,10 +310,11 @@ export function useCreateVehicleMutation() {
 // ─── Delivery Zones Hooks ───
 
 export function useDeliveryZonesQuery(enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: RIDER_KEYS.deliveryZones(),
     queryFn: () => riderService.fetchDeliveryZones(),
-    enabled,
+    enabled: enabled && online,
     retry: false,
     networkMode: "offlineFirst" as const,
   });
@@ -324,10 +343,11 @@ export function useToggleDeliveryZoneMutation() {
 // ─── Navigation Settings Hooks ───
 
 export function useNavigationSettingsQuery(enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: RIDER_KEYS.navigationSettings(),
     queryFn: () => riderService.fetchNavigationSettings(),
-    enabled,
+    enabled: enabled && online,
     retry: false,
     networkMode: "offlineFirst" as const,
   });
@@ -365,10 +385,11 @@ export function useUpdateOnlineStatusMutation() {
 // ─── Navigation Apps Hooks ───
 
 export function useNavigationAppsQuery(enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: RIDER_KEYS.navigationApps(),
     queryFn: () => riderService.fetchNavigationApps(),
-    enabled,
+    enabled: enabled && online,
     staleTime: Infinity,
     retry: false,
     networkMode: "offlineFirst" as const,
@@ -378,10 +399,11 @@ export function useNavigationAppsQuery(enabled = true) {
 // ─── Vehicle Types Hooks ───
 
 export function useVehicleTypesQuery(enabled = true) {
+  const online = useOnline();
   return useQuery({
     queryKey: [...RIDER_KEYS.all, "vehicle-types"],
     queryFn: () => riderService.fetchVehicleTypes(),
-    enabled,
+    enabled: enabled && online,
     staleTime: Infinity,
     retry: false,
     networkMode: "offlineFirst" as const,

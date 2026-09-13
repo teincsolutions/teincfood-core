@@ -119,6 +119,8 @@ export * from "./providers/query-client";
 export {
   KIOSK_KEYS,
   useKioskOrdersQuery,
+  useAvailableRidersQuery,
+  type AvailableRider,
   useAcceptKioskOrderMutation,
   useRejectKioskOrderMutation,
   useStartPreparingKioskOrderMutation,

@@ -25,12 +25,56 @@ const EMPTY_METRICS: SellerDashboardMetrics = {
   average_rating: 0,
 };
 
+interface LocalOrderRow {
+  status: string;
+  total_minor: number;
+  inserted_at: string;
+  order_number: string;
+  id: string;
+}
+
+/**
+ * Local SQLite aggregates — instant, even online. Single source for all
+ * three dashboard queries so metrics/recent/full never diverge.
+ */
+async function computeLocalDashboard(businessId: string): Promise<{
+  metrics: SellerDashboardMetrics;
+  recent_orders: SellerDashboardResponse["data"]["recent_orders"];
+}> {
+  const { data } = await listLocalOrders(businessId, {}, 1, 200);
+  const orders = ((data as unknown as LocalOrderRow[]) ?? []);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayOrders = orders.filter((o) => (o.inserted_at ?? "").slice(0, 10) === todayStr);
+  const todayRevenue = todayOrders.reduce((sum, o) => sum + (o.total_minor ?? 0), 0);
+  const pending = orders.filter((o) => ["pending", "awaiting_payment", "accepted"].includes(o.status)).length;
+  const active = orders.filter((o) => !["delivered", "cancelled", "rejected"].includes(o.status)).length;
+  const recent = [...orders]
+    .sort((a, b) => (b.inserted_at ?? "").localeCompare(a.inserted_at ?? ""))
+    .slice(0, 5)
+    .map((o) => ({ id: o.id, order_number: o.order_number, status: o.status, total_minor: o.total_minor, item_count: 1 }));
+  return {
+    metrics: { today_orders: todayOrders.length, today_revenue_minor: todayRevenue, pending_orders: pending, active_orders: active, average_rating: 0 },
+    recent_orders: recent,
+  };
+}
+
 export function useSellerDashboardMetricsQuery(businessId: string, enabled = true) {
+  const online = useIsEffectivelyOnline();
   return useQuery({
     queryKey: SELLER_DASHBOARD_KEYS.metrics(businessId),
     queryFn: async () => {
-      const res = (await dashboardService.fetchSellerDashboard(businessId)) as SellerDashboardResponse;
-      return res.data.metrics;
+      // DB first — instant, even online.
+      let local: SellerDashboardMetrics | null = null;
+      try {
+        local = (await computeLocalDashboard(businessId)).metrics;
+      } catch {}
+      if (!online) return local ?? EMPTY_METRICS;
+      try {
+        const res = (await dashboardService.fetchSellerDashboard(businessId)) as SellerDashboardResponse;
+        return res.data.metrics ?? local ?? EMPTY_METRICS;
+      } catch {
+        return local ?? EMPTY_METRICS;
+      }
     },
     enabled: enabled && Boolean(businessId),
     staleTime: 1000 * 60 * 2,
@@ -40,11 +84,22 @@ export function useSellerDashboardMetricsQuery(businessId: string, enabled = tru
 }
 
 export function useSellerDashboardRecentOrdersQuery(businessId: string, enabled = true) {
+  const online = useIsEffectivelyOnline();
   return useQuery({
     queryKey: SELLER_DASHBOARD_KEYS.recentOrders(businessId),
     queryFn: async () => {
-      const res = (await dashboardService.fetchSellerDashboard(businessId)) as SellerDashboardResponse;
-      return res.data.recent_orders;
+      // DB first — instant, even online.
+      let local: SellerDashboardResponse["data"]["recent_orders"] = [];
+      try {
+        local = (await computeLocalDashboard(businessId)).recent_orders;
+      } catch {}
+      if (!online) return local;
+      try {
+        const res = (await dashboardService.fetchSellerDashboard(businessId)) as SellerDashboardResponse;
+        return local.length > 0 ? local : res.data.recent_orders;
+      } catch {
+        return local;
+      }
     },
     enabled: enabled && Boolean(businessId),
     staleTime: 1000 * 60 * 2,
@@ -62,19 +117,9 @@ export function useSellerDashboardQuery(businessId: string, enabled = true) {
       let localRecent: SellerDashboardResponse["data"]["recent_orders"] = [];
       let localMetrics: SellerDashboardMetrics | null = null;
       try {
-        const { data } = await listLocalOrders(businessId, {}, 1, 200);
-        const orders = (data as unknown as { status: string; total_minor: number; inserted_at: string; order_number: string; id: string }[]) ?? [];
-        const todayStr = new Date().toISOString().slice(0, 10);
-        const todayOrders = orders.filter((o) => (o.inserted_at ?? "").slice(0, 10) === todayStr);
-        const todayRevenue = todayOrders.reduce((sum, o) => sum + (o.total_minor ?? 0), 0);
-        const pending = orders.filter((o) => ["pending", "awaiting_payment", "accepted"].includes(o.status)).length;
-        const active = orders.filter((o) => !["delivered", "cancelled", "rejected"].includes(o.status)).length;
-        const recent = [...orders]
-          .sort((a, b) => (b.inserted_at ?? "").localeCompare(a.inserted_at ?? ""))
-          .slice(0, 5)
-          .map((o) => ({ id: o.id, order_number: o.order_number, status: o.status, total_minor: o.total_minor, item_count: 1 }));
-        localRecent = recent;
-        localMetrics = { today_orders: todayOrders.length, today_revenue_minor: todayRevenue, pending_orders: pending, active_orders: active, average_rating: 0 };
+        const local = await computeLocalDashboard(businessId);
+        localRecent = local.recent_orders;
+        localMetrics = local.metrics;
       } catch {}
       if (!online) {
         return { metrics: localMetrics ?? EMPTY_METRICS, recent_orders: localRecent };

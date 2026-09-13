@@ -6,6 +6,7 @@
 
 import { MutationCache, QueryClient } from "@tanstack/react-query";
 import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
+import { getConnectivityState } from "../adapters/connectivity";
 
 export interface QueryPersistStorage {
   getItem: (key: string) => string | null | undefined | Promise<string | null | undefined>;
@@ -24,7 +25,19 @@ export function createAppQueryClient(onMutationError: (message: string) => void)
     }),
     defaultOptions: {
       queries: {
-        retry: 2,
+        // Offline-first: when the cloud is known unreachable (health probe
+        // failed / backend down), fail fast with zero retries — retrying a
+        // dead backend only multiplies error spam. Transient failures while
+        // reachable keep the standard 2 retries.
+        retry: (failureCount, error) => {
+          try {
+            if (getConnectivityState().isCloudReachable === "unreachable") return false;
+          } catch {}
+          // Never retry explicit offline short-circuits (axios guard / adapters).
+          const msg = error instanceof Error ? error.message : String(error ?? "");
+          if (msg.startsWith("Offline") || (error as { code?: string })?.code === "OFFLINE") return false;
+          return failureCount < 2;
+        },
         refetchOnWindowFocus: true,
         refetchOnReconnect: true,
         staleTime: 30 * 1000,

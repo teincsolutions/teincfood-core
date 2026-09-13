@@ -109,12 +109,14 @@ export function useRemoveMemberMutation() {
 
 export function useBusinessMemberInvitationsQuery() {
   const businessId = useBusinessId();
+  // No invitations SQLite mirror — never fire while unreachable.
+  const online = useIsEffectivelyOnline();
 
   return useQuery({
     queryKey: MEMBER_KEYS.invitations(businessId ?? ""),
     queryFn: () =>
       (businessService as unknown as { fetchBusinessMemberInvitations: (b: string) => Promise<unknown> }).fetchBusinessMemberInvitations(businessId!),
-    enabled: Boolean(businessId),
+    enabled: Boolean(businessId) && online,
     ...OFFLINE_FIRST,
   });
 }
@@ -162,9 +164,12 @@ export function useDeleteMemberInvitationMutation() {
 // ─── User invitations ───
 
 export function useUserInvitationsQuery() {
+  // No invitations SQLite mirror — never fire while unreachable.
+  const online = useIsEffectivelyOnline();
   return useQuery({
     queryKey: INVITATION_KEYS.list(),
     queryFn: () => (businessService as unknown as { fetchUserInvitations: () => Promise<unknown> }).fetchUserInvitations(),
+    enabled: online,
     staleTime: 15000,
     ...OFFLINE_FIRST,
   });

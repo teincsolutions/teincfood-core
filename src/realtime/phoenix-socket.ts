@@ -1,5 +1,6 @@
 import { WS_BASE_URL } from "../utils/constants";
 import { getAuthToken } from "../adapters/auth";
+import { getConnectivityState } from "../adapters/connectivity";
 import { recordAttempt } from "../utils/attempt-stats";
 import { syncLogger } from "../utils/sync-logger";
 
@@ -56,6 +57,14 @@ class PhoenixSocket {
   connect(): Promise<void> {
     if (this.socket?.readyState === WebSocket.OPEN) return Promise.resolve();
     if (this.connectPromise) return this.connectPromise;
+    // Offline-first: don't even open a socket when the cloud is known
+    // unreachable — the browser logs a WS error per attempt otherwise.
+    try {
+      if (getConnectivityState().isCloudReachable === "unreachable") {
+        this.scheduleReconnect();
+        return Promise.reject(new Error("Offline — cloud unreachable"));
+      }
+    } catch {}
     recordAttempt("ws_connect");
     this.cancelReconnect();
     this.intentionalClose = false;
@@ -95,7 +104,14 @@ class PhoenixSocket {
   private scheduleReconnect(): void {
     if (this.intentionalClose) return;
     this.setState("reconnecting");
-    const delay = Math.min(RECONNECT_BASE * Math.pow(2, this.reconnectAttempt), RECONNECT_MAX);
+    // Offline-first: when the cloud is known unreachable (backend down),
+    // back off to a slow 60s poll instead of the 1s→10s hot loop — the
+    // useEventsConnection gate + probe regain path re-establishes fast.
+    let unreachable = false;
+    try { unreachable = getConnectivityState().isCloudReachable === "unreachable"; } catch {}
+    const delay = unreachable
+      ? 60_000
+      : Math.min(RECONNECT_BASE * Math.pow(2, this.reconnectAttempt), RECONNECT_MAX);
     this.reconnectAttempt++;
     recordAttempt("ws_reconnect", `delay=${delay} attempt=${this.reconnectAttempt}`);
     try { syncLogger.debug("PhoenixSocket", "scheduleReconnect", { delay, attempt: this.reconnectAttempt }); } catch {}

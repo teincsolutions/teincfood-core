@@ -39,15 +39,28 @@ function fmt(args: unknown[]): string {
     .join(" ");
 }
 
+let notifyQueued = false;
+function notifyListeners() {
+  // Deferred: console.* fires inside render bodies too (and React forbids
+  // sync setState of another component mid-render). Microtask fan-out keeps
+  // log screens live without ever triggering setState-in-render.
+  if (notifyQueued) return;
+  notifyQueued = true;
+  queueMicrotask(() => {
+    notifyQueued = false;
+    listeners.forEach((fn) => {
+      try {
+        fn();
+      } catch {}
+    });
+  });
+}
+
 function push(level: LogLevel, args: unknown[]) {
   const e: LogEntry = { id: ++seq, ts: new Date().toISOString(), level, args, text: fmt(args) };
   entries.push(e);
   if (entries.length > MAX_ENTRIES) entries = entries.slice(-MAX_ENTRIES);
-  listeners.forEach((fn) => {
-    try {
-      fn();
-    } catch {}
-  });
+  notifyListeners();
 }
 
 /** Newest-first snapshot for list rendering. */
@@ -57,11 +70,7 @@ export function getDebugLogs(): LogEntry[] {
 
 export function clearDebugLogs() {
   entries = [];
-  listeners.forEach((fn) => {
-    try {
-      fn();
-    } catch {}
-  });
+  notifyListeners();
 }
 
 export function subscribeDebugLogs(fn: () => void): () => void {

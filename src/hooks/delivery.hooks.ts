@@ -10,7 +10,7 @@ import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
 import { deliveryService } from "../adapters/services";
 import { listLocalOrders } from "../domain/orders/service";
 import type { BusinessDelivery } from "../types/api/seller.api";
-import { useInfiniteList, type ListPage } from "./use-infinite-list";
+import { useInfiniteList, useIsEffectivelyOnline, type ListPage } from "./use-infinite-list";
 
 export const DELIVERY_KEYS = {
   all: ["business-deliveries"] as const,
@@ -23,10 +23,13 @@ export const DELIVERY_DETAIL_KEYS = {
 };
 
 export function useDeliveryDetailQuery(deliveryId: string, enabled = true) {
+  // No single-delivery SQLite mirror (list derives from local orders) —
+  // never fire while unreachable; persisted cache serves instead.
+  const online = useIsEffectivelyOnline();
   return useQuery({
     queryKey: DELIVERY_DETAIL_KEYS.detail(deliveryId),
     queryFn: () => deliveryService.fetchDeliveryDetail(deliveryId),
-    enabled: enabled && Boolean(deliveryId),
+    enabled: enabled && Boolean(deliveryId) && online,
     retry: false,
     networkMode: "offlineFirst" as const,
   });

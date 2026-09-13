@@ -3,6 +3,7 @@ import { eventsService } from "./events.service";
 import { useSyncExternalStore } from "react";
 import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
 import { getAuthToken } from "../adapters/auth";
+import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
 
 function useBusinessId(): string | null {
   return useSyncExternalStore(subscribeBusiness, () => getActiveBusiness()?.id ?? null, () => null);
@@ -13,6 +14,11 @@ function useIsAuthenticated(): boolean {
   return !!getAuthToken();
 }
 
+function useIsEffectivelyOnline(): boolean {
+  const s = useSyncExternalStore(subscribeConnectivity, getConnectivityState, getConnectivityState);
+  return s.isOnline && s.isCloudReachable !== "unreachable";
+}
+
 export function useEventsConnection() {
   const activeBusinessId = useBusinessId();
   // derive userId from auth token? Host must provide via setAuthProvider that encodes user, but we need userId for topic.
@@ -20,12 +26,16 @@ export function useEventsConnection() {
   // Minimal: require host to call eventsService.connect with userId directly via wrapper — this hook is convenience that reads business only.
   // To keep zero-config, we attempt to read from window localStorage token decode — fallback no-op.
   const userId = deriveUserId();
+  // Offline-first: never open the Phoenix socket while the cloud is known
+  // unreachable (backend down). Connecting anyway just spins the 1s→10s
+  // reconnect loop and spams WS errors. Reconnect fires via effect dep.
+  const online = useIsEffectivelyOnline();
 
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || !online) return;
     const disconnect = eventsService.connect(userId, activeBusinessId);
     return () => disconnect();
-  }, [userId, activeBusinessId]);
+  }, [userId, activeBusinessId, online]);
 }
 
 function deriveUserId(): string | null {

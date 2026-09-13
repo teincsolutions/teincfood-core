@@ -10,7 +10,7 @@ import { useSyncExternalStore } from "react";
 import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
 import { walletService } from "../adapters/services";
 import type { WalletBalanceResponse, WalletHistoryResponse, WalletEntry } from "../types/api/wallet.api";
-import { useInfiniteList } from "./use-infinite-list";
+import { useInfiniteList, useIsEffectivelyOnline } from "./use-infinite-list";
 
 export const WALLET_KEYS = {
   all: ["wallet"] as const,
@@ -24,10 +24,13 @@ function useBusinessId(): string | undefined {
 }
 
 export function useAllBalancesQuery(enabled = true) {
+  // No SQLite mirror — the persisted query cache is the offline source.
+  // Never fire while unreachable; the OfflineBanner marks data not-live.
+  const online = useIsEffectivelyOnline();
   return useQuery({
     queryKey: WALLET_KEYS.balance("all"),
     queryFn: () => walletService.fetchAllBalances() as Promise<WalletBalanceResponse>,
-    enabled,
+    enabled: enabled && online,
     staleTime: 30_000,
     retry: false,
     networkMode: "offlineFirst" as const,
@@ -36,10 +39,13 @@ export function useAllBalancesQuery(enabled = true) {
 
 export function useBusinessWalletBalanceQuery(enabled = true) {
   const businessId = useBusinessId();
+  // No SQLite mirror — the persisted query cache is the offline source.
+  // Never fire while unreachable; the OfflineBanner marks data not-live.
+  const online = useIsEffectivelyOnline();
   return useQuery({
     queryKey: WALLET_KEYS.balance(businessId),
     queryFn: () => walletService.fetchBusinessWalletBalance(businessId!) as Promise<WalletBalanceResponse>,
-    enabled: enabled && Boolean(businessId),
+    enabled: enabled && Boolean(businessId) && online,
     staleTime: 30_000,
     retry: false,
     networkMode: "offlineFirst" as const,
