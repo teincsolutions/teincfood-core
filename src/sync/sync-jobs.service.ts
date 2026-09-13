@@ -93,6 +93,8 @@ async function tryRest(businessId: string, payload: Record<string, unknown>, com
         customer_name: payload.customer_name,
         customer_phone: payload.customer_phone,
         notes: payload.notes,
+        inserted_at: payload.inserted_at,
+        updated_at: payload.updated_at,
       };
       // strip undefined to avoid backend validation noise
       Object.keys(body).forEach((k) => body[k] === undefined && delete body[k]);

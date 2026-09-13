@@ -57,7 +57,9 @@ export class RestTransport implements Transport {
     command: Command,
   ): Promise<DomainEvent | null> {
     const { command_type, business_id, entity_id, payload } = command;
-    const timestamp = new Date().toISOString();
+    // Use the command's original timestamp (set at creation time) so the event
+    // reflects when the mutation actually happened, not when it was dispatched.
+    const timestamp = command.timestamp || new Date().toISOString();
 
     switch (command_type) {
       // Single create path — createLocalOrder owns SQLite + sync_jobs + the

@@ -141,6 +141,7 @@ export interface SellerOrder {
   user: OrderUser | null;
   items: OrderItem[];
   inserted_at: string;
+  updated_at?: string;
   // Desktop adds rider summary on list endpoint (optional for backwards compat)
   rider?: {
     id: string;

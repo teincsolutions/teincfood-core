@@ -24,6 +24,15 @@ export function buildCommand<T>(
   const user = useAuthStore.getState().user;
   const userId = user?.id ?? "anonymous";
   const deviceId = getAppInstanceId();
+  const timestamp = new Date().toISOString();
+
+  // Inject inserted_at / updated_at into payload so the backend preserves the
+  // original client creation time for offline-first sync.
+  const payload = {
+    ...(options.payload as Record<string, unknown>),
+    inserted_at: timestamp,
+    updated_at: timestamp,
+  } as T;
 
   return {
     command_id: generateCommandId(),
@@ -33,8 +42,8 @@ export function buildCommand<T>(
     entity_id: options.entityId,
     user_id: userId,
     device_id: deviceId,
-    timestamp: new Date().toISOString(),
-    payload: options.payload,
+    timestamp,
+    payload,
   };
 }
 

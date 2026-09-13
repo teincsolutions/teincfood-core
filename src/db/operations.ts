@@ -489,6 +489,7 @@ export interface OrderRow {
   business: string | null;
   user: string | null;
   inserted_at: string;
+  updated_at: string | null;
   hlc: string | null;
   deleted_at: string | null;
 }
@@ -527,20 +528,22 @@ function orderRowToSellerOrder(row: OrderRow): import("../types/api/seller.api")
     is_paid: row.payment ? JSON.parse(row.payment).is_paid ?? false : false,
     paid_at: row.payment ? JSON.parse(row.payment).paid_at ?? null : null,
     inserted_at: row.inserted_at,
+    updated_at: row.updated_at ?? row.inserted_at,
   } as unknown as import("../types/api/seller.api").SellerOrder;
 }
 
 export async function insertOrder(db: SQLiteDatabase, order: import("../types/api/seller.api").SellerOrder & { hlc?: string }): Promise<void> {
   const hlc = (order as unknown as { hlc?: string }).hlc ?? new Date().toISOString();
+  const updatedAt = order.updated_at ?? order.inserted_at;
   await db.runAsync(
-    `INSERT INTO orders (id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, hlc)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET business_id=excluded.business_id, order_number=excluded.order_number, callout_number=excluded.callout_number, status=excluded.status, order_type=excluded.order_type, is_pos=excluded.is_pos, items=excluded.items, subtotal_minor=excluded.subtotal_minor, total_minor=excluded.total_minor, tax_minor=excluded.tax_minor, tax_lines=excluded.tax_lines, payment=excluded.payment, customer_name=excluded.customer_name, customer_phone=excluded.customer_phone, pos_payment_method=excluded.pos_payment_method, delivery_id=excluded.delivery_id, business=excluded.business, user=excluded.user, hlc=excluded.hlc
+    `INSERT INTO orders (id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, updated_at, hlc)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET business_id=excluded.business_id, order_number=excluded.order_number, callout_number=excluded.callout_number, status=excluded.status, order_type=excluded.order_type, is_pos=excluded.is_pos, items=excluded.items, subtotal_minor=excluded.subtotal_minor, total_minor=excluded.total_minor, tax_minor=excluded.tax_minor, tax_lines=excluded.tax_lines, payment=excluded.payment, customer_name=excluded.customer_name, customer_phone=excluded.customer_phone, pos_payment_method=excluded.pos_payment_method, delivery_id=excluded.delivery_id, business=excluded.business, user=excluded.user, updated_at=excluded.updated_at, hlc=excluded.hlc
      WHERE excluded.hlc >= orders.hlc OR orders.hlc IS NULL;`,
     order.id, order.business_id, order.order_number, order.callout_number, order.status, order.order_type, order.is_pos ? 1 : 0,
     JSON.stringify(order.items), order.subtotal_minor, order.total_minor, order.tax_minor, JSON.stringify(order.tax_lines), JSON.stringify(order.payment),
     order.customer_name, order.customer_phone, order.pos_payment_method, order.delivery_id, order.business ? JSON.stringify(order.business) : null, order.user ? JSON.stringify(order.user) : null,
-    order.inserted_at, hlc
+    order.inserted_at, updatedAt, hlc
   );
 }
 

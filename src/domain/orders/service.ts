@@ -85,7 +85,10 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
   const id = ((input as unknown as { id?: string }).id ?? (input as unknown as { command_id?: string }).command_id ?? generateUUID());
   const orderNumber = (input as unknown as { order_number?: string }).order_number?.toString() ?? generateOrderNumberForBusiness(businessId);
   const callout = parseInt(orderNumber.split("-")[2] ?? "0", 10) || 0;
+  // Use client-provided timestamps for offline-first sync so records created
+  // while offline retain their original creation time.
   const now = new Date().toISOString();
+  const insertedAt = (input as unknown as { inserted_at?: string }).inserted_at || now;
   // item_snapshots from CartPanel, else fallback
   const snapshots = (input as unknown as { item_snapshots?: Array<{ menu_item_id: string; name: string; quantity: number; unit_price_minor: number }> }).item_snapshots;
   const items = snapshots ? snapshots.map((s, i) => ({ id: `tmp-${id}-${i}`, menu_item: { id: s.menu_item_id, name: s.name }, quantity: s.quantity, unit_price: s.unit_price_minor, subtotal: s.unit_price_minor * s.quantity })) : (input.items ?? []).map((it, i) => ({ id: `tmp-${id}-${i}`, menu_item: { id: (it as unknown as { menu_item_id: string }).menu_item_id, name: "" }, quantity: (it as unknown as { quantity: number }).quantity, unit_price: 0, subtotal: 0 }));
@@ -106,9 +109,9 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
     customer_name: (input.customer_name as string) ?? null,
     customer_phone: (input.customer_phone as string) ?? null,
     pos_payment_method: method,
-    paid_at: method === "cash" ? now : null,
+    paid_at: method === "cash" ? insertedAt : null,
     is_paid: method === "cash",
-    payment: { is_paid: method === "cash", reference: null, amount_minor: totalMinor, currency: currencyCode, paid_at: method === "cash" ? now : null } as SellerOrder["payment"],
+    payment: { is_paid: method === "cash", reference: null, amount_minor: totalMinor, currency: currencyCode, paid_at: method === "cash" ? insertedAt : null } as SellerOrder["payment"],
     payment_mode: method === "cash" ? "pos_cash" : "prepaid",
     total_minor: totalMinor,
     subtotal_minor: subtotalMinor,
@@ -129,7 +132,7 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
     delivery_status: null,
     user: null,
     items: items as SellerOrder["items"],
-    inserted_at: now,
+    inserted_at: insertedAt,
   } as unknown as SellerOrder;
 
   const db = await openSyncDatabase();

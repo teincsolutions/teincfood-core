@@ -387,4 +387,12 @@ export const MIGRATIONS: Migration[] = [
         `);
     },
   },
+  {
+    version: 10,
+    up: async (db) => {
+      await db.execAsync(`
+          ALTER TABLE orders ADD COLUMN updated_at TEXT;
+        `);
+    },
+  },
 ];
