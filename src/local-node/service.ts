@@ -48,6 +48,10 @@ class LocalNodeServiceCore {
   private lifecyclePromise: Promise<void> | null = null;
   private starting = false;
   private deps: LocalNodeDeps | null = null;
+  /** mDNS publish state — a failed publish must never abort discovery. */
+  private published = false;
+  /** Whether discovery scanning was successfully started. */
+  private discovering = false;
 
   init(deps: LocalNodeDeps): void { this.deps = deps; }
   private getDeps(): LocalNodeDeps {
@@ -87,6 +91,11 @@ class LocalNodeServiceCore {
     this.cachedDeviceId = thisDeviceId;
     // Mesh: every enabled device is server + client, no elected check
     if (this.mode === "mesh" && this.server?.isListening() && this.businessId === business.id) {
+      // Already serving: re-verify the auxiliary legs instead of returning
+      // blind. A previous publish failure (or a start that never reached
+      // discovery) must not leave this device mute/deaf forever.
+      this.ensurePublished();
+      this.ensureDiscovery();
       this.setupStoreSubscriptions();
       return;
     }
@@ -96,7 +105,7 @@ class LocalNodeServiceCore {
     this.secret = await deriveSecretCore({ id: business.id });
     this.mode = "mesh";
     await this.startAsNode(store.localNodePort);
-    this.startDiscovery();
+    this.ensureDiscovery();
     this.startPeerSweep();
     // Connect to already discovered peers
     for (const n of localNodeStore.getState().discoveredNodes) {
@@ -107,12 +116,14 @@ class LocalNodeServiceCore {
   async initialize(): Promise<void> { return this.runLifecycle(() => this.runInitialize(), "initialize"); }
   async shutdown(): Promise<void> { return this.runLifecycle(() => this.runShutdown(), "shutdown"); }
   reconnectNow(): void {
-    // Mesh: if server not listening, re-initialize; else ensure discovery and peer connections
+    // Mesh: if server not listening, re-initialize; else ensure publish +
+    // discovery and peer connections
     if (this.mode === "mesh") {
       if (!this.server?.isListening()) {
         this.initialize().catch((e) => syncLogger.error("LocalNodeService", "reconnectNow re-init failed", { error: String(e) }));
       } else {
-        try { this.getDeps().discovery.startScanning(); } catch {}
+        this.ensurePublished();
+        this.ensureDiscovery();
         for (const n of localNodeStore.getState().discoveredNodes) {
           if (n.deviceId !== this.cachedDeviceId) this.connectToPeer(n);
         }
@@ -137,6 +148,8 @@ class LocalNodeServiceCore {
     }
     this.starting = false;
     try { this.getDeps().discovery.stop(); } catch {}
+    this.published = false;
+    this.discovering = false;
     this.mode = "idle";
     this.businessId = null;
     this.secret = null;
@@ -151,6 +164,14 @@ class LocalNodeServiceCore {
     return store.isLocalNodeEnabled && !!this.server?.isListening();
   }
   isConnectedToNode(): boolean { return this.peers.size > 0 && [...this.peers.values()].some((c) => c.isConnected()); }
+  /** Mesh legibility for Diagnostics screens: publish/scan state per leg. */
+  getMeshStatus(): { mode: string; listening: boolean; published: boolean; discovering: boolean; peers: number } {
+    let listening = false;
+    try {
+      listening = !!this.server?.isListening();
+    } catch {}
+    return { mode: this.mode, listening, published: this.published, discovering: this.discovering, peers: this.peers.size };
+  }
   getClient(): LocalNodeClient | null {
     // For compat: return first connected peer
     for (const c of this.peers.values()) if (c.isConnected()) return c;
@@ -232,8 +253,42 @@ class LocalNodeServiceCore {
     });
     await this.server.start();
     try { await deps.keepAlive?.activate(KEEP_AWAKE_TAG); } catch {}
-    const deviceId = await this.getDeviceId();
-    deps.discovery.startPublishing({ deviceId, deviceName: deps.getDeviceName?.(), port, onNodeFound: (node) => localNodeStore.getState().addDiscoveredNode(node), onNodeLost: (id) => localNodeStore.getState().removeDiscoveredNode(id) });
+    this.ensurePublished();
+  }
+  /**
+   * (Re)publish this node's mDNS advertisement. Isolated from server bring-up
+   * and discovery: a publish throw must never abort scanning, sweeping, or
+   * peer dials. Safe to call repeatedly (drivers dedupe internally).
+   */
+  private ensurePublished(): void {
+    if (this.published) return;
+    try {
+      const deps = this.getDeps();
+      const deviceId = this.cachedDeviceId ?? ((): string => {
+        try {
+          const v = deps.getDeviceId();
+          return typeof v === "string" ? v : "";
+        } catch {
+          return "";
+        }
+      })();
+      if (!deviceId) return;
+      const port = localNodeStore.getState().localNodePort;
+      deps.discovery.startPublishing({
+        deviceId,
+        deviceName: deps.getDeviceName?.(),
+        port,
+        onNodeFound: (node) => localNodeStore.getState().addDiscoveredNode(node),
+        onNodeLost: (id) => localNodeStore.getState().removeDiscoveredNode(id),
+      });
+      this.published = true;
+      syncLogger.info("LocalNodeService", "Published mDNS advertisement", { port });
+    } catch (e) {
+      this.published = false;
+      syncLogger.warn("LocalNodeService", "Publish failed — will retry on next initialize/reconnect (scan continues)", {
+        error: String(e),
+      });
+    }
   }
   private startDiscovery(): void {
     const deps = this.getDeps();
@@ -247,6 +302,24 @@ class LocalNodeServiceCore {
       onNodeLost: (deviceId) => localNodeStore.getState().removeDiscoveredNode(deviceId),
     });
     deps.discovery.startScanning();
+  }
+  /** Start scanning if not already running (idempotent drivers ignore repeats). */
+  private ensureDiscovery(): void {
+    if (this.discovering) {
+      try {
+        this.getDeps().discovery.startScanning();
+      } catch {}
+      return;
+    }
+    try {
+      this.startDiscovery();
+      this.discovering = true;
+    } catch (e) {
+      this.discovering = false;
+      syncLogger.warn("LocalNodeService", "Discovery start failed — will retry on next initialize/reconnect", {
+        error: String(e),
+      });
+    }
   }
   private dialInFlight = new Set<string>();
   private dialTimers = new Map<string, ReturnType<typeof setTimeout>>();
