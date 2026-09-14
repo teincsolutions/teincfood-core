@@ -7,6 +7,16 @@ export interface KVDriver {
   getItem(key: string): Promise<string | null> | string | null;
   setItem(key: string, value: string): Promise<void> | void;
   removeItem(key: string): Promise<void> | void;
+  /**
+   * Optional synchronous access. Sync callers (e.g. order-number callout
+   * sequencing) MUST read persisted state — an async-only driver makes them
+   * fall back to the ephemeral memory map, silently resetting sequences on
+   * every launch. Drivers backed by async storage (Tauri store) implement
+   * these over a synchronously-readable cache (localStorage + memory).
+   */
+  getItemSync?(key: string): string | null;
+  setItemSync?(key: string, value: string): void;
+  removeItemSync?(key: string): void;
 }
 
 const memory = new Map<string, string>();
@@ -62,15 +72,22 @@ export async function removeItem(key: string): Promise<void> {
 }
 
 // Synchronous fallbacks for legacy callers that used MMKV sync API
-// 0.7.1: delegate to driver when driver supports sync (MMKV), otherwise memory
+// 0.7.1: delegate to driver when driver supports sync (MMKV), otherwise memory.
+// Drivers with async storage expose getItemSync/setItemSync over a sync-readable
+// cache — prefer those, else a Promise-returning getItem degrades to the
+// ephemeral memory map (sequences reset every launch).
 export function getItemSync<T>(key: string): T | null {
   let raw: string | null | undefined;
   if (driver) {
     try {
-      const v = driver.getItem(key);
-      // if driver returns Promise, we can't await sync — fall back to memory
-      if (v instanceof Promise) raw = memory.get(key) ?? null;
-      else raw = (v as string | null) ?? memory.get(key) ?? null;
+      if (driver.getItemSync) {
+        raw = driver.getItemSync(key) ?? memory.get(key) ?? null;
+      } else {
+        const v = driver.getItem(key);
+        // if driver returns Promise, we can't await sync — fall back to memory
+        if (v instanceof Promise) raw = memory.get(key) ?? null;
+        else raw = (v as string | null) ?? memory.get(key) ?? null;
+      }
     } catch {
       raw = memory.get(key) ?? null;
     }
@@ -90,6 +107,10 @@ export function setItemSync<T>(key: string, value: T): void {
   memory.set(key, str);
   if (driver) {
     try {
+      if (driver.setItemSync) {
+        driver.setItemSync(key, str);
+        return;
+      }
       const r = driver.setItem(key, str);
       // if async, also keep memory
       if (r instanceof Promise) r.catch(() => {});
@@ -101,6 +122,10 @@ export function removeItemSync(key: string): void {
   memory.delete(key);
   if (driver) {
     try {
+      if (driver.removeItemSync) {
+        driver.removeItemSync(key);
+        return;
+      }
       const r = driver.removeItem(key);
       if (r instanceof Promise) r.catch(() => {});
     } catch {}
