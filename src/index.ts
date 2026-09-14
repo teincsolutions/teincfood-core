@@ -201,6 +201,19 @@ export { getSyncJobsPendingCount, debugDumpSyncJobs, drainPending } from "./sync
 export { performFullSync } from "./sync/full-sync";
 export { stopHealthProbe } from "./sync/health-probe";
 export { notifyAuthChanged, subscribeAuth } from "./adapters/auth";
+// ── Session lifecycle (access-expired → refresh → refresh-expired → logout)
+export {
+  ACCESS_EXPIRED_CODE,
+  SESSION_DEAD_CODES,
+  SKIP_AUTH_RETRY,
+  extractAuthFailure,
+  isAccessExpired,
+  isSessionDead,
+  hasAuthRetrySkip,
+  refreshSession,
+  withAuthRetry,
+} from "./auth/session";
+export type { AuthFailure, SessionTokens } from "./auth/session";
 
 // ── Image cache (durable) ──
 export { getCachedImagePath, ensureImageCacheDir, getCachedImageInfo, cacheRemoteImage, cacheImageBatch, clearImageCache, pruneImageCache, resolveImageSource, stableCacheUrl } from "./image-cache/service";
