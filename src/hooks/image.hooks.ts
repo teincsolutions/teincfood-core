@@ -9,7 +9,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
-import { cacheRemoteImage, resolveImageSource, stableCacheUrl } from "../image-cache/service";
+import { cacheRemoteImage, getCachedImageInfo, resolveImageSource, stableCacheUrl } from "../image-cache/service";
 
 export const IMAGE_CACHE_KEYS = {
   all: ["cachedImage"] as const,
@@ -37,9 +37,18 @@ export function useCachedImageUrl(url: string | null | undefined): string | null
       const resolved = await resolveImageSource(url);
       if (!resolved) return { uri: url };
       if (resolved.uri === url && isOnline) {
+        // Warm in the background, but refresh this query ONLY if warming
+        // actually landed the file. Unconditional invalidate-after-warm
+        // turns every permanent failure (offline race, unfetchable URL)
+        // into an unbounded refetch → warm → fail loop.
         cacheRemoteImage(url, { skipIfCached: true })
-          .then(() => {
-            queryClient.invalidateQueries({ queryKey: IMAGE_CACHE_KEYS.url(stableCacheUrl(url)) });
+          .then(async () => {
+            try {
+              const fresh = await getCachedImageInfo(url);
+              if (fresh.localUri) {
+                queryClient.invalidateQueries({ queryKey: IMAGE_CACHE_KEYS.url(stableCacheUrl(url)) });
+              }
+            } catch {}
           })
           .catch(() => {});
       }

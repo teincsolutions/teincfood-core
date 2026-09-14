@@ -47,6 +47,19 @@ export async function getCachedImageInfo(url: string): Promise<ImageCacheEntry> 
   const info = await fs.getInfoAsync(localPath);
   return { remoteUrl: url, localUri: info.exists && !info.isDirectory ? localPath : null, etag: null, lastModified: null, cachedAt: info.exists ? new Date().toISOString() : null };
 }
+const DOWNLOADABLE_RE = /^https?:\/\//i;
+
+/**
+ * Only http(s) URLs can be fetched by the host downloader. Anything else
+ * (tfimg:// disk URIs leaked from another device, data:, blob:, file:)
+ * is either already local or unfetchable — attempting a download throws
+ * per-attempt errors (e.g. iOS NSURLError -1002) and, worse, feeds the
+ * hook's warm-then-invalidate cycle into an unbounded retry storm.
+ */
+export function isDownloadableImageUrl(url: string): boolean {
+  return DOWNLOADABLE_RE.test(url);
+}
+
 export async function cacheRemoteImage(url: string | null | undefined, opts: { skipIfCached?: boolean; removeOnFailure?: boolean } = {}): Promise<ImageCacheEntry | null> {
   if (!url) return null;
   const fs = getFileSystemAdapter();
@@ -54,15 +67,17 @@ export async function cacheRemoteImage(url: string | null | undefined, opts: { s
   await ensureImageCacheDir();
   const localPath = getCachedImagePath(url);
   const existing = await fs.getInfoAsync(localPath);
-  if (opts.skipIfCached && existing.exists && !existing.isDirectory) {
+  if (existing.exists && !existing.isDirectory) {
     return { remoteUrl: url, localUri: localPath, etag: null, lastModified: null, cachedAt: new Date().toISOString() };
+  }
+  if (!isDownloadableImageUrl(url)) {
+    return { remoteUrl: url, localUri: null, etag: null, lastModified: null, cachedAt: null };
   }
   try {
     const res = await fs.downloadAsync(url, localPath);
     if (res.uri) return { remoteUrl: url, localUri: localPath, etag: null, lastModified: null, cachedAt: new Date().toISOString() };
   } catch (e) { syncLogger.warn("ImageCache", "Failed to download", { url, error: String(e) }); }
   if (opts.removeOnFailure) await fs.deleteAsync(localPath, { idempotent: true }).catch(() => {});
-  if (existing.exists && !existing.isDirectory) return { remoteUrl: url, localUri: localPath, etag: null, lastModified: null, cachedAt: new Date().toISOString() };
   return { remoteUrl: url, localUri: null, etag: null, lastModified: null, cachedAt: null };
 }
 export async function cacheImageBatch(urls: (string | null | undefined)[], opts: { skipIfCached?: boolean; removeOnFailure?: boolean } = {}): Promise<ImageCacheEntry[]> {
