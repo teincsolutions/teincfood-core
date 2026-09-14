@@ -103,6 +103,13 @@ class OrderSnapshotsService {
     try {
       const payload = event.payload as Record<string, unknown> | undefined;
       const businessId = (payload?.business_id as string | undefined) ?? (payload?.businessId as string | undefined) ?? null;
+      // Dual-write: keep canonical orders table in sync so POS/KDS reads converge instantly.
+      if (businessId) {
+        try {
+          const { updateOrderStatus } = await import("../db/operations");
+          await updateOrderStatus(db, businessId, orderId, toStatus, event.timestamp);
+        } catch {}
+      }
       const lists = businessId
         ? await getEntitySnapshotsByType<SellerOrderListSnapshot>(db, "seller_orders", businessId)
         : await getEntitySnapshotsByType<SellerOrderListSnapshot>(db, "seller_orders");

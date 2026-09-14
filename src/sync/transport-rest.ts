@@ -13,6 +13,8 @@ import { generateEventId } from "../utils/uuid";
 import type { POSOrderCreateRequest } from "../types/pos.types";
 import type { SellerOrder } from "../types/api/seller.api";
 import { createLocalOrder, transitionLocalOrder } from "../domain/orders/service";
+import { openSyncDatabase } from "../db/connection";
+import { getOrderById, updateOrderStatus } from "../db/operations";
 
 export class RestTransport implements Transport {
   readonly name = "rest";
@@ -178,7 +180,8 @@ export class RestTransport implements Transport {
     const { business_id, entity_id } = command;
     try {
       const order = await transitionLocalOrder(business_id, entity_id!, action);
-      return this.wrapResponse(eventType, order as unknown as Record<string, unknown>, (order as SellerOrder).id, timestamp, command);
+      const data: Record<string, unknown> = { ...order, order_id: order.id };
+      return this.wrapResponse(eventType, data, order.id, timestamp, command);
     } catch (error) {
       syncLogger.warn("RestTransport", "domain transition unavailable, REST fallback", {
         command_type: command.command_type,
@@ -186,7 +189,23 @@ export class RestTransport implements Transport {
         error: error instanceof Error ? error.message : String(error),
       });
       const response = await restFallback();
-      return this.wrapResponse(eventType, response.data as unknown as Record<string, unknown>, entity_id, timestamp, command);
+      const raw = response.data as Record<string, unknown> | undefined;
+      const data: Record<string, unknown> = { ...raw };
+      const orderId = (data.id as string) ?? entity_id;
+      if (!data.order_id) data.order_id = orderId;
+      if (business_id && orderId) {
+        try {
+          const db = await openSyncDatabase();
+          const existing = await getOrderById(db, business_id, orderId);
+          if (existing) {
+            const newStatus = (data.status as string) ?? existing.status;
+            if (newStatus !== existing.status) {
+              await updateOrderStatus(db, business_id, orderId, newStatus);
+            }
+          }
+        } catch {}
+      }
+      return this.wrapResponse(eventType, data, orderId, timestamp, command);
     }
   }
 

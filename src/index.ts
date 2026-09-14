@@ -198,6 +198,8 @@ export { useEventsConnection } from "./realtime/useEventsConnection";
 
 // ── Sync jobs (POS primary sync) — debug helpers for DiagnosticsScreen
 export { getSyncJobsPendingCount, debugDumpSyncJobs, drainPending } from "./sync/sync-jobs.service";
+export { performFullSync } from "./sync/full-sync";
+export { stopHealthProbe } from "./sync/health-probe";
 export { notifyAuthChanged, subscribeAuth } from "./adapters/auth";
 
 // ── Image cache (durable) ──
@@ -215,6 +217,7 @@ import { SyncEngine } from "./sync/engine";
 import { restTransport } from "./sync/transport-rest";
 import { localNodeTransport } from "./sync/transport-local-node";
 import { setupSyncJobsDrain } from "./sync/sync-jobs.service";
+import { startHealthProbe, stopHealthProbe } from "./sync/health-probe";
 
 export interface CoreConfig {
   sqliteDriver?: SqliteDriver;
@@ -259,6 +262,7 @@ export function createTeincCore(config: CoreConfig = {}): { engine: SyncEngine }
   if (config.initialConnectivity) setConnectivityState(config.initialConnectivity);
 
   try { setupSyncJobsDrain(); } catch {}
+  try { startHealthProbe(); } catch {}
 
   // Debug: confirm env vars as seen by core after injection
   try {

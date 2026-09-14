@@ -120,8 +120,16 @@ export function useMenuCategoriesQuery() {
     retry: false,
     networkMode: "offlineFirst" as const,
   });
-  const data = (isOnline && (networkQuery.data as unknown) ? networkQuery.data : cachedQuery.data) as unknown;
-  return { ...networkQuery, data, isPending: cachedQuery.isPending && !networkQuery.data } as unknown as ReturnType<typeof useQuery>;
+  const usingNetwork = isOnline && (networkQuery.data as unknown);
+  const data = usingNetwork ? networkQuery.data : cachedQuery.data;
+  const hasCache = cachedQuery.data != null;
+  return {
+    ...networkQuery,
+    data,
+    isPending: cachedQuery.isPending && !networkQuery.data,
+    isError: hasCache ? false : networkQuery.isError,
+    error: hasCache ? null : networkQuery.error,
+  } as unknown as ReturnType<typeof useQuery>;
 }
 
 // Mutations — offline-capable

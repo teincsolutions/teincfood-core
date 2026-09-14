@@ -18,6 +18,8 @@ import type { ReferenceDataKey, ReferenceDataRecord } from "./types";
 import { syncLogger } from "../utils/sync-logger";
 import { generateUUID } from "../utils/uuid";
 import type { Command } from "../sync/types";
+import { hlcToString, tickHLC, hlcFromString } from "../utils/hlc";
+import { getAppInstanceId } from "../adapters/devices";
 
 export const MENU_ITEM_KEY: ReferenceDataKey = "menu:items";
 export const MENU_CATEGORY_KEY: ReferenceDataKey = "menu:categories";
@@ -56,15 +58,29 @@ async function patchKey(
   try {
     const db = await openSyncDatabase();
     const rec = await getReferenceData<unknown>(db, businessId, key);
-    if (!rec) return false;
+    // Seed empty row if first-ever offline create before any pull.
+    if (!rec) {
+      const next = patch([]);
+      const hlc = hlcToString(tickHLC(Date.now(), null, getAppInstanceId()));
+      await setReferenceData(db, businessId, {
+        key,
+        version: hlc,
+        payload: withArray({ data: [] }, next),
+        downloadedAt: new Date().toISOString(),
+        lastEventId: `evt_${hlc}`,
+        lastHlc: hlc,
+      } as ReferenceDataRecord<unknown>);
+      return true;
+    }
     const next = patch(asArray(rec.payload));
+    const hlc = hlcToString(tickHLC(Date.now(), hlcFromString(rec.lastHlc ?? rec.version) ?? null, getAppInstanceId()));
     await setReferenceData(db, businessId, {
       key,
-      version: rec.version,
+      version: hlc,
       payload: withArray(rec.payload, next),
       downloadedAt: new Date().toISOString(),
-      lastEventId: rec.lastEventId ?? null,
-      lastHlc: rec.lastHlc ?? null,
+      lastEventId: `evt_${hlc}`,
+      lastHlc: hlc,
     } as ReferenceDataRecord<unknown>);
     return true;
   } catch (e) {
@@ -257,13 +273,14 @@ export async function purgeNonCanonicalMenuCache(businessId: string): Promise<nu
     const kept = arr.filter(isCanonicalMenuItem);
     const purged = arr.length - kept.length;
     if (purged === 0) return 0;
+    const hlc = hlcToString(tickHLC(Date.now(), hlcFromString(rec.lastHlc ?? rec.version) ?? null, getAppInstanceId()));
     await setReferenceData(db, businessId, {
       key: MENU_ITEM_KEY,
-      version: rec.version,
+      version: hlc,
       payload: withArray(rec.payload, kept),
       downloadedAt: new Date().toISOString(),
-      lastEventId: rec.lastEventId ?? null,
-      lastHlc: rec.lastHlc ?? null,
+      lastEventId: `evt_${hlc}`,
+      lastHlc: hlc,
     } as ReferenceDataRecord<unknown>);
     syncLogger.warn("MenuApply", "purged non-canonical cached menu rows", { businessId, purged, kept: kept.length });
     return purged;

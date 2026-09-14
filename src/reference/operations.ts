@@ -4,7 +4,12 @@
 
 import type { SQLiteDatabase } from "../adapters/sqlite";
 import type { ReferenceDataKey, ReferenceDataRecord } from "./types";
-import { compareHLCString } from "../utils/hlc";
+import { compareHLCString, hlcToString, tickHLC, hlcFromString } from "../utils/hlc";
+import { generateUUID } from "../utils/uuid";
+import { openSyncDatabase } from "../db/connection";
+import type { OperatingHoursEntry } from "../types/api/business.api";
+import { getAppInstanceId } from "../adapters/devices";
+import { notifyDbChange } from "../db/operations";
 
 export async function getReferenceData<T>(
   db: SQLiteDatabase,
@@ -73,6 +78,7 @@ export async function setReferenceData<T>(
     record.lastEventId ?? null,
     record.lastHlc ?? null,
   );
+  notifyDbChange(businessId, `reference_data:${record.key}`);
 }
 
 export async function mergeReferenceData<T extends Record<string, unknown>>(
@@ -143,9 +149,27 @@ export async function getAllReferenceDataKeys(
   return rows.map((r) => r.key as ReferenceDataKey);
 }
 
-import { generateUUID } from "../utils/uuid";
-import { openSyncDatabase } from "../db/connection";
-import type { OperatingHoursEntry } from "../types/api/business.api";
+async function enqueueReferenceSyncJob(
+  businessId: string,
+  key: import("./types").ReferenceDataKey,
+  hlc: string,
+): Promise<void> {
+  try {
+    const db = await openSyncDatabase();
+    const id = generateUUID();
+    const now = new Date().toISOString();
+    await db.runAsync(
+      `INSERT OR IGNORE INTO sync_jobs (id, business_id, command_type, entity_id, payload, status, created_at, updated_at, attempts, last_error) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, 0, NULL);`,
+      id,
+      businessId,
+      "reference:sync",
+      key,
+      JSON.stringify({ key, hlc }),
+      now,
+      now,
+    );
+  } catch {}
+}
 
 export async function setOperatingHoursLocal(
   businessId: string,
@@ -154,15 +178,12 @@ export async function setOperatingHoursLocal(
   const db = await openSyncDatabase();
   const payload = { data: entries };
   const now = new Date().toISOString();
-  const version = generateUUID();
-  await setReferenceData(db, businessId, {
-    key: "operating-hours",
-    version,
-    payload,
-    downloadedAt: now,
-    lastHlc: version,
-    lastEventId: `evt_${version}`,
-  });
+  // HLC ensures local edit wins over stale server pull via LWW
+  const existing = await getReferenceData(db, businessId, "operating-hours");
+  const lastHlc = existing?.lastHlc ? hlcFromString(existing.lastHlc) : null;
+  const hlcStr = hlcToString(tickHLC(Date.now(), lastHlc, getAppInstanceId()));
+  await mergeReferenceData(db, businessId, "operating-hours", payload as unknown as Record<string, unknown>, hlcStr, `evt_${hlcStr}`);
+  await enqueueReferenceSyncJob(businessId, "operating-hours", hlcStr);
 }
 
 export async function setBusinessProfileLocal(
@@ -171,14 +192,9 @@ export async function setBusinessProfileLocal(
 ): Promise<void> {
   const db = await openSyncDatabase();
   const payload = { data: profile };
-  const now = new Date().toISOString();
-  const version = generateUUID();
-  await setReferenceData(db, businessId, {
-    key: "business:profile",
-    version,
-    payload,
-    downloadedAt: now,
-    lastHlc: version,
-    lastEventId: `evt_${version}`,
-  });
+  const existing = await getReferenceData(db, businessId, "business:profile");
+  const lastHlc = existing?.lastHlc ? hlcFromString(existing.lastHlc) : null;
+  const hlcStr = hlcToString(tickHLC(Date.now(), lastHlc, getAppInstanceId()));
+  await mergeReferenceData(db, businessId, "business:profile", payload as unknown as Record<string, unknown>, hlcStr, `evt_${hlcStr}`);
+  await enqueueReferenceSyncJob(businessId, "business:profile", hlcStr);
 }

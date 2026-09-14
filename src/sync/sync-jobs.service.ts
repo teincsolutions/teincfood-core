@@ -16,6 +16,7 @@ import { recordAttempt } from "../utils/attempt-stats";
 import { BackoffTracker } from "./backoff";
 import { generateOrderNumber } from "./order-number";
 import { orderSnapshotsService } from "./order-snapshots.service";
+import { getTransitionPath } from "./transition-endpoints";
 
 const inflight = new Map<string, Promise<void>>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -80,6 +81,30 @@ async function tryRest(businessId: string, payload: Record<string, unknown>, com
   try {
     const http = getHttpClient();
     if (!http) return { ok: false };
+    if (commandType === "reference:sync") {
+      const key = (payload.key as string) ?? (payload.entity_id as string);
+      if (!key) return { ok: false, message: "missing reference key" };
+      const db = await openSyncDatabase();
+      const { getReferenceData } = await import("../reference/operations");
+      const rec = await getReferenceData(db, businessId, key as import("../reference/types").ReferenceDataKey);
+      if (!rec) return { ok: true };
+      // Push via reference-data endpoint if available, else per-key fallback
+      try {
+        await http.post(`/businesses/${businessId}/reference-data`, { key, payload: rec.payload, hlc: rec.lastHlc ?? rec.version });
+      } catch {
+        // Fallback: try business operating-hours endpoint for that key
+        if (key === "operating-hours") {
+          const entries = (rec.payload as { data?: unknown })?.data ?? rec.payload;
+          await http.put(`/businesses/${businessId}/operating-hours`, { operating_hours: entries });
+        } else if (key === "business:profile") {
+          const data = (rec.payload as { data?: Record<string, unknown> })?.data ?? rec.payload;
+          await http.patch(`/businesses/${businessId}`, data as Record<string, unknown>);
+        } else {
+          return { ok: true };
+        }
+      }
+      return { ok: true };
+    }
     // POS order create → business-scoped POS endpoint (backend: POSController.create_order expects id/local_order_number + items + order_type)
     if (commandType === "order:create") {
       const body: Record<string, unknown> = {
@@ -105,22 +130,10 @@ async function tryRest(businessId: string, payload: Record<string, unknown>, com
       await http.post(`/businesses/${businessId}/pos/orders`, body);
       return { ok: true };
     }
-    // transitions → /orders/:id/* (OrderController)
+    // transitions → /orders/:id/* (OrderController) — shared endpoint map
     const orderId = (payload.orderId ?? payload.order_id ?? payload.entity_id ?? payload.id) as string | undefined;
     if (!orderId) return { ok: false, message: "missing orderId" };
-    const map: Record<string, string> = {
-      "order:accept": `/orders/${orderId}/accept`,
-      "order:reject": `/orders/${orderId}/reject`,
-      "order:start_preparing": `/orders/${orderId}/start-preparing`,
-      "order:mark_ready": `/orders/${orderId}/ready-for-delivery`,
-      "order:complete_pickup": `/orders/${orderId}/complete-pickup`,
-      "order:cancel": `/orders/${orderId}/cancel`,
-      "order:confirm_cash": `/orders/${orderId}/confirm-cash-payment`,
-      "order:pay": `/orders/${orderId}/confirm-cash-payment`,
-      "order:assign_rider": `/orders/${orderId}/assign`, // fallback, actual via deliveries/assign
-      "order:confirm_handover": `/deliveries/${orderId}/confirm-handover`,
-    };
-    const path = map[commandType] ?? (commandType.startsWith("order:") ? `/orders/${orderId}/${commandType.replace("order:", "")}` : null);
+    const path = getTransitionPath(commandType, orderId);
     if (!path) return { ok: false, message: `unknown command ${commandType}` };
     await http.post(path, {});
     return { ok: true };
@@ -266,28 +279,42 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
       syncLogger.debug("SyncJobs", "401 deferred until login", { businessId });
       return;
     }
-    // Permanent 4xx (except 401/404/408/409/429) — don't retry infinitely; mark failed to stop sync spinner loop.
-    // 404 is retryable (order not yet created on backend due to FIFO race), 409 is handled above for RRR regen.
-    if (rest.status && rest.status >= 400 && rest.status < 500 && rest.status !== 401 && rest.status !== 404 && rest.status !== 408 && rest.status !== 409 && rest.status !== 429) {
+    // Permanent 4xx: mark failed to stop the retry loop.
+    // 404 is only retryable for order:create (FIFO race: order not yet created
+    // on backend). For transitions, 404 means the order was deleted or never
+    // synced — permanent. 409 handled above for RRR regen. 401/408/429 need
+    // special handling below.
+    const codeUpper = String(rest.code ?? "").toUpperCase();
+    const msgUpper = String(rest.message ?? "").toUpperCase();
+    const isBusinessClosed = codeUpper.includes("BUSINESS_CLOSED") || msgUpper.includes("BUSINESS_CLOSED") || msgUpper.includes("BUSINESS IS CLOSED") || codeUpper.includes("HOURS_NOT_SYNCED");
+    const is4xx = rest.status && rest.status >= 400 && rest.status < 500;
+    const isRetryable4xx = rest.status === 401 || rest.status === 408 || rest.status === 409 || rest.status === 429
+      || (rest.status === 404 && row.command_type === "order:create")
+      || isBusinessClosed;
+    if (is4xx && !isRetryable4xx) {
       syncLogger.warn("SyncJobs", "Permanent 4xx — marking job failed to stop retry loop", { businessId, entityId, status: rest.status, code: rest.code, message: rest.message });
       try {
         await db.runAsync(`UPDATE sync_jobs SET status='failed', last_error=?, updated_at=? WHERE id=?;`, `${rest.status} ${rest.code ?? ""} ${rest.message ?? ""}`.trim(), new Date().toISOString(), row.id);
       } catch {}
       clearRetry(businessId);
-      // Loud toast + revert: roll back the optimistic local write.
       try {
         const { notifyError } = await import("../adapters/notify");
         notifyError(`Server rejected ${row.command_type}: ${rest.message ?? rest.code ?? rest.status}`);
       } catch {}
+      // Retain optimistic row — pull will converge for transitions, create stays for manual retry.
+      if (row.command_type !== "order:create") {
+        try { void pullRemoteOrders(businessId).catch(() => {}); } catch {}
+      }
+      return;
+    }
+    if (isBusinessClosed) {
+      syncLogger.warn("SyncJobs", "Business closed — keeping pending for retry after hours sync", { businessId, entityId, code: rest.code });
       try {
-        if (row.command_type === "order:create") {
-          // Never existed server-side — remove the optimistic row.
-          await db.runAsync(`DELETE FROM orders WHERE business_id=? AND id=?;`, businessId, entityId);
-        } else {
-          // Transition rejected — converge to server truth on next pull.
-          void pullRemoteOrders(businessId).catch(() => {});
-        }
+        await db.runAsync(`UPDATE sync_jobs SET last_error=?, updated_at=? WHERE id=?;`, `${rest.status} ${rest.code ?? ""} ${rest.message ?? ""}`.trim(), new Date().toISOString(), row.id);
       } catch {}
+      // Re-pull reference so hours merge converges, then retry with backoff.
+      try { const { referenceSyncService } = await import("../reference/service"); void referenceSyncService.sync({ businessId, keys: ["operating-hours", "business:profile"] }).catch(() => {}); } catch {}
+      scheduleRetry(businessId);
       return;
     }
     // Keep pending for retry (5xx / network) — auto retry with backoff
@@ -393,25 +420,29 @@ export function setupSyncJobsDrain(): void {
   }
   drainSetup = true;
   syncLogger.debug("SyncJobs", "setupSyncJobsDrain init", { hasBusiness: !!getActiveBusiness()?.id, connectivity: getConnectivityState(), hasToken: !!getAuthToken() });
+  const triggerFullSync = (b: string | undefined) => {
+    if (!b || !isOnlineForRest() || !getAuthToken()) return;
+    void import("./full-sync").then((m) => m.performFullSync(b).catch(() => {}));
+  };
   try {
     subscribeConnectivity(() => {
       const b = getActiveBusiness()?.id;
       syncLogger.debug("SyncJobs", "subscribeConnectivity trigger", { businessId: b, connectivity: getConnectivityState(), hasToken: !!getAuthToken() });
-      if (b && isOnlineForRest() && getAuthToken()) void drainPending(b);
+      triggerFullSync(b);
     });
     subscribeBusiness(() => {
       const bid = getActiveBusiness()?.id;
       syncLogger.debug("SyncJobs", "subscribeBusiness trigger", { businessId: bid, hasToken: !!getAuthToken(), connectivity: getConnectivityState() });
-      if (bid && isOnlineForRest() && getAuthToken()) void drainPending(bid);
+      triggerFullSync(bid);
     });
     subscribeAuth(() => {
       const b = getActiveBusiness()?.id;
       syncLogger.debug("SyncJobs", "subscribeAuth trigger", { businessId: b, hasToken: !!getAuthToken(), connectivity: getConnectivityState() });
-      if (b && isOnlineForRest() && getAuthToken()) void drainPending(b);
+      triggerFullSync(b);
     });
     const b0 = getActiveBusiness()?.id;
     syncLogger.debug("SyncJobs", "setupSyncJobsDrain initial check", { b0, isOnlineForRest: isOnlineForRest(), hasToken: !!getAuthToken() });
-    if (b0 && isOnlineForRest() && getAuthToken()) void drainPending(b0);
+    triggerFullSync(b0);
   } catch (e) {
     syncLogger.debug("SyncJobs", "setupSyncJobsDrain error", { err: String(e) });
   }

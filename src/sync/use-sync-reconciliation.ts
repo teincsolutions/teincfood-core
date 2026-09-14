@@ -21,6 +21,7 @@ import { localNodeService } from "../adapters/local-node";
 import { getSyncDatabase } from "../db/connection";
 import { markEventsSynced } from "../db/operations";
 import { syncLogger } from "../utils/sync-logger";
+import { subscribeDbChanges } from "../db/operations";
 import {
   POS_KEYS,
   SELLER_KEYS,
@@ -167,11 +168,17 @@ export function useSyncReconciliation(): void {
       }
     });
 
+    const dbUnsub = subscribeDbChanges((info) => {
+      if (info.table.startsWith("reference_data")) schedule("reference");
+      else if (info.table === "orders" || info.table.startsWith("entity_snapshots")) schedule("pending");
+    });
+
     return () => {
       if (timer) clearTimeout(timer);
       unsubscribe();
       unregisterInvalidator();
       unregisterReferenceInvalidator();
+      dbUnsub();
     };
   }, [queryClient]);
 }

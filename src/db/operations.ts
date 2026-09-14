@@ -324,6 +324,7 @@ export async function upsertEntitySnapshot<T>(
     lastEventTimestamp,
     JSON.stringify(payload),
   );
+  notifyDbChange(businessId ?? undefined, `entity_snapshots:${entityType}`);
 }
 
 export async function getEntitySnapshot<T>(
@@ -545,6 +546,7 @@ export async function insertOrder(db: SQLiteDatabase, order: import("../types/ap
     order.customer_name, order.customer_phone, order.pos_payment_method, order.delivery_id, order.business ? JSON.stringify(order.business) : null, order.user ? JSON.stringify(order.user) : null,
     order.inserted_at, updatedAt, hlc
   );
+  notifyDbChange(order.business_id, "orders");
 }
 
 export async function getOrderById(db: SQLiteDatabase, businessId: string, idOrNumber: string): Promise<import("../types/api/seller.api").SellerOrder | null> {
@@ -575,6 +577,7 @@ export async function listOrders(db: SQLiteDatabase, businessId: string, filters
 export async function updateOrderStatus(db: SQLiteDatabase, businessId: string, orderId: string, toStatus: string, hlc?: string): Promise<void> {
   const now = hlc ?? new Date().toISOString();
   await db.runAsync(`UPDATE orders SET status = ?, hlc = ? WHERE business_id = ? AND (id = ? OR order_number = ?);`, toStatus, now, businessId, orderId, orderId);
+  notifyDbChange(businessId, "orders");
 }
 
 export async function updateOrderPayment(db: SQLiteDatabase, businessId: string, orderId: string, patch: { is_paid: boolean; paid_at: string | null }): Promise<void> {
@@ -582,6 +585,7 @@ export async function updateOrderPayment(db: SQLiteDatabase, businessId: string,
   if (!row) return;
   const payment = { ...(row.payment as object), is_paid: patch.is_paid, paid_at: patch.paid_at } as unknown as string;
   await db.runAsync(`UPDATE orders SET payment = ?, hlc = ? WHERE business_id = ? AND (id = ? OR order_number = ?);`, JSON.stringify(payment), new Date().toISOString(), businessId, orderId, orderId);
+  notifyDbChange(businessId, "orders");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -610,6 +614,15 @@ export async function wipeForNewInstall(db: SQLiteDatabase): Promise<void> {
 
 export async function clearReferenceData(db: SQLiteDatabase): Promise<void> {
   await db.execAsync(`DELETE FROM reference_data;`);
+}
+
+const dbChangeListeners = new Set<(info: { businessId?: string; table: string }) => void>();
+export function subscribeDbChanges(listener: (info: { businessId?: string; table: string }) => void): () => void {
+  dbChangeListeners.add(listener);
+  return () => dbChangeListeners.delete(listener);
+}
+export function notifyDbChange(businessId: string | undefined, table: string): void {
+  for (const l of dbChangeListeners) try { l({ businessId, table }); } catch {}
 }
 
 export async function clearCompletedCommandsAndOrphans(db: SQLiteDatabase): Promise<void> {

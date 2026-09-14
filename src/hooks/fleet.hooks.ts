@@ -33,8 +33,10 @@ function useBusinessId(): string | undefined {
 
 const OFFLINE_FIRST = { retry: false, networkMode: "offlineFirst" } as const;
 
-// No SQLite fleet mirror — the persisted query cache is the offline source.
-// Fleet reads never fire while unreachable; the OfflineBanner marks not-live.
+// Fleet has no SQLite mirror — offline source is the persisted query cache.
+// Reads are cache-first (no online gate): the query is enabled offline so
+// TanStack can serve stale cache + OfflineBanner marks not-live. Fetches still
+// fail gracefully via retry:false + offlineFirst when the network is down.
 function useOnline(): boolean {
   return useIsEffectivelyOnline();
 }
@@ -43,11 +45,11 @@ function useOnline(): boolean {
 
 export function useFleetRidersQuery(enabled = true, filters?: { q?: string; status?: string }) {
   const businessId = useBusinessId();
-  const online = useOnline();
   return useQuery({
     queryKey: [...FLEET_KEYS.riders(businessId), filters],
     queryFn: () => fleetService.fetchFleetRiders(businessId, 1, 50, filters),
-    enabled: enabled && online,
+    enabled: enabled && Boolean(businessId),
+    placeholderData: (prev) => prev,
     ...OFFLINE_FIRST,
   });
 }
@@ -69,23 +71,23 @@ export function useInviteRiderMutation() {
 
 export function useFleetRiderQuery(riderId: string, enabled = true) {
   const businessId = useBusinessId();
-  const online = useOnline();
   return useQuery({
     queryKey: FLEET_KEYS.riderDetail(riderId),
     queryFn: () => fleetService.fetchFleetRider(riderId, businessId),
-    enabled: enabled && Boolean(riderId) && online,
+    enabled: enabled && Boolean(riderId),
+    placeholderData: (prev) => prev,
     ...OFFLINE_FIRST,
   });
 }
 
 export function useRiderKycQuery(riderId: string, enabled = true) {
   const businessId = useBusinessId();
-  const online = useOnline();
   return useQuery({
     queryKey: FLEET_KEYS.riderKyc(riderId),
     queryFn: () => fleetService.fetchRiderKyc(riderId, businessId),
-    enabled: enabled && Boolean(riderId) && online,
+    enabled: enabled && Boolean(riderId),
     staleTime: 0,
+    placeholderData: (prev) => prev,
     ...OFFLINE_FIRST,
   });
 }
@@ -134,11 +136,11 @@ export function useActivateRiderMutation() {
 
 export function useJoinRequestsQuery(enabled = true) {
   const businessId = useBusinessId();
-  const online = useOnline();
   return useQuery({
     queryKey: FLEET_KEYS.joinRequests(businessId),
     queryFn: () => fleetService.fetchJoinRequests(businessId),
-    enabled: enabled && online,
+    enabled: enabled && Boolean(businessId),
+    placeholderData: (prev) => prev,
     ...OFFLINE_FIRST,
   });
 }
@@ -174,11 +176,11 @@ export function useRejectJoinRequestMutation() {
 
 export function useFleetInvitationsQuery(enabled = true) {
   const businessId = useBusinessId();
-  const online = useOnline();
   return useQuery({
     queryKey: FLEET_KEYS.invitations(businessId),
     queryFn: () => fleetService.fetchInvitations(businessId),
-    enabled: enabled && online,
+    enabled: enabled && Boolean(businessId),
+    placeholderData: (prev) => prev,
     ...OFFLINE_FIRST,
   });
 }
@@ -201,11 +203,11 @@ export function useRevokeInvitationMutation() {
 
 export function useFleetVehiclesQuery(enabled = true) {
   const businessId = useBusinessId();
-  const online = useOnline();
   return useQuery({
     queryKey: FLEET_KEYS.vehicles(businessId),
     queryFn: () => fleetService.fetchFleetVehicles(businessId),
-    enabled: enabled && online,
+    enabled: enabled && Boolean(businessId),
+    placeholderData: (prev) => prev,
     ...OFFLINE_FIRST,
   });
 }
@@ -242,11 +244,11 @@ export function useRemoveVehicleMutation() {
 
 export function useFleetDashboardQuery(enabled = true) {
   const businessId = useBusinessId();
-  const online = useOnline();
   return useQuery({
     queryKey: FLEET_KEYS.dashboard(businessId),
     queryFn: () => fleetService.fetchFleetDashboard(businessId),
-    enabled: enabled && online,
+    enabled: enabled && Boolean(businessId),
+    placeholderData: (prev) => prev,
     ...OFFLINE_FIRST,
   });
 }

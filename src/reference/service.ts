@@ -13,11 +13,12 @@ import { syncLogger } from "../utils/sync-logger";
 import { generateUUID } from "../utils/uuid";
 import { menuService, businessService, rolesService } from "../adapters/services";
 import { cacheImageBatch, pruneImageCache } from "../adapters/image-cache";
+import { getConnectivityState } from "../adapters/connectivity";
 import type { MenuItemListResponse, BusinessResponse } from "../types/api";
 import {
   getReferenceData,
   getReferenceVersion,
-  setReferenceData,
+  mergeReferenceData,
 } from "./operations";
 import {
   fetchReferenceVersions,
@@ -53,6 +54,21 @@ class ReferenceSyncService {
       return {
         synced: [],
         skipped: [],
+        failed: [],
+        errors: {} as Record<ReferenceDataKey, string>,
+      };
+    }
+
+    const { isOnline, isCloudReachable } = getConnectivityState();
+    if (!isOnline || isCloudReachable === "unreachable") {
+      syncLogger.debug("ReferenceSync", "Skipping sync — cloud not reachable", {
+        businessId: options.businessId,
+        isOnline,
+        isCloudReachable,
+      });
+      return {
+        synced: [],
+        skipped: options.keys ?? DEFAULT_SYNC_KEYS,
         failed: [],
         errors: {} as Record<ReferenceDataKey, string>,
       };
@@ -182,14 +198,16 @@ class ReferenceSyncService {
       version = fallback.version;
     }
 
-    await setReferenceData(db, businessId, {
+    // LWW: newer HLC wins — local edits that are newer than server are preserved.
+    const hlc = version ?? generateUUID();
+    await mergeReferenceData(
+      db,
+      businessId,
       key,
-      version: version ?? generateUUID(),
-      payload,
-      downloadedAt: new Date().toISOString(),
-      lastHlc: version ?? generateUUID(),
-      lastEventId: `evt_${version ?? generateUUID()}`,
-    });
+      payload as Record<string, unknown>,
+      hlc,
+      `evt_${hlc}`,
+    );
 
     return true;
   }

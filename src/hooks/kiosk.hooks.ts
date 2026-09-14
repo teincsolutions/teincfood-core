@@ -35,8 +35,6 @@ export function useKioskOrdersQuery(enabled=true) {
 
 export function useAvailableRidersQuery(enabled = true) {
   const bid = useBusinessId();
-  // No riders SQLite mirror — never fire while unreachable.
-  const online = useIsEffectivelyOnline();
   return useQuery({
     queryKey: KIOSK_KEYS.riders(bid),
     queryFn: async () => {
@@ -50,7 +48,8 @@ export function useAvailableRidersQuery(enabled = true) {
         distance: null,
       })) as AvailableRider[];
     },
-    enabled: enabled && !!bid && online,
+    enabled: enabled && !!bid,
+    placeholderData: (prev) => prev,
     staleTime: 0,
     retry: false,
     networkMode: "offlineFirst" as const,
