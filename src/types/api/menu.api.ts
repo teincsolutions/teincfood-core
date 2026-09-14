@@ -97,10 +97,12 @@ export interface CatalogItemRequest {
   currency_code: string;
   dietary_tags?: string[];
   variants: {
+    id?: string;
     name: string;
     price_adjustment: number;
   }[];
   extras: {
+    id?: string;
     name: string;
     price_minor: number;
   }[];

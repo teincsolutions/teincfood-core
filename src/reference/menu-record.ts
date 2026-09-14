@@ -140,10 +140,26 @@ export interface MenuItemEnvelopeInput extends MenuItemRecordInput {
   wireExtra?: Record<string, unknown>;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A variant/extra id is only safe to send when it is a real backend UUID.
+ * Form-local ids (e.g. `local-<ts>`) must be omitted: the backend treats a
+ * missing/empty id as "insert new", but Repo.get/3 raises on a non-UUID.
+ */
+function wireId(id: string | undefined): string | undefined {
+  return id && UUID_RE.test(id) ? id : undefined;
+}
+
 /**
  * Build the { wire, cacheRecord } pair for a menu item write. Callers pass
  * backend adjustment-shaped variants; absolute form prices are converted by
  * the caller (form layer owns both fields).
+ *
+ * Variant/extra ids are preserved when they are backend UUIDs. The backend
+ * update path deletes existing rows absent from the incoming list, so
+ * stripping ids on edit would wipe + recreate every variant/extra on each
+ * save (breaking any external references to those ids).
  */
 export function buildMenuItemEnvelope(input: MenuItemEnvelopeInput): {
   wire: Record<string, unknown>;
@@ -159,8 +175,18 @@ export function buildMenuItemEnvelope(input: MenuItemEnvelopeInput): {
     category_id: input.categoryId,
     currency_code: input.currencyCode ?? "GHS",
     dietary_tags: input.dietaryTags ?? [],
-    variants: (input.variants ?? []).map((v) => ({ name: v.name, price_adjustment: v.price_adjustment ?? 0 })),
-    extras: (input.extras ?? []).map((e) => ({ name: e.name, price_minor: e.price_minor ?? 0 })),
+    variants: (input.variants ?? []).map((v) => {
+      const vid = wireId(v.id);
+      return vid
+        ? { id: vid, name: v.name, price_adjustment: v.price_adjustment ?? 0 }
+        : { name: v.name, price_adjustment: v.price_adjustment ?? 0 };
+    }),
+    extras: (input.extras ?? []).map((e) => {
+      const eid = wireId(e.id);
+      return eid
+        ? { id: eid, name: e.name, price_minor: e.price_minor ?? 0 }
+        : { name: e.name, price_minor: e.price_minor ?? 0 };
+    }),
     available: input.available ?? true,
     image_url: input.imageUrl ?? null,
     ...(input.wireExtra ?? {}),
