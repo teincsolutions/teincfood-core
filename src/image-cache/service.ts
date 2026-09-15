@@ -60,6 +60,45 @@ export function isDownloadableImageUrl(url: string): boolean {
   return DOWNLOADABLE_RE.test(url);
 }
 
+const LOADABLE_RE = /^(https?|file|data|asset|content):/i;
+
+/**
+ * URI schemes React Native's `<Image>` can actually load on device. Anything
+ * else has no RCTImageURLLoader on iOS ("No suitable image URL loader
+ * found") and crashes the screen — notably `tfimg://` disk URIs leaked from
+ * desktop rows, bare S3 keys (`menus/biz/img.jpg`), and `blob:` preview
+ * URLs. The hook maps these to null so callers render their placeholder
+ * branch instead of feeding a fatal URI to the native loader.
+ */
+export function isLoadableImageUri(uri: string): boolean {
+  return LOADABLE_RE.test(uri);
+}
+
+/** Map a resolved URI to one RN `<Image>` can load, else null (placeholder). */
+export function toRenderableUri(uri: string | null | undefined): string | null {
+  if (!uri) return null;
+  return isLoadableImageUri(uri) ? uri : null;
+}
+
+const URI_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
+
+/**
+ * Values safe to persist as a menu image reference: S3 keys, http(s) URLs,
+ * null. Preview URIs (tfimg:, blob:, file:, data:) must never be stored —
+ * the backend keeps non-http values verbatim and they poison every other
+ * device (mobile has no native loader for tfimg:// and crashes). Returns
+ * null for un-storable values, so re-saving a poisoned row self-heals it
+ * (caller re-uploads to restore the image).
+ */
+export function toStorableImageUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  if (URI_SCHEME_RE.test(value) && !DOWNLOADABLE_RE.test(value)) {
+    syncLogger.warn("ImageCache", "Dropping un-storable image URL", { value: value.slice(0, 32) });
+    return null;
+  }
+  return value;
+}
+
 export async function cacheRemoteImage(url: string | null | undefined, opts: { skipIfCached?: boolean; removeOnFailure?: boolean } = {}): Promise<ImageCacheEntry | null> {
   if (!url) return null;
   const fs = getFileSystemAdapter();

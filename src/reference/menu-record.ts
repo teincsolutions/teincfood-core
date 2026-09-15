@@ -12,6 +12,7 @@ import { generateUUID } from "../utils/uuid";
 import type { MenuCategory, MenuItem } from "../types/api/menu.api";
 import type { QueryClient } from "@tanstack/react-query";
 import { CATALOG_KEYS } from "../catalog/hooks";
+import { toStorableImageUrl } from "../image-cache/service";
 
 export interface MenuItemRecordInput {
   id?: string;
@@ -38,7 +39,9 @@ export function buildMenuItemRecord(input: MenuItemRecordInput): MenuItem {
     name: input.name,
     description: input.description ?? null,
     basePrice: { amountMinor: input.priceMinor, currencyCode },
-    image_url: input.imageUrl ?? null,
+    // Never persist preview URIs (tfimg:/blob:/file:): the backend stores
+    // non-http values verbatim and they poison every other device.
+    image_url: toStorableImageUrl(input.imageUrl),
     is_available: input.available ?? true,
     dietary_tags: input.dietaryTags ?? [],
     category_id: input.categoryId,
@@ -188,7 +191,9 @@ export function buildMenuItemEnvelope(input: MenuItemEnvelopeInput): {
         : { name: e.name, price_minor: e.price_minor ?? 0 };
     }),
     available: input.available ?? true,
-    image_url: input.imageUrl ?? null,
+    // Same storable rule as the cache record: preview URIs must not reach
+    // the backend (it stores them verbatim).
+    image_url: toStorableImageUrl(input.imageUrl),
     ...(input.wireExtra ?? {}),
   };
   return { wire, cacheRecord };

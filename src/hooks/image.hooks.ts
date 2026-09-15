@@ -9,7 +9,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
-import { cacheRemoteImage, getCachedImageInfo, resolveImageSource, stableCacheUrl } from "../image-cache/service";
+import { cacheRemoteImage, getCachedImageInfo, resolveImageSource, stableCacheUrl, toRenderableUri } from "../image-cache/service";
 
 export const IMAGE_CACHE_KEYS = {
   all: ["cachedImage"] as const,
@@ -23,7 +23,11 @@ export function invalidateCachedImages(queryClient: ReturnType<typeof useQueryCl
   queryClient.invalidateQueries({ queryKey: IMAGE_CACHE_KEYS.all });
 }
 
-/** Resolve an image URL to a URI. Prefers local cache; null for null URL. */
+/** Resolve an image URL to a URI safe for RN `<Image>`. Prefers local cache;
+ * null for null URL AND for URIs no native loader can handle (tfimg://
+ * leaks, bare S3 keys, blob:) — callers render placeholders instead of
+ * crashing the screen. resolveImageSource passthrough is preserved for
+ * non-render consumers; this gate applies at the render boundary only. */
 export function useCachedImageUrl(url: string | null | undefined): string | null {
   const queryClient = useQueryClient();
   const connectivity = useSyncExternalStore(subscribeConnectivity, getConnectivityState, getConnectivityState);
@@ -61,5 +65,5 @@ export function useCachedImageUrl(url: string | null | undefined): string | null
   });
 
   if (!enabled || !data) return null;
-  return (data as { uri: string }).uri;
+  return toRenderableUri((data as { uri: string }).uri);
 }

@@ -3,7 +3,10 @@ import { setFileSystemAdapter } from "../adapters/filesystem";
 import {
   cacheRemoteImage,
   isDownloadableImageUrl,
+  isLoadableImageUri,
   resolveImageSource,
+  toRenderableUri,
+  toStorableImageUrl,
 } from "./service";
 
 const TFIMG =
@@ -61,5 +64,44 @@ describe("image-cache non-http URLs (tfimg leak hardening)", () => {
     const res = await cacheRemoteImage(TFIMG, { skipIfCached: true });
     expect(downloadAsync).not.toHaveBeenCalled();
     expect(res?.localUri).toContain("teincfood_images/");
+  });
+});
+
+describe("render gate (isLoadableImageUri / toRenderableUri)", () => {
+  it("rejects the exact tfimg:// URI from the iOS crash report", () => {
+    expect(isLoadableImageUri(TFIMG)).toBe(false);
+    expect(toRenderableUri(TFIMG)).toBeNull();
+  });
+
+  it("rejects other non-renderable values (bare S3 keys, blob:)", () => {
+    expect(toRenderableUri("menus/biz-1/photo.png")).toBeNull();
+    expect(toRenderableUri("blob:http://localhost/abc")).toBeNull();
+    expect(toRenderableUri(null)).toBeNull();
+    expect(toRenderableUri(undefined)).toBeNull();
+    expect(toRenderableUri("")).toBeNull();
+  });
+
+  it("passes through URIs RN <Image> can load", () => {
+    for (const uri of [
+      "https://cdn/x.jpg?sig=abc",
+      "http://192.168.1.23:9000/b/k.jpg",
+      "file:///doc/teincfood_images/ab.img",
+      "data:image/png;base64,AAA",
+      "asset:/bundle/icon.png",
+    ]) {
+      expect(isLoadableImageUri(uri)).toBe(true);
+      expect(toRenderableUri(uri)).toBe(uri);
+    }
+  });
+
+  it("toStorableImageUrl keeps S3 keys and http(s), nulls preview URIs", () => {
+    expect(toStorableImageUrl("menus/biz-1/photo.png")).toBe("menus/biz-1/photo.png");
+    expect(toStorableImageUrl("https://cdn/x.jpg")).toBe("https://cdn/x.jpg");
+    expect(toStorableImageUrl(TFIMG)).toBeNull();
+    expect(toStorableImageUrl("blob:http://localhost/abc")).toBeNull();
+    expect(toStorableImageUrl("file:///doc/x.jpg")).toBeNull();
+    expect(toStorableImageUrl("data:image/png;base64,AAA")).toBeNull();
+    expect(toStorableImageUrl(null)).toBeNull();
+    expect(toStorableImageUrl("")).toBeNull();
   });
 });
