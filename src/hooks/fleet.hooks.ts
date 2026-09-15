@@ -7,6 +7,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
+import { getAuthToken, subscribeAuth } from "../adapters/auth";
 import { fleetService } from "../adapters/services";
 import { assertOnlineFor } from "../sync/online-gates";
 import { validateInviteInput } from "../validation/offline";
@@ -30,6 +31,10 @@ function useBusinessId(): string | undefined {
   const id = useSyncExternalStore(subscribeBusiness, () => getActiveBusiness()?.id ?? null, () => null);
   return id ?? undefined;
 }
+function useIsAuthenticated(): boolean {
+  const token = useSyncExternalStore(subscribeAuth, () => getAuthToken(), () => null);
+  return !!token;
+}
 
 const OFFLINE_FIRST = { retry: false, networkMode: "offlineFirst" } as const;
 
@@ -45,10 +50,11 @@ function useOnline(): boolean {
 
 export function useFleetRidersQuery(enabled = true, filters?: { q?: string; status?: string }) {
   const businessId = useBusinessId();
+  const isAuthenticated = useIsAuthenticated();
   return useQuery({
     queryKey: [...FLEET_KEYS.riders(businessId), filters],
     queryFn: () => fleetService.fetchFleetRiders(businessId, 1, 50, filters),
-    enabled: enabled && Boolean(businessId),
+    enabled: enabled && Boolean(businessId) && isAuthenticated,
     placeholderData: (prev) => prev,
     ...OFFLINE_FIRST,
   });
@@ -136,10 +142,11 @@ export function useActivateRiderMutation() {
 
 export function useJoinRequestsQuery(enabled = true) {
   const businessId = useBusinessId();
+  const isAuthenticated = useIsAuthenticated();
   return useQuery({
     queryKey: FLEET_KEYS.joinRequests(businessId),
     queryFn: () => fleetService.fetchJoinRequests(businessId),
-    enabled: enabled && Boolean(businessId),
+    enabled: enabled && Boolean(businessId) && isAuthenticated,
     placeholderData: (prev) => prev,
     ...OFFLINE_FIRST,
   });
@@ -176,10 +183,11 @@ export function useRejectJoinRequestMutation() {
 
 export function useFleetInvitationsQuery(enabled = true) {
   const businessId = useBusinessId();
+  const isAuthenticated = useIsAuthenticated();
   return useQuery({
     queryKey: FLEET_KEYS.invitations(businessId),
     queryFn: () => fleetService.fetchInvitations(businessId),
-    enabled: enabled && Boolean(businessId),
+    enabled: enabled && Boolean(businessId) && isAuthenticated,
     placeholderData: (prev) => prev,
     ...OFFLINE_FIRST,
   });
@@ -203,10 +211,11 @@ export function useRevokeInvitationMutation() {
 
 export function useFleetVehiclesQuery(enabled = true) {
   const businessId = useBusinessId();
+  const isAuthenticated = useIsAuthenticated();
   return useQuery({
     queryKey: FLEET_KEYS.vehicles(businessId),
     queryFn: () => fleetService.fetchFleetVehicles(businessId),
-    enabled: enabled && Boolean(businessId),
+    enabled: enabled && Boolean(businessId) && isAuthenticated,
     placeholderData: (prev) => prev,
     ...OFFLINE_FIRST,
   });
@@ -244,10 +253,11 @@ export function useRemoveVehicleMutation() {
 
 export function useFleetDashboardQuery(enabled = true) {
   const businessId = useBusinessId();
+  const isAuthenticated = useIsAuthenticated();
   return useQuery({
     queryKey: FLEET_KEYS.dashboard(businessId),
     queryFn: () => fleetService.fetchFleetDashboard(businessId),
-    enabled: enabled && Boolean(businessId),
+    enabled: enabled && Boolean(businessId) && isAuthenticated,
     placeholderData: (prev) => prev,
     ...OFFLINE_FIRST,
   });

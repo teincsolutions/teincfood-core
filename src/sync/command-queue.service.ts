@@ -30,6 +30,7 @@ import {
 } from "./order-number";
 import type { SyncEngine } from "./engine";
 import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
+import { canBusinessSync } from "./sync-guard";
 
 const MAX_RETRIES = 5;
 
@@ -214,6 +215,7 @@ class CommandQueueService {
     try {
       subscribeConnectivity(() => {
         const s = getConnectivityState();
+        if (!canBusinessSync()) return;
         if (s.isCloudReachable === "reachable" && s.isOnline) {
           this.replay().catch(() => {});
         }
@@ -264,6 +266,10 @@ class CommandQueueService {
    * Try to execute a single pending command through the current transport.
    */
   async processCommand(command: PersistedCommand): Promise<void> {
+    if (!canBusinessSync(command.business_id)) {
+      // No active business/session — defer until login+selection.
+      throw new Error("ReplayDeferred: no business/auth, deferring queued command");
+    }
     const db = getSyncDatabase();
     const parsedCommand: Command = {
       command_id: command.command_id,
@@ -385,6 +391,7 @@ class CommandQueueService {
    * ordering consistent; the next replay will retry from the failed command.
    */
   async replay(): Promise<void> {
+    if (!canBusinessSync()) return;
     recordAttempt("sync_drain", "replay");
     // Join an in-flight replay instead of no-op'ing: concurrent replays
     // (connectivity auto-replay racing an explicit replay) must converge on

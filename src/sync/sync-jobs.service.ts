@@ -17,6 +17,7 @@ import { BackoffTracker } from "./backoff";
 import { generateOrderNumber } from "./order-number";
 import { orderSnapshotsService } from "./order-snapshots.service";
 import { getTransitionPath } from "./transition-endpoints";
+import { canBusinessSync, isAuthenticated } from "./sync-guard";
 
 const inflight = new Map<string, Promise<void>>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -37,6 +38,7 @@ function isOnlineForPhx(): boolean {
 }
 
 function scheduleRetry(businessId: string): void {
+  if (!canBusinessSync(businessId)) return;
   if (retryTimers.has(businessId)) return;
   // Shared backoff curve: 2s doubling to a 5min cap with jitter. Attempts
   // reset on any success (clearRetry) so long outages go quiet instead of
@@ -46,7 +48,7 @@ function scheduleRetry(businessId: string): void {
   syncLogger.debug("SyncJobs", "scheduleRetry backoff", { businessId, delay });
   const t = setTimeout(() => {
     retryTimers.delete(businessId);
-    if (isOnlineForRest() && getAuthToken() && getActiveBusiness()?.id === businessId) {
+    if (isOnlineForRest() && canBusinessSync(businessId)) {
       syncLogger.debug("SyncJobs", "retry timer fired → drainPending", { businessId });
       void drainPending(businessId);
     }
@@ -157,14 +159,17 @@ async function tryRest(businessId: string, payload: Record<string, unknown>, com
 }
 
 export async function drainOne(businessId: string, entityId: string): Promise<void> {
+  if (!businessId || !canBusinessSync(businessId)) {
+    syncLogger.debug("SyncJobs", "drainOne early-return — no business/auth", { businessId, entityId });
+    return;
+  }
   recordAttempt("sync_drain", `drainOne ${entityId.slice(0, 8)}`);
   const onlineForRest = isOnlineForRest();
   const onlineForPhx = isOnlineForPhx();
-  const token = getAuthToken();
   const state = getConnectivityState();
-  syncLogger.debug("SyncJobs", "drainOne entry", { businessId, entityId, isOnlineForRest: onlineForRest, isOnlineForPhx: onlineForPhx, isCloudReachable: state.isCloudReachable, hasToken: !!token, inflight: inflight.has(`${businessId}:${entityId}`) });
-  if (!onlineForRest || !token) {
-    syncLogger.debug("SyncJobs", "drainOne early-return gate", { businessId, entityId, onlineForRest, hasToken: !!token, connectivity: state });
+  syncLogger.debug("SyncJobs", "drainOne entry", { businessId, entityId, isOnlineForRest: onlineForRest, isOnlineForPhx: onlineForPhx, isCloudReachable: state.isCloudReachable, hasToken: isAuthenticated(), inflight: inflight.has(`${businessId}:${entityId}`) });
+  if (!onlineForRest) {
+    syncLogger.debug("SyncJobs", "drainOne early-return gate", { businessId, entityId, onlineForRest, hasToken: isAuthenticated(), connectivity: state });
     return;
   }
   const key = `${businessId}:${entityId}`;
@@ -331,11 +336,14 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
 }
 
 export async function pullRemoteOrders(businessId: string): Promise<void> {
+  if (!businessId || !canBusinessSync(businessId)) {
+    syncLogger.debug("SyncJobs", "pullRemoteOrders early-return — no business/auth", { businessId });
+    return;
+  }
   const onlineForRest = isOnlineForRest();
-  const hasToken = !!getAuthToken();
-  syncLogger.debug("SyncJobs", "pullRemoteOrders entry", { businessId, onlineForRest, hasToken });
-  if (!onlineForRest || !hasToken) {
-    syncLogger.debug("SyncJobs", "pullRemoteOrders early-return gate", { businessId, onlineForRest, hasToken, connectivity: getConnectivityState() });
+  syncLogger.debug("SyncJobs", "pullRemoteOrders entry", { businessId, onlineForRest, hasToken: isAuthenticated() });
+  if (!onlineForRest) {
+    syncLogger.debug("SyncJobs", "pullRemoteOrders early-return gate", { businessId, onlineForRest, hasToken: isAuthenticated(), connectivity: getConnectivityState() });
     return;
   }
   try {
@@ -386,12 +394,15 @@ export async function pullRemoteOrders(businessId: string): Promise<void> {
 }
 
 export async function drainPending(businessId: string): Promise<void> {
+  if (!businessId || !canBusinessSync(businessId)) {
+    syncLogger.debug("SyncJobs", "drainPending early-return — no business/auth", { businessId });
+    return;
+  }
   recordAttempt("sync_drain", "drainPending");
   const onlineForRest = isOnlineForRest();
-  const hasToken = !!getAuthToken();
-  syncLogger.debug("SyncJobs", "drainPending entry", { businessId, onlineForRest, hasToken, connectivity: getConnectivityState() });
-  if (!onlineForRest || !hasToken) {
-    syncLogger.debug("SyncJobs", "drainPending early-return gate", { businessId, onlineForRest, hasToken });
+  syncLogger.debug("SyncJobs", "drainPending entry", { businessId, onlineForRest, hasToken: isAuthenticated(), connectivity: getConnectivityState() });
+  if (!onlineForRest) {
+    syncLogger.debug("SyncJobs", "drainPending early-return gate", { businessId, onlineForRest, hasToken: isAuthenticated() });
     return;
   }
   const db = await openSyncDatabase();
@@ -419,29 +430,29 @@ export function setupSyncJobsDrain(): void {
     return;
   }
   drainSetup = true;
-  syncLogger.debug("SyncJobs", "setupSyncJobsDrain init", { hasBusiness: !!getActiveBusiness()?.id, connectivity: getConnectivityState(), hasToken: !!getAuthToken() });
+  syncLogger.debug("SyncJobs", "setupSyncJobsDrain init", { hasBusiness: !!getActiveBusiness()?.id, connectivity: getConnectivityState(), hasToken: isAuthenticated() });
   const triggerFullSync = (b: string | undefined) => {
-    if (!b || !isOnlineForRest() || !getAuthToken()) return;
+    if (!b || !isOnlineForRest() || !canBusinessSync(b)) return;
     void import("./full-sync").then((m) => m.performFullSync(b).catch(() => {}));
   };
   try {
     subscribeConnectivity(() => {
       const b = getActiveBusiness()?.id;
-      syncLogger.debug("SyncJobs", "subscribeConnectivity trigger", { businessId: b, connectivity: getConnectivityState(), hasToken: !!getAuthToken() });
+      syncLogger.debug("SyncJobs", "subscribeConnectivity trigger", { businessId: b, connectivity: getConnectivityState(), hasToken: isAuthenticated() });
       triggerFullSync(b);
     });
     subscribeBusiness(() => {
       const bid = getActiveBusiness()?.id;
-      syncLogger.debug("SyncJobs", "subscribeBusiness trigger", { businessId: bid, hasToken: !!getAuthToken(), connectivity: getConnectivityState() });
+      syncLogger.debug("SyncJobs", "subscribeBusiness trigger", { businessId: bid, hasToken: isAuthenticated(), connectivity: getConnectivityState() });
       triggerFullSync(bid);
     });
     subscribeAuth(() => {
       const b = getActiveBusiness()?.id;
-      syncLogger.debug("SyncJobs", "subscribeAuth trigger", { businessId: b, hasToken: !!getAuthToken(), connectivity: getConnectivityState() });
+      syncLogger.debug("SyncJobs", "subscribeAuth trigger", { businessId: b, hasToken: isAuthenticated(), connectivity: getConnectivityState() });
       triggerFullSync(b);
     });
     const b0 = getActiveBusiness()?.id;
-    syncLogger.debug("SyncJobs", "setupSyncJobsDrain initial check", { b0, isOnlineForRest: isOnlineForRest(), hasToken: !!getAuthToken() });
+    syncLogger.debug("SyncJobs", "setupSyncJobsDrain initial check", { b0, isOnlineForRest: isOnlineForRest(), hasToken: isAuthenticated() });
     triggerFullSync(b0);
   } catch (e) {
     syncLogger.debug("SyncJobs", "setupSyncJobsDrain error", { err: String(e) });

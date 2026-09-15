@@ -16,6 +16,7 @@ import { canTransition } from "../../utils/order-transitions";
 import { validateOrderCreateInput } from "../../validation/offline";
 import { drainOne, pullRemoteOrders } from "../../sync/sync-jobs.service";
 import { getAuthToken } from "../../adapters/auth";
+import { canBusinessSync } from "../../sync/sync-guard";
 import { syncLogger } from "../../utils/sync-logger";
 import { getItem } from "../../adapters/kv";
 import type { SellerOrder } from "../../types/api/seller.api";
@@ -56,6 +57,9 @@ function isOnline(): boolean {
 }
 
 export async function createLocalOrder(businessId: string, input: POSOrderCreateRequest & { is_pos?: boolean; delivery_params?: Record<string, unknown> }): Promise<SellerOrder> {
+  if (!businessId || !canBusinessSync(businessId)) {
+    throw new Error("Cannot create order without active business/login");
+  }
   const isPos = true; // POS terminal always is_pos
   // Online-required gates (single source: sync/online-gates). Cash needs no
   // connectivity; prepaid/mobile-money and delivery do.
@@ -148,6 +152,9 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
 }
 
 export async function transitionLocalOrder(businessId: string, orderId: string, action: string): Promise<SellerOrder> {
+  if (!businessId || !canBusinessSync(businessId)) {
+    throw new Error("Transition requires active business/login");
+  }
   const db = await openSyncDatabase();
   const order = await getOrderById(db, businessId, orderId);
   if (!order) throw new Error("Order not found");
@@ -178,12 +185,15 @@ export async function transitionLocalOrder(businessId: string, orderId: string, 
 }
 
 export async function listLocalOrders(businessId: string, filters?: { status?: string; q?: string; is_pos?: string; order_type?: string; date_from?: string; date_to?: string }, page = 1, pageSize = 20) {
+  if (!businessId) {
+    return { data: [], total: 0, page, pageSize, totalPages: 0 } as unknown as Awaited<ReturnType<typeof listOrders>>;
+  }
   await ensureOrdersBackfilledFromSnapshots(businessId);
   const db = await openSyncDatabase();
   const res = await listOrders(db, businessId, filters, page, pageSize);
   if (res.total === 0) {
     // blank-screen: snapshot fallback already tried — if still empty and online, fetch from cloud now so listing populates without manual refresh
-    if (isOnline() && getAuthToken()) {
+    if (isOnline() && canBusinessSync(businessId)) {
       try { await pullRemoteOrders(businessId); } catch {}
       const afterPull = await listOrders(db, businessId, filters, page, pageSize);
       if (afterPull.total > 0) return afterPull;
@@ -201,6 +211,7 @@ export async function listLocalOrders(businessId: string, filters?: { status?: s
 }
 
 export async function getLocalOrder(businessId: string, idOrNumber: string) {
+  if (!businessId) return null;
   await ensureOrdersBackfilledFromSnapshots(businessId);
   const db = await openSyncDatabase();
   const found = await getOrderById(db, businessId, idOrNumber);

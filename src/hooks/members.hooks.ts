@@ -7,6 +7,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
+import { getAuthToken, subscribeAuth } from "../adapters/auth";
 import { businessService, rolesService, fleetService } from "../adapters/services";
 import { assertOnlineFor } from "../sync/online-gates";
 import { validateInviteInput } from "../validation/offline";
@@ -20,6 +21,10 @@ import type { BusinessMemberListResponse, RolesResponse, TaxRuleListResponse } f
 function useBusinessId(): string | undefined {
   const id = useSyncExternalStore(subscribeBusiness, () => getActiveBusiness()?.id ?? null, () => null);
   return id ?? undefined;
+}
+function useIsAuthenticated(): boolean {
+  const token = useSyncExternalStore(subscribeAuth, () => getAuthToken(), () => null);
+  return !!token;
 }
 
 const OFFLINE_FIRST = { retry: false, networkMode: "offlineFirst" } as const;
@@ -53,11 +58,12 @@ export function useBusinessMembersQuery() {
   const businessId = useBusinessId();
   const cached = useReferenceData<BusinessMemberListResponse>("members");
   const online = useIsEffectivelyOnline();
+  const isAuthenticated = useIsAuthenticated();
 
   const q = useQuery({
     queryKey: MEMBER_KEYS.list(businessId ?? ""),
     queryFn: () => (businessService as unknown as { fetchBusinessMembers: (b: string) => Promise<unknown> }).fetchBusinessMembers(businessId!),
-    enabled: Boolean(businessId) && online,
+    enabled: Boolean(businessId) && online && isAuthenticated,
     staleTime: 30 * 1000,
     ...OFFLINE_FIRST,
     placeholderData: cached.data?.payload,
@@ -109,14 +115,15 @@ export function useRemoveMemberMutation() {
 
 export function useBusinessMemberInvitationsQuery() {
   const businessId = useBusinessId();
-  // No invitations SQLite mirror — never fire while unreachable.
+  // No invitations SQLite mirror — never fire while unreachable or logged-out.
   const online = useIsEffectivelyOnline();
+  const isAuthenticated = useIsAuthenticated();
 
   return useQuery({
     queryKey: MEMBER_KEYS.invitations(businessId ?? ""),
     queryFn: () =>
       (businessService as unknown as { fetchBusinessMemberInvitations: (b: string) => Promise<unknown> }).fetchBusinessMemberInvitations(businessId!),
-    enabled: Boolean(businessId) && online,
+    enabled: Boolean(businessId) && online && isAuthenticated,
     ...OFFLINE_FIRST,
   });
 }
@@ -164,12 +171,13 @@ export function useDeleteMemberInvitationMutation() {
 // ─── User invitations ───
 
 export function useUserInvitationsQuery() {
-  // No invitations SQLite mirror — never fire while unreachable.
+  // User-scoped: requires login. Don't 401 while logged-out.
   const online = useIsEffectivelyOnline();
+  const isAuthenticated = useIsAuthenticated();
   return useQuery({
     queryKey: INVITATION_KEYS.list(),
     queryFn: () => (businessService as unknown as { fetchUserInvitations: () => Promise<unknown> }).fetchUserInvitations(),
-    enabled: online,
+    enabled: online && isAuthenticated,
     staleTime: 15000,
     ...OFFLINE_FIRST,
   });
@@ -232,11 +240,12 @@ export function useBusinessRolesQuery(enabled = true) {
   const businessId = useBusinessId();
   const cached = useReferenceData<RolesResponse>("roles");
   const online = useIsEffectivelyOnline();
+  const isAuthenticated = useIsAuthenticated();
   const q = useQuery({
     queryKey: ROLES_KEYS.forBusiness(businessId),
     queryFn: () => rolesService.fetchBusinessRoles(),
     staleTime: Infinity,
-    enabled: enabled && !!businessId && online,
+    enabled: enabled && !!businessId && online && isAuthenticated,
     ...OFFLINE_FIRST,
     placeholderData: cached.data?.payload,
   });
@@ -249,11 +258,12 @@ export function useBusinessTaxRulesQuery(enabled = true) {
   const businessId = useBusinessId();
   const cached = useReferenceData<TaxRuleListResponse>("tax-rules");
   const online = useIsEffectivelyOnline();
+  const isAuthenticated = useIsAuthenticated();
   const q = useQuery({
     queryKey: TAX_KEYS.list(businessId),
     queryFn: () =>
       (businessService as unknown as { fetchBusinessTaxRules: (b: string) => Promise<unknown> }).fetchBusinessTaxRules(businessId!),
-    enabled: enabled && Boolean(businessId) && online,
+    enabled: enabled && Boolean(businessId) && online && isAuthenticated,
     staleTime: 30 * 1000,
     ...OFFLINE_FIRST,
     placeholderData: cached.data?.payload,

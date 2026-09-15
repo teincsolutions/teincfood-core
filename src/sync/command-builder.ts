@@ -21,6 +21,9 @@ export interface CommandBuilderOptions<T> {
 export function buildCommand<T>(
   options: CommandBuilderOptions<T>,
 ): Command<T> {
+  if (!options.businessId) {
+    throw new Error("buildCommand requires businessId — no active business/auth");
+  }
   const user = useAuthStore.getState().user;
   const userId = user?.id ?? "anonymous";
   const deviceId = getAppInstanceId();

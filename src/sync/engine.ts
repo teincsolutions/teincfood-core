@@ -23,6 +23,7 @@ import { CLOUD_COMMAND_TIMEOUT_MS } from "../utils/constants";
 import { CAPABILITY_BY_COMMAND } from "../reference/capabilities";
 import { getReferenceData } from "../reference/operations";
 import { openSyncDatabase } from "../db/connection";
+import { canBusinessSync } from "./sync-guard";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -68,6 +69,10 @@ export class SyncEngine {
    * quickly instead of blocking the terminal for the full HTTP timeout.
    */
   async execute(command: Command, opts?: { forReplay?: boolean }): Promise<DomainEvent[]> {
+    if (!command.business_id || !canBusinessSync(command.business_id)) {
+      // No active business/auth — don't route to cloud/LAN or queue with empty bid.
+      throw new Error("Sync requires active business and login — business_id missing or not authenticated");
+    }
     syncLogger.command(command, "issued");
 
     // Perms guard (offline-capable): block before routing

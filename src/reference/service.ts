@@ -14,6 +14,7 @@ import { generateUUID } from "../utils/uuid";
 import { menuService, businessService, rolesService } from "../adapters/services";
 import { cacheImageBatch, pruneImageCache } from "../adapters/image-cache";
 import { getConnectivityState } from "../adapters/connectivity";
+import { canBusinessSync } from "../sync/sync-guard";
 import type { MenuItemListResponse, BusinessResponse } from "../types/api";
 import {
   getReferenceData,
@@ -50,6 +51,17 @@ class ReferenceSyncService {
   private isSyncing = false;
 
   async sync(options: ReferenceSyncOptions): Promise<ReferenceSyncResult> {
+    if (!canBusinessSync(options.businessId)) {
+      syncLogger.debug("ReferenceSync", "Skipping sync — no business/auth", {
+        businessId: options.businessId,
+      });
+      return {
+        synced: [],
+        skipped: options.keys ?? DEFAULT_SYNC_KEYS,
+        failed: [],
+        errors: {} as Record<ReferenceDataKey, string>,
+      };
+    }
     if (this.isSyncing) {
       return {
         synced: [],

@@ -5,20 +5,19 @@
  */
 
 import { getConnectivityState } from "../adapters/connectivity";
-import { getAuthToken } from "../adapters/auth";
 import { getActiveBusiness } from "../adapters/business";
 import { syncLogger } from "../utils/sync-logger";
 import { referenceSyncService } from "../reference/service";
 import { pullRemoteOrders, drainPending } from "./sync-jobs.service";
+import { canBusinessSync } from "./sync-guard";
 
 let inFlight: Promise<void> | null = null;
 
 export async function performFullSync(businessId?: string): Promise<void> {
   const bid = businessId ?? getActiveBusiness()?.id;
-  if (!bid) return;
+  if (!bid || !canBusinessSync(bid)) return;
   const s = getConnectivityState();
   if (!s.isOnline || s.isCloudReachable === "unreachable") return;
-  if (!getAuthToken()) return;
   if (inFlight) { try { await inFlight; } catch {} return; }
   const p = (async () => {
     try {
