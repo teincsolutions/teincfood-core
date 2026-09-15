@@ -183,12 +183,40 @@ class LocalNodeServiceCore {
     return first ?? null;
   }
   broadcastToClients(event: DomainEvent): void {
-    // Mesh broadcast to all peers
+    // Mesh broadcast to all peers. Per-peer failures are LOUD (warn with
+    // peer id + error): a silent catch here once hid a full mesh blackout
+    // class of bug — peers that never receive order events never converge.
+    let delivered = 0;
+    let failed = 0;
     for (const c of this.peers.values()) {
-      try { c.publishEvent?.(event); } catch {}
+      try {
+        c.publishEvent?.(event);
+        delivered++;
+      } catch (e) {
+        failed++;
+        syncLogger.warn("LocalNodeService", "Mesh publish failed", {
+          event_type: event.event_type,
+          entity_id: event.entity_id,
+          error: String(e),
+        });
+      }
     }
     // Also via server broadcast to connected clients
-    try { this.server?.broadcast(event); } catch {}
+    try {
+      this.server?.broadcast(event);
+    } catch (e) {
+      syncLogger.warn("LocalNodeService", "Mesh server broadcast failed", {
+        event_type: event.event_type,
+        entity_id: event.entity_id,
+        error: String(e),
+      });
+    }
+    syncLogger.debug("LocalNodeService", "Mesh broadcast", {
+      event_type: event.event_type,
+      entity_id: event.entity_id,
+      peers: delivered,
+      failed,
+    });
   }
   private storeUnsub: (() => void) | null = null;
   private setupStoreSubscriptions(): void {
@@ -381,23 +409,63 @@ class LocalNodeServiceCore {
       secret: this.secret,
       onEvent: (event) => {
         syncLogger.event(event, "received", { origin: "lan" });
-        if ((event.event_type as string) === "order:sync") {
+        const eventType = event.event_type as string;
+        // Materialize LAN order events into the canonical orders table so
+        // list queries (POS In Progress, KDS) converge without the backend.
+        // Previously only order:sync inserted rows: a cloud/local-shape
+        // order.created from a peer fell through to the pending-store apply
+        // fns (which never touch the orders table), so the event arrived,
+        // every layer reported success, and the row never materialized.
+        if (eventType === "order:sync" || eventType === "order.created" || eventType === "order.status_changed") {
           void (async () => {
             try {
               const p = event.payload as Record<string, unknown>;
+              const bid = deps.getBusiness()?.id;
+              const payloadBid = (p as { business_id?: unknown }).business_id;
+              if (typeof payloadBid === "string" && bid && payloadBid !== bid) {
+                syncLogger.warn("LocalNodeService", "Ignoring LAN order event for another business", {
+                  event_type: eventType,
+                  payloadBid,
+                  bid,
+                });
+                return;
+              }
               if (p && typeof p.order_number === "string" && (p as { id?: unknown }).id) {
+                // Full-order payload (order:sync publish or order.created /
+                // status_changed echo): upsert the canonical row. HLC guard
+                // inside insertOrder keeps this idempotent across mesh + phx
+                // double delivery.
                 const db = await openSyncDatabase();
                 await insertOrder(db, p as unknown as SellerOrder & { hlc?: string });
+                syncLogger.info("LocalNodeService", "LAN order row materialized", {
+                  event_type: eventType,
+                  order_number: p.order_number,
+                });
               } else {
+                // Action-shaped payload (order:sync from a LAN command):
+                // apply the transition to the local row.
                 const action = (p as { action?: string }).action;
-                const orderId = (p as { orderId?: string }).orderId;
-                const bid = deps.getBusiness()?.id;
-                if (action && orderId && bid) { try { await transitionLocalOrder(bid, String(orderId), action); } catch {} }
+                const orderId = (p as { orderId?: string }).orderId ?? (p as { order_id?: string }).order_id;
+                if (action && orderId && bid) {
+                  try {
+                    await transitionLocalOrder(bid, String(orderId), action);
+                    syncLogger.info("LocalNodeService", "LAN order transition applied", {
+                      event_type: eventType,
+                      action,
+                      orderId: String(orderId),
+                    });
+                  } catch {}
+                } else {
+                  syncLogger.warn("LocalNodeService", "LAN order event has no materializable payload", {
+                    event_type: eventType,
+                    entity_id: event.entity_id,
+                  });
+                }
               }
-            } catch (e) { syncLogger.debug("LocalNodeService", "LAN order:sync apply failed", { err: String(e) }); }
+            } catch (e) { syncLogger.warn("LocalNodeService", "LAN order apply failed", { err: String(e), event_type: eventType }); }
             // The row is in SQLite now — invalidate so lists/detail refetch.
-            // (order:sync bypasses the engine pipeline, so no subscriber does
-            // this for us.)
+            // (LAN-applied writes bypass the engine pipeline, so no
+            // subscriber does this for us.)
             notifyPendingOrdersChanged();
           })();
         }

@@ -307,10 +307,19 @@ export async function applyPendingOrderEvent(
 
     if (event.event_type === "order.created") {
       const payload = event.payload as Record<string, unknown> | undefined;
+      // Local-shape echoes carry local_order_number; cloud-shape echoes
+      // (backend id/number, e.g. received over LAN from a peer) carry only
+      // order_number. Match on either so both shapes clear the optimistic
+      // entry and converge snapshots — previously cloud-shape events hit the
+      // early return and triggered no invalidation at all.
       const localOrderNumber = payload?.local_order_number;
-      if (typeof localOrderNumber !== "string") return;
+      const matchNumber =
+        typeof localOrderNumber === "string"
+          ? localOrderNumber
+          : (payload?.order_number as string | undefined);
+      if (typeof matchNumber !== "string") return;
 
-      usePendingOrdersStore.getState().removeByOrderNumber(localOrderNumber);
+      usePendingOrdersStore.getState().removeByOrderNumber(matchNumber);
 
       // Persist the cloud acknowledgment into the durable journal + read model.
       await orderSnapshotsService.persistOrderEvent(event, "cloud");
@@ -330,7 +339,7 @@ export async function applyPendingOrderEvent(
           if (e.event_type !== PENDING_EVENT_TYPE) continue;
           if (
             (e.payload as { order_number?: string })?.order_number ===
-            localOrderNumber
+            matchNumber
           ) {
             ids.push(e.event_id);
           }
