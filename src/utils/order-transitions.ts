@@ -50,7 +50,8 @@ export type OrderAction =
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 export function isUnpaid(order: SellerOrder): boolean {
-  const o = order as unknown as { is_paid?: boolean; paid_at?: string | null; payment?: { is_paid?: boolean; paid_at?: string | null } };
+  const o = order as unknown as { is_paid?: boolean; paid_at?: string | null; pos_payment_method?: string | null; payment?: { is_paid?: boolean; paid_at?: string | null } };
+  if (o.pos_payment_method === "cash") return false;
   return !o.is_paid && !o.paid_at && !o.payment?.is_paid;
 }
 

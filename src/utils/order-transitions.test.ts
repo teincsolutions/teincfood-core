@@ -14,7 +14,7 @@ import {
 } from "./order-transitions";
 import type { SellerOrder } from "../types/api/seller.api";
 
-function order(overrides: Partial<SellerOrder> & { status: string; order_type?: string | null; delivery_id?: string | null; is_pos?: boolean; is_paid?: boolean; paid_at?: string | null; payment?: unknown }): SellerOrder {
+function order(overrides: Partial<SellerOrder> & { status: string; order_type?: string | null; delivery_id?: string | null; is_pos?: boolean; is_paid?: boolean; paid_at?: string | null; pos_payment_method?: string | null; payment?: unknown }): SellerOrder {
   return {
     id: "o1",
     order_number: "01-100-001",
@@ -25,6 +25,7 @@ function order(overrides: Partial<SellerOrder> & { status: string; order_type?: 
     delivery_id: (overrides as { delivery_id?: string | null }).delivery_id ?? null,
     is_paid: (overrides as { is_paid?: boolean }).is_paid ?? false,
     paid_at: (overrides as { paid_at?: string | null }).paid_at ?? null,
+    pos_payment_method: (overrides as { pos_payment_method?: string | null }).pos_payment_method ?? null,
     payment: (overrides.payment as SellerOrder["payment"]) ?? { is_paid: false, reference: null, amount_minor: 1000, currency: "GHS", paid_at: null },
     business_id: "biz1",
   } as unknown as SellerOrder;
@@ -50,6 +51,10 @@ describe("order-transitions", () => {
     expect(isUnpaid(order({ status: "pending", is_paid: false, paid_at: null, payment: { is_paid: true } as any }))).toBe(false);
     expect(isUnpaid(order({ status: "pending", is_paid: true, paid_at: "2026-01-01T00:00:00Z", payment: { is_paid: true } as any }))).toBe(false);
     expect(isUnpaid(order({ status: "pending", is_paid: false, paid_at: "2026-01-01T00:00:00Z", payment: { is_paid: false } as any }))).toBe(false);
+  });
+
+  it("isUnpaid cash POS orders are always paid", () => {
+    expect(isUnpaid(order({ status: "pending", is_paid: false, paid_at: null, pos_payment_method: "cash", payment: { is_paid: false } as any }))).toBe(false);
   });
 
   it("isDeliveryOrder vs isWalkInPickup", () => {
