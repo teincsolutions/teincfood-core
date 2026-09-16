@@ -9,7 +9,8 @@ import { useSyncExternalStore } from "react";
 import { listLocalOrders, getLocalOrder } from "../domain/orders/service";
 import { getDeviceNumber, ensureLease } from "../sync/device-lease.service";
 import { getConnectivityState } from "../adapters/connectivity";
-import { assertOnlineFor } from "../sync/online-gates";
+import { assertOnlineFor, isOnlineCapable } from "../sync/online-gates";
+import { localNodeTransport } from "../sync/transport-local-node";
 import { SELLER_DASHBOARD_KEYS } from "../adapters/query-keys";
 import { openSyncDatabase } from "../db/connection";
 import { getReferenceData } from "../reference/operations";
@@ -156,11 +157,11 @@ export const useCompletePickupMutation = makeOrderActionMutation(({orderId,busin
 export const useCancelOrderMutation = makeOrderActionMutation(({orderId,businessId}) => orderRepository.cancelOrder({orderId,businessId}));
 export function useConfirmHandoverMutation() {
   const bid = useBusinessId(); const qc = useQueryClient();
-  return useMutation({ mutationFn: (deliveryId: string) => { if(!bid) throw new Error("No business"); assertOnlineFor("order:confirm_handover"); return orderRepository.confirmHandover({deliveryId,businessId:bid}); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); }});
+  return useMutation({ mutationFn: (deliveryId: string) => { if(!bid) throw new Error("No business"); if (!isOnlineCapable() && !localNodeTransport.isAvailable()) assertOnlineFor("order:confirm_handover"); return orderRepository.confirmHandover({deliveryId,businessId:bid}); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); }});
 }
 export function useAssignRiderMutation() {
   const bid = useBusinessId(); const qc = useQueryClient();
-  return useMutation({ mutationFn: ({orderId,riderId}:{orderId:string;riderId:string})=>{ if(!bid) throw new Error("No business"); assertOnlineFor("order:assign_rider"); return orderRepository.assignRider({orderId,riderId,businessId:bid}); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); }});
+  return useMutation({ mutationFn: ({orderId,riderId}:{orderId:string;riderId:string})=>{ if(!bid) throw new Error("No business"); if (!isOnlineCapable() && !localNodeTransport.isAvailable()) assertOnlineFor("order:assign_rider"); return orderRepository.assignRider({orderId,riderId,businessId:bid}); }, onSuccess: ()=>{ qc.invalidateQueries({ queryKey: SELLER_KEYS.all }); qc.invalidateQueries({ queryKey: POS_KEYS.all }); qc.invalidateQueries({ queryKey: SELLER_DASHBOARD_KEYS.all }); }});
 }
 export function useConfirmCashPaymentMutation() {
   const bid = useBusinessId(); const qc = useQueryClient();

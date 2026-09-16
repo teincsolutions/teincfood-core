@@ -588,6 +588,17 @@ export async function updateOrderPayment(db: SQLiteDatabase, businessId: string,
   notifyDbChange(businessId, "orders");
 }
 
+/**
+ * Patch delivery linkage from realtime delivery events (delivery.assigned /
+ * delivery.status_changed / delivery.pickup_confirmed) so every terminal
+ * converges on assign-vs-handover branching without a refetch.
+ */
+export async function updateOrderDelivery(db: SQLiteDatabase, businessId: string, orderId: string, patch: { delivery_id?: string | null }): Promise<void> {
+  if (patch.delivery_id === undefined) return;
+  await db.runAsync(`UPDATE orders SET delivery_id = ?, hlc = ? WHERE business_id = ? AND (id = ? OR order_number = ?);`, patch.delivery_id, new Date().toISOString(), businessId, orderId, orderId);
+  notifyDbChange(businessId, "orders");
+}
+
 // ─────────────────────────────────────────────────────────────
 // Maintenance — clear stale local data (used by Diagnostics)
 // ─────────────────────────────────────────────────────────────

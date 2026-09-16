@@ -36,6 +36,8 @@ export function extractApiErrorMessage(error: unknown): string {
 export function extractApiErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== "object") return undefined;
   const err = error as Record<string, unknown>;
+  // Core ApiError / TransitionError carry code on top level.
+  if (typeof err.code === "string") return err.code;
   const response = err.response as Record<string, unknown> | undefined;
   if (response?.data && typeof response.data === "object") {
     const data = response.data as Record<string, unknown>;

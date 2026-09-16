@@ -104,10 +104,25 @@ export function nextActionFor(order: SellerOrder): { label: string; key: OrderAc
   if (status === "accepted") return { label: "Start preparing", key: "start_preparing" };
   if (status === "preparing") return { label: "Mark ready", key: "mark_ready" };
   if (status === "ready") {
+    // Delivery orders can NEVER complete pickup: backend rejects with
+    // INVALID_TRANSITION ("Only self-pickup orders can be completed this way").
+    // Ready delivery without a rider → assign one (online-only); with a rider
+    // → merchant handover confirm (online-only). Walk-in only below.
+    if (isDeliveryOrder(order as Pick<SellerOrder, "order_type" | "delivery_id" | "is_pos">)) {
+      const hasDelivery = !!(order as unknown as { delivery_id?: string | null }).delivery_id;
+      if (hasDelivery) return { label: "Handover to rider", key: "confirm_handover" };
+      return { label: "Assign rider", key: "assign_rider" };
+    }
     const orderType = (order as unknown as { order_type?: string | null }).order_type ?? null;
-    // dine_in walk-in → Complete, else Pickup (takeout or delivery handover gate handled via getAllowedActions)
+    // dine_in walk-in → Complete, else Pickup (takeout)
     const label = orderType === "dine_in" ? "Complete" : "Picked up";
     return { label, key: "complete_pickup" };
+  }
+  if (status === "waiting_pickup" || status === "on_the_way") {
+    if (isDeliveryOrder(order as Pick<SellerOrder, "order_type" | "delivery_id" | "is_pos">)) {
+      return { label: "Handover to rider", key: "confirm_handover" };
+    }
+    return null;
   }
   return null;
 }

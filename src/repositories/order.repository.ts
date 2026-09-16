@@ -10,6 +10,8 @@
 
 import { syncEngine } from "../sync/engine";
 import { buildCommand } from "../sync/command-builder";
+import { assertOnlineFor, isOnlineCapable } from "../sync/online-gates";
+import { localNodeTransport } from "../sync/transport-local-node";
 import type { Command } from "../sync/types";
 import type { POSOrderCreateRequest } from "../types/pos.types";
 import type { SellerOrder } from "../types/api/seller.api";
@@ -151,6 +153,9 @@ export const orderRepository = {
     deliveryId: string;
     businessId: string;
   }): Promise<{ id: string; status: string }> {
+    // Handover confirm is strictly online (dual merchant/rider confirm).
+    // A connected Local Node may relay; otherwise fail loudly, never queue.
+    if (!isOnlineCapable() && !localNodeTransport.isAvailable()) assertOnlineFor("delivery:confirm_handover");
     const command = buildCommand<Record<string, never>>({
       commandType: "delivery:confirm_handover",
       businessId: input.businessId,
@@ -166,6 +171,10 @@ export const orderRepository = {
   },
 
   async assignRider(input: AssignRiderInput & { businessId: string }): Promise<unknown> {
+    // Delivery assignment is strictly online: auto rider-match, GPS proximity
+    // and merchant/rider dual-confirm all require the backend. A connected
+    // Local Node may relay to the cloud; otherwise fail loudly — never queue.
+    if (!isOnlineCapable() && !localNodeTransport.isAvailable()) assertOnlineFor("delivery:assign");
     const command = buildCommand<{ rider_id: string }>({
       commandType: "delivery:assign",
       businessId: input.businessId,

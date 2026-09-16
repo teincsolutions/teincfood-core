@@ -77,18 +77,22 @@ function filterByPeriod(orders: LocalOrderRow[], period: "today" | "this_week" |
   });
 }
 
-function aggregateLocal(orders: LocalOrderRow[], period: "today" | "this_week" | "this_month", opts: AggregateOptions) {
+export function aggregateLocal(orders: LocalOrderRow[], period: "today" | "this_week" | "this_month", opts: AggregateOptions) {
   const filtered = filterByPeriod(orders, period);
-  const total_revenue_minor = filtered.reduce((s, o) => s + (o.total_minor ?? 0), 0);
-  const total_orders = filtered.length;
-  const average_order_value_minor = total_orders ? Math.round(total_revenue_minor / total_orders) : 0;
+  // Backend parity (orders.ex get_business_analytics / get_revenue_summary):
+  // revenue-eligible = all EXCEPT cancelled. Cancelled orders must never
+  // inflate revenue, counts, breakdowns, or top items — online and offline.
+  const revenueOrders = filtered.filter((o) => o.status !== "cancelled");
+  const total_revenue_minor = revenueOrders.reduce((s, o) => s + (o.total_minor ?? 0), 0);
+  const total_orders = revenueOrders.length;
+  // Backend uses div (truncation) — mirror, don't round.
+  const average_order_value_minor = total_orders ? Math.floor(total_revenue_minor / total_orders) : 0;
   const byMethod = new Map<string, { revenue_minor: number; count: number }>();
   const byType = new Map<string, { revenue_minor: number; count: number }>();
   const byDay = new Map<string, { revenue_minor: number; count: number }>();
-  const byStatus: Record<string, number> = {};
   const itemQty = new Map<string, number>();
   const itemRev = new Map<string, number>();
-  for (const o of filtered) {
+  for (const o of revenueOrders) {
     const method = o.pos_payment_method ?? o.payment_mode ?? "cash";
     const m = byMethod.get(method) ?? { revenue_minor: 0, count: 0 };
     m.revenue_minor += o.total_minor ?? 0;
@@ -104,7 +108,6 @@ function aggregateLocal(orders: LocalOrderRow[], period: "today" | "this_week" |
     d.revenue_minor += o.total_minor ?? 0;
     d.count += 1;
     byDay.set(day, d);
-    byStatus[o.status] = (byStatus[o.status] ?? 0) + 1;
     for (const it of o.items ?? []) {
       const name = it.menu_item?.name ?? "Unknown";
       const qty = it.quantity ?? 0;
@@ -114,6 +117,12 @@ function aggregateLocal(orders: LocalOrderRow[], period: "today" | "this_week" |
     }
   }
   const pct = (v: number) => (total_revenue_minor > 0 ? Math.round((v / total_revenue_minor) * 1000) / 10 : 0);
+  // Backend orders_by_status counts over ALL period orders (not revenue-only).
+  const orders_by_status = {
+    delivered: filtered.filter((o) => o.status === "delivered").length,
+    cancelled: filtered.filter((o) => o.status === "cancelled").length,
+    pending: filtered.filter((o) => o.status === "pending").length,
+  };
   if (opts.forRevenueSummary) {
     return {
       period,
@@ -142,7 +151,7 @@ function aggregateLocal(orders: LocalOrderRow[], period: "today" | "this_week" |
       .map(([name, quantity]) => ({ name, quantity, revenue_minor: itemRev.get(name) ?? 0 }))
       .sort((a, b) => b.revenue_minor - a.revenue_minor)
       .slice(0, 10),
-    orders_by_status: byStatus,
+    orders_by_status,
     revenue_by_day: [...byDay.entries()]
       .map(([date, v]) => ({ date, revenue_minor: v.revenue_minor }))
       .sort((a, b) => a.date.localeCompare(b.date)),

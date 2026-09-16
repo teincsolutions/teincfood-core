@@ -13,6 +13,7 @@ import { getConnectivityState } from "../../adapters/connectivity";
 import { assertOnlineFor } from "../../sync/online-gates";
 import { assertBusinessOpenForCreate } from "../../utils/business-hours";
 import { canTransition } from "../../utils/order-transitions";
+import { TRANSITION_ERROR_CODES, TransitionError } from "../../sync/transition-errors";
 import { validateOrderCreateInput } from "../../validation/offline";
 import { drainOne, pullRemoteOrders } from "../../sync/sync-jobs.service";
 import { getAuthToken } from "../../adapters/auth";
@@ -153,17 +154,17 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
 
 export async function transitionLocalOrder(businessId: string, orderId: string, action: string): Promise<SellerOrder> {
   if (!businessId || !canBusinessSync(businessId)) {
-    throw new Error("Transition requires active business/login");
+    throw new TransitionError(TRANSITION_ERROR_CODES.NO_ACTIVE_BUSINESS, "Transition requires active business/login");
   }
   const db = await openSyncDatabase();
   const order = await getOrderById(db, businessId, orderId);
-  if (!order) throw new Error("Order not found");
+  if (!order) throw new TransitionError(TRANSITION_ERROR_CODES.ORDER_NOT_FOUND, "Order not found");
   // Delivery transitions require online (single source: sync/online-gates).
   if (action === "assign_rider") assertOnlineFor("order:assign_rider");
   else if (action === "confirm_handover") assertOnlineFor("order:confirm_handover");
   else if (order.order_type === "delivery") assertOnlineFor("order:create", { order_type: "delivery" });
   if (!canTransition(order, action as unknown as import("../../utils/order-transitions").OrderAction)) {
-    throw new Error(`Cannot ${action} from ${order.status}`);
+    throw new TransitionError(TRANSITION_ERROR_CODES.INVALID_TRANSITION, `Cannot ${action} from ${order.status}`);
   }
   const map: Record<string, string> = { accept: "accepted", reject: "cancelled", start_preparing: "preparing", mark_ready: "ready", complete_pickup: "delivered", cancel: "cancelled", assign_rider: "assigned", confirm_handover: "delivered", confirm_cash: order.status, pay: order.status };
   const toStatus = map[action] ?? order.status;

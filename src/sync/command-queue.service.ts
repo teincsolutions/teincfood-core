@@ -22,6 +22,8 @@ import {
 } from "../db/operations";
 import { syncLogger } from "../utils/sync-logger";
 import { recordAttempt } from "../utils/attempt-stats";
+import { TransitionError, isReplayDeferred, TRANSITION_ERROR_CODES } from "./transition-errors";
+import { extractApiErrorCode } from "../utils/error";
 import { generateEventId } from "../utils/uuid";
 import {
   generateLocalCalloutNumber,
@@ -268,7 +270,7 @@ class CommandQueueService {
   async processCommand(command: PersistedCommand): Promise<void> {
     if (!canBusinessSync(command.business_id)) {
       // No active business/session — defer until login+selection.
-      throw new Error("ReplayDeferred: no business/auth, deferring queued command");
+      throw new TransitionError(TRANSITION_ERROR_CODES.REPLAY_DEFERRED, "No business/auth, deferring queued command");
     }
     const db = getSyncDatabase();
     const parsedCommand: Command = {
@@ -314,19 +316,19 @@ class CommandQueueService {
         event_count: events.length,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       // Replay with no transport available: leave the row exactly as-is for
       // the next trigger (do not mark, do not count). Must reset the
       // in_flight flag first — rows stuck in_flight are invisible to the
       // outbox query and would wedge the queue forever.
-      if (message.includes("ReplayDeferred")) {
+      if (isReplayDeferred(error)) {
         await updateCommandStatus(db, command.command_id, "pending", "deferred:no-transport");
         throw error;
       }
       const apiErr = error as { status?: number; name?: string; code?: string; data?: unknown };
-      // 409 ORDER_NUMBER_TAKEN is retryable once with new RRR
-      const code = (apiErr as unknown as { code?: string })?.code ?? (apiErr?.data as unknown as { code?: string })?.code;
-      if (apiErr?.status === 409 && String(code).includes("ORDER_NUMBER_TAKEN")) {
+      const message = error instanceof Error ? error.message : String(error);
+      // 409 ORDER_NUMBER_TAKEN is retryable once with new RRR (exact backend code, any envelope)
+      const code = extractApiErrorCode(error);
+      if (apiErr?.status === 409 && code === "ORDER_NUMBER_TAKEN") {
         if (command.command_type === "order:create") {
           try {
             const payload = command.payload as Record<string, unknown>;
@@ -349,8 +351,7 @@ class CommandQueueService {
         throw error;
       }
       const isNonRetryable =
-        apiErr?.name === "ApiError" &&
-        typeof apiErr.status === "number" &&
+        typeof apiErr?.status === "number" &&
         apiErr.status >= 400 &&
         apiErr.status < 500;
       if (isNonRetryable) {
@@ -421,12 +422,11 @@ class CommandQueueService {
         try {
           await this.processCommand(command);
         } catch (e) {
-          const apiErr = e as { status?: number; name?: string };
+          const replayErr = e as { status?: number };
           const isNonRetryable =
-            apiErr?.name === "ApiError" &&
-            typeof apiErr.status === "number" &&
-            apiErr.status >= 400 &&
-            apiErr.status < 500;
+            typeof replayErr?.status === "number" &&
+            replayErr.status >= 400 &&
+            replayErr.status < 500;
           if (isNonRetryable) {
             // Already marked permanent in processCommand — continue to next.
             continue;

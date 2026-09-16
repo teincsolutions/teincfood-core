@@ -84,6 +84,17 @@ describe("order-transitions", () => {
     expect(nextActionFor(order({ status: "delivered" }))).toBeNull();
   });
 
+  it("nextActionFor ready delivery NEVER offers complete_pickup (backend 422 otherwise)", () => {
+    const delNoRider = order({ status: "ready", order_type: "delivery", delivery_id: null, is_pos: false });
+    expect(nextActionFor(delNoRider)).toEqual({ label: "Assign rider", key: "assign_rider" });
+    const delWithRider = order({ status: "ready", order_type: "delivery", delivery_id: "d1", is_pos: false } as any);
+    expect(nextActionFor(delWithRider)).toEqual({ label: "Handover to rider", key: "confirm_handover" });
+    const waitingPickup = order({ status: "waiting_pickup", order_type: "delivery", delivery_id: "d1", is_pos: false } as any);
+    expect(nextActionFor(waitingPickup)).toEqual({ label: "Handover to rider", key: "confirm_handover" });
+    const walkWaiting = order({ status: "waiting_pickup", order_type: "takeout", delivery_id: null });
+    expect(nextActionFor(walkWaiting)).toBeNull();
+  });
+
   it("canTransition: walk-in ready complete_pickup vs delivery assign/handover", () => {
     const walkReady = order({ status: "ready", order_type: "takeout", delivery_id: null, is_pos: true });
     const delReadyNoRider = order({ status: "ready", order_type: "delivery", delivery_id: null });

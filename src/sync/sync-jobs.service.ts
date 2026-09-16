@@ -16,7 +16,8 @@ import { recordAttempt } from "../utils/attempt-stats";
 import { BackoffTracker } from "./backoff";
 import { generateOrderNumber } from "./order-number";
 import { orderSnapshotsService } from "./order-snapshots.service";
-import { getTransitionPath } from "./transition-endpoints";
+import { getTransitionPath, DELIVERY_COMMANDS } from "./transition-endpoints";
+import { extractApiErrorCode } from "../utils/error";
 import { canBusinessSync, isAuthenticated } from "./sync-guard";
 
 const inflight = new Map<string, Promise<void>>();
@@ -135,6 +136,30 @@ async function tryRest(businessId: string, payload: Record<string, unknown>, com
     // transitions → /orders/:id/* (OrderController) — shared endpoint map
     const orderId = (payload.orderId ?? payload.order_id ?? payload.entity_id ?? payload.id) as string | undefined;
     if (!orderId) return { ok: false, message: "missing orderId" };
+    if (DELIVERY_COMMANDS.has(commandType)) {
+      const db = await openSyncDatabase();
+      const isAssign = commandType === "delivery:assign" || commandType === "order:assign_rider";
+      if (isAssign) {
+        // POST /deliveries/assign {order_id, rider_id} — rider_id must have
+        // been captured at tap time; without it the job can never succeed.
+        const riderId = (payload.rider_id ?? payload.riderId) as string | undefined;
+        if (!riderId) return { ok: false, status: 422, code: "MISSING_RIDER", message: "Assign rider job has no rider_id — re-assign from the app" };
+        await http.post(`/deliveries/assign`, { order_id: orderId, rider_id: riderId });
+        return { ok: true };
+      }
+      // POST /deliveries/:deliveryId/confirm-handover — resolve the delivery
+      // id from the local order row (sync payloads carry the order id).
+      let deliveryId = payload.delivery_id as string | undefined;
+      if (!deliveryId) {
+        try {
+          const row = await db.getFirstAsync<{ delivery_id: string | null }>(`SELECT delivery_id FROM orders WHERE business_id=? AND id=?;`, businessId, orderId);
+          deliveryId = row?.delivery_id ?? undefined;
+        } catch {}
+      }
+      if (!deliveryId) return { ok: false, status: 422, code: "NO_DELIVERY", message: "Handover job has no delivery — rider not assigned yet" };
+      await http.post(`/deliveries/${deliveryId}/confirm-handover`, {});
+      return { ok: true };
+    }
     const path = getTransitionPath(commandType, orderId);
     if (!path) return { ok: false, message: `unknown command ${commandType}` };
     await http.post(path, {});
@@ -147,7 +172,8 @@ async function tryRest(businessId: string, payload: Record<string, unknown>, com
       response?: { status?: number; data?: { error?: { code?: string; message?: string } } };
     };
     const status = err.status ?? (err.response as { status?: number } | undefined)?.status;
-    const bodyCode = (err.response as { data?: { error?: { code?: string } } } | undefined)?.data?.error?.code;
+    // Backend code via every envelope shape (core ApiError, axios, app ApiError).
+    const bodyCode = extractApiErrorCode(e);
     const bodyMsg = (err.response as { data?: { error?: { message?: string } } } | undefined)?.data?.error?.message;
     return {
       ok: false,
@@ -232,9 +258,9 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
       } catch {}
       return;
     }
-    // 3) Handle 409 RRR regen same UUID (POS create only)
+    // 3) Handle 409 RRR regen same UUID (POS create only, exact backend code)
     syncLogger.debug("SyncJobs", "check 409", { businessId, entityId, status: rest.status, code: rest.code });
-    const is409 = rest.status === 409 && (String(rest.code ?? "").includes("ORDER_NUMBER_TAKEN") || String(rest.message ?? "").includes("ORDER_NUMBER_TAKEN"));
+    const is409 = rest.status === 409 && rest.code === "ORDER_NUMBER_TAKEN";
     if (is409) {
       const on = (payload.order_number ?? payload.local_order_number) as string | undefined;
       const parsed = on ? String(on).match(/^([0-9]{2})-([0-9]{3})-([0-9]{3})$/) : null;
@@ -288,10 +314,8 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
     // 404 is only retryable for order:create (FIFO race: order not yet created
     // on backend). For transitions, 404 means the order was deleted or never
     // synced — permanent. 409 handled above for RRR regen. 401/408/429 need
-    // special handling below.
-    const codeUpper = String(rest.code ?? "").toUpperCase();
-    const msgUpper = String(rest.message ?? "").toUpperCase();
-    const isBusinessClosed = codeUpper.includes("BUSINESS_CLOSED") || msgUpper.includes("BUSINESS_CLOSED") || msgUpper.includes("BUSINESS IS CLOSED") || codeUpper.includes("HOURS_NOT_SYNCED");
+    // special handling below. Backend codes are exact (no message matching).
+    const isBusinessClosed = rest.code === "BUSINESS_CLOSED" || rest.code === "HOURS_NOT_SYNCED";
     const is4xx = rest.status && rest.status >= 400 && rest.status < 500;
     const isRetryable4xx = rest.status === 401 || rest.status === 408 || rest.status === 409 || rest.status === 429
       || (rest.status === 404 && row.command_type === "order:create")

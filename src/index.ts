@@ -140,6 +140,9 @@ export { referenceSyncService } from "./reference/service";
 export * from "./reference/menu-record";
 export * from "./reference/menu-apply";
 export * from "./reference/capabilities";
+export * from "./reference/entitlements";
+export * from "./reference/entitlement-clock";
+export { hmacSha256Hex, sha256Hex } from "./reference/entitlement-crypto";
 
 // ── Adapters (for host apps to supply) ──
 export * from "./adapters/sqlite";
@@ -181,6 +184,8 @@ export * from "./catalog/hooks";
 
 // ── Order transitions (shared business logic — single source) ──
 export * from "./utils/order-transitions";
+export * from "./sync/transition-errors";
+export * from "./sync/transition-endpoints";
 
 // ── Business hours gate (single source — mirrors backend is_open?) ──
 export * from "./utils/business-hours";

@@ -18,12 +18,14 @@ import { localNodeTransport } from "./transport-local-node";
 import { commandQueueService } from "./command-queue.service";
 import { getConnectivityState, setConnectivityState } from "../adapters/connectivity";
 import { ApiError } from "../adapters/http";
+import { errorCodeOf } from "./transition-errors";
 import { syncLogger } from "../utils/sync-logger";
 import { CLOUD_COMMAND_TIMEOUT_MS } from "../utils/constants";
 import { CAPABILITY_BY_COMMAND } from "../reference/capabilities";
 import { getReferenceData } from "../reference/operations";
 import { openSyncDatabase } from "../db/connection";
 import { canBusinessSync } from "./sync-guard";
+import { TRANSITION_ERROR_CODES, TransitionError } from "./transition-errors";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -71,7 +73,7 @@ export class SyncEngine {
   async execute(command: Command, opts?: { forReplay?: boolean }): Promise<DomainEvent[]> {
     if (!command.business_id || !canBusinessSync(command.business_id)) {
       // No active business/auth — don't route to cloud/LAN or queue with empty bid.
-      throw new Error("Sync requires active business and login — business_id missing or not authenticated");
+      throw new TransitionError(TRANSITION_ERROR_CODES.NO_ACTIVE_BUSINESS, "Sync requires active business and login — business_id missing or not authenticated");
     }
     syncLogger.command(command, "issued");
 
@@ -110,7 +112,7 @@ export class SyncEngine {
       // itself without executing). If no real transport is available, leave
       // the row untouched for a later trigger.
       if (opts?.forReplay) {
-        throw new Error("ReplayDeferred: no transport available, keeping command queued");
+        throw new TransitionError(TRANSITION_ERROR_CODES.REPLAY_DEFERRED, "No transport available, keeping command queued");
       }
       const event = await commandQueueService.enqueue(command);
       this.broadcast(event);
@@ -167,15 +169,22 @@ export class SyncEngine {
         return events;
       } catch (error) {
         // Definitive server rejection (4xx): the backend answered with a real
-        // decision (e.g. PAYMENT_REQUIRED, FORBIDDEN). Surface it to the
-        // caller instead of masking it as a connectivity problem and silently
-        // queueing a command that can never succeed.
-        if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+        // decision (e.g. INVALID_TRANSITION, PAYMENT_REQUIRED, FORBIDDEN).
+        // Surface it instead of masking it as a connectivity problem and
+        // silently queueing a command that can never succeed. Shape-based
+        // (status range), never instanceof: apps throw their own ApiError
+        // class, and TransitionError guards carry no HTTP status.
+        const rejectionStatus = typeof (error as { status?: unknown })?.status === "number"
+          ? (error as { status: number }).status
+          : undefined;
+        if (rejectionStatus !== undefined && rejectionStatus >= 400 && rejectionStatus < 500) {
+          const code = errorCodeOf(error);
           syncLogger.warn("SyncEngine", "Cloud command rejected by server", {
             command_type: command.command_type,
             command_id: command.command_id,
-            status: error.status,
-            message: error.message,
+            status: rejectionStatus,
+            code,
+            message: error instanceof Error ? error.message : String(error),
           });
           throw error;
         }
@@ -193,7 +202,7 @@ export class SyncEngine {
       // itself without executing). If no real transport is available, leave
       // the row untouched for a later trigger.
       if (opts?.forReplay) {
-        throw new Error("ReplayDeferred: no transport available, keeping command queued");
+        throw new TransitionError(TRANSITION_ERROR_CODES.REPLAY_DEFERRED, "No transport available, keeping command queued");
       }
           const event = await commandQueueService.enqueue(command);
           this.broadcast(event);

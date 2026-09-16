@@ -34,9 +34,22 @@ interface LocalOrderRow {
 }
 
 /**
- * Local SQLite aggregates — instant, even online. Single source for all
- * three dashboard queries so metrics/recent/full never diverge.
+ * Pure metrics aggregation — exported for tests. Mirrors backend
+ * get_business_dashboard: revenue = delivered-only, today_orders = all,
+ * pending = pending-only, active = accepted/preparing/ready.
  */
+export function computeDashboardMetrics(
+  orders: LocalOrderRow[],
+  todayStr: string,
+): SellerDashboardMetrics {
+  const todayOrders = orders.filter((o) => (o.inserted_at ?? "").slice(0, 10) === todayStr);
+  const todayRevenue = todayOrders
+    .filter((o) => o.status === "delivered")
+    .reduce((sum, o) => sum + (o.total_minor ?? 0), 0);
+  const pending = orders.filter((o) => o.status === "pending").length;
+  const active = orders.filter((o) => ["accepted", "preparing", "ready"].includes(o.status)).length;
+  return { today_orders: todayOrders.length, today_revenue_minor: todayRevenue, pending_orders: pending, active_orders: active, average_rating: 0 };
+}
 async function computeLocalDashboard(businessId: string): Promise<{
   metrics: SellerDashboardMetrics;
   recent_orders: SellerDashboardResponse["data"]["recent_orders"];
@@ -44,16 +57,13 @@ async function computeLocalDashboard(businessId: string): Promise<{
   const { data } = await listLocalOrders(businessId, {}, 1, 200);
   const orders = ((data as unknown as LocalOrderRow[]) ?? []);
   const todayStr = new Date().toISOString().slice(0, 10);
-  const todayOrders = orders.filter((o) => (o.inserted_at ?? "").slice(0, 10) === todayStr);
-  const todayRevenue = todayOrders.reduce((sum, o) => sum + (o.total_minor ?? 0), 0);
-  const pending = orders.filter((o) => ["pending", "awaiting_payment", "accepted"].includes(o.status)).length;
-  const active = orders.filter((o) => !["delivered", "cancelled", "rejected"].includes(o.status)).length;
+  const metrics = computeDashboardMetrics(orders, todayStr);
   const recent = [...orders]
     .sort((a, b) => (b.inserted_at ?? "").localeCompare(a.inserted_at ?? ""))
     .slice(0, 5)
     .map((o) => ({ id: o.id, order_number: o.order_number, status: o.status, total_minor: o.total_minor, item_count: 1 }));
   return {
-    metrics: { today_orders: todayOrders.length, today_revenue_minor: todayRevenue, pending_orders: pending, active_orders: active, average_rating: 0 },
+    metrics,
     recent_orders: recent,
   };
 }

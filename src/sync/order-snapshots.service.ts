@@ -175,12 +175,24 @@ class OrderSnapshotsService {
   /**
    * Patch the latest status of a known order inside every list snapshot for the
    * business, so offline devices see live status changes without a refetch.
+   * Also applies delivery linkage (delivery.assigned / delivery.status_changed
+   * / delivery.pickup_confirmed): backend emits delivery events WITHOUT an
+   * order.status_changed for assign + merchant/rider single-confirms, so
+   * without this other terminals keep offering "Assign rider" forever.
    */
   private async applyOrderStatusToReadModel(
     db: Awaited<ReturnType<typeof openSyncDatabase>>,
     event: DomainEvent,
   ): Promise<void> {
     const payload = event.payload as Record<string, unknown> | undefined;
+    if (event.event_type === "delivery.assigned") {
+      await this.applyDeliveryAssignedToReadModel(db, event);
+      return;
+    }
+    if (event.event_type === "delivery.status_changed" || event.event_type === "delivery.pickup_confirmed") {
+      await this.applyDeliveryStatusToReadModel(db, event);
+      return;
+    }
     const orderId = payload?.order_id as string | undefined;
     const toStatus =
       (payload?.to_status as string | undefined) ??
@@ -191,6 +203,93 @@ class OrderSnapshotsService {
     }
 
     await this.applyOrderStatusToReadModelInternal(db, orderId, toStatus, event);
+  }
+
+  private businessIdOf(event: DomainEvent): string | null {
+    const payload = event.payload as Record<string, unknown> | undefined;
+    return (
+      (payload?.business_id as string | undefined) ??
+      (payload?.businessId as string | undefined) ??
+      null
+    );
+  }
+
+  private orderIdOf(event: DomainEvent): string | undefined {
+    const payload = event.payload as Record<string, unknown> | undefined;
+    return (payload?.order_id as string | undefined) ?? (event.entity_id as string | undefined);
+  }
+
+  /** delivery.assigned {order_id, rider_id}, entity = delivery id. */
+  private async applyDeliveryAssignedToReadModel(
+    db: Awaited<ReturnType<typeof openSyncDatabase>>,
+    event: DomainEvent,
+  ): Promise<void> {
+    try {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const orderId = this.orderIdOf(event);
+      const businessId = this.businessIdOf(event);
+      const deliveryId = (event.entity_id as string | undefined) ?? (payload?.delivery_id as string | undefined);
+      if (!orderId || !businessId || !deliveryId) return;
+      try {
+        const { updateOrderDelivery } = await import("../db/operations");
+        await updateOrderDelivery(db, businessId, orderId, { delivery_id: deliveryId });
+      } catch {}
+      const lists = await getEntitySnapshotsByType<SellerOrderListSnapshot>(db, "seller_orders", businessId);
+      for (const list of lists) {
+        const data = list.payload.data ?? [];
+        const idx = data.findIndex((o) => o.id === orderId);
+        if (idx === -1) continue;
+        const updated = data.map((o, i) =>
+          i === idx ? { ...o, delivery_id: deliveryId, delivery_status: "assigned" } : o,
+        );
+        await upsertEntitySnapshot(db, {
+          entityType: "seller_orders",
+          entityId: list.entity_id,
+          businessId: list.business_id,
+          lastEventId: event.event_id,
+          lastEventTimestamp: event.timestamp,
+          payload: { ...list.payload, data: updated },
+        });
+      }
+    } catch (error) {
+      syncLogger.error("OrderSnapshots", "Failed to apply delivery.assigned to read model", { error: String(error) });
+    }
+  }
+
+  /** delivery.status_changed {order_id, status} / delivery.pickup_confirmed {order_id, rider_confirmed, merchant_confirmed, status}. */
+  private async applyDeliveryStatusToReadModel(
+    db: Awaited<ReturnType<typeof openSyncDatabase>>,
+    event: DomainEvent,
+  ): Promise<void> {
+    try {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const orderId = this.orderIdOf(event);
+      const businessId = this.businessIdOf(event);
+      if (!orderId || !businessId) return;
+      const deliveryStatus = payload?.status as string | undefined;
+      const patch: Record<string, unknown> = {};
+      if (deliveryStatus) patch.delivery_status = deliveryStatus;
+      if (typeof payload?.merchant_confirmed === "boolean") patch.merchant_handover_confirmed_at = payload.merchant_confirmed ? event.timestamp : null;
+      if (typeof payload?.rider_confirmed === "boolean") patch.rider_handover_confirmed_at = payload.rider_confirmed ? event.timestamp : null;
+      if (Object.keys(patch).length === 0) return;
+      const lists = await getEntitySnapshotsByType<SellerOrderListSnapshot>(db, "seller_orders", businessId);
+      for (const list of lists) {
+        const data = list.payload.data ?? [];
+        const idx = data.findIndex((o) => o.id === orderId);
+        if (idx === -1) continue;
+        const updated = data.map((o, i) => (i === idx ? { ...o, ...patch } : o));
+        await upsertEntitySnapshot(db, {
+          entityType: "seller_orders",
+          entityId: list.entity_id,
+          businessId: list.business_id,
+          lastEventId: event.event_id,
+          lastEventTimestamp: event.timestamp,
+          payload: { ...list.payload, data: updated },
+        });
+      }
+    } catch (error) {
+      syncLogger.error("OrderSnapshots", "Failed to apply delivery status to read model", { error: String(error) });
+    }
   }
 
   /**

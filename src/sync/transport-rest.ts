@@ -13,6 +13,7 @@ import { generateEventId } from "../utils/uuid";
 import type { POSOrderCreateRequest } from "../types/pos.types";
 import type { SellerOrder } from "../types/api/seller.api";
 import { createLocalOrder, transitionLocalOrder } from "../domain/orders/service";
+import { isFinalGuardRejection } from "./transition-errors";
 import { openSyncDatabase } from "../db/connection";
 import { getOrderById, updateOrderStatus } from "../db/operations";
 
@@ -166,9 +167,11 @@ export class RestTransport implements Transport {
 
   /**
    * Order transitions go through the domain service first (single write path:
-   * SQLite + sync_jobs). If this device never saw the order (e.g. a LAN node
-   * handling a cloud-created order before its first pull), fall back to the
-   * previous direct-REST behavior so availability never regresses.
+   * SQLite + sync_jobs). Direct-REST fallback is ONLY for devices that never
+   * saw the order (LAN node handling a cloud-created order before first pull).
+   * Local guard rejections (Cannot <action>, online-required, auth/business,
+   * capability) are rethrown — POSTing past them is what caused the
+   * complete-pickup 422 storm on delivery orders.
    */
   private async executeOrderTransition(
     command: Command,
@@ -183,6 +186,9 @@ export class RestTransport implements Transport {
       const data: Record<string, unknown> = { ...order, order_id: order.id };
       return this.wrapResponse(eventType, data, order.id, timestamp, command);
     } catch (error) {
+      // Guard rejections (by code, never message text) must stand — never
+      // POST past them. Only ORDER_NOT_FOUND falls back to REST.
+      if (isFinalGuardRejection(error)) throw error;
       syncLogger.warn("RestTransport", "domain transition unavailable, REST fallback", {
         command_type: command.command_type,
         entity_id,

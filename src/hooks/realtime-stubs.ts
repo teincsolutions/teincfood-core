@@ -17,9 +17,13 @@ import { orderSnapshotsService } from "../sync/order-snapshots.service";
 import { syncEngine } from "../sync/engine";
 import { generateEventId } from "../utils/uuid";
 import { getAppInstanceId } from "../adapters/devices";
+import { getActiveBusiness } from "../adapters/business";
+import { openSyncDatabase } from "../db/connection";
+import { getOrderById } from "../db/operations";
 import type { DomainEvent } from "../sync/types";
 
 const INVALIDATE_DEBOUNCE_MS = 400;
+const UNKNOWN_ORDER_PULL_DEBOUNCE_MS = 1500;
 
 /**
  * Subscribe to real-time order events and invalidate all queries under the
@@ -55,6 +59,14 @@ export function useOrderRealtimeUpdates(rootKey: readonly string[]): void {
       if (event.order_id) pendingOrderIds.add(event.order_id);
 
       const payload = { ...event } as Record<string, unknown>;
+      // Delivery events carry no business_id — the socket already filtered by
+      // business, so stamp the active one for read-model patching.
+      if (!payload.business_id && !payload.businessId) {
+        try {
+          const bid = getActiveBusiness()?.id;
+          if (bid) payload.business_id = bid;
+        } catch {}
+      }
       const domainEvent: DomainEvent = {
         event_id: (payload.event_id as string) ?? generateEventId(),
         event_type: event.type,
@@ -68,6 +80,23 @@ export function useOrderRealtimeUpdates(rootKey: readonly string[]): void {
 
       // Persist to durable offline read model (entity_snapshots table).
       orderSnapshotsService.persistOrderEvent(domainEvent, "cloud").catch(() => {});
+
+      // order.created from another terminal is summary-only (no full body):
+      // invalidate alone can't surface it because SQLite has no row. Pull
+      // once (debounced) when the order is unknown locally. Event-driven —
+      // no polling.
+      if (event.type === "order.created" && event.order_id) {
+        const bid = payload.business_id as string | undefined;
+        if (bid) {
+          void (async () => {
+            try {
+              const db = await openSyncDatabase();
+              const known = await getOrderById(db, bid, event.order_id as string);
+              if (!known) scheduleUnknownOrderPull(bid);
+            } catch {}
+          })();
+        }
+      }
 
       // Publish through the Sync Engine so useSyncReconciliation + LAN relay
       // fire without waiting for the next poll.
@@ -83,6 +112,22 @@ export function useOrderRealtimeUpdates(rootKey: readonly string[]): void {
       unsub();
     };
   }, [queryClient, rootKey]);
+}
+
+/**
+ * Debounced pull for remotely-created orders (one timer per business).
+ * Module-level so bursts across screens coalesce into a single pull.
+ */
+const unknownOrderPullTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function scheduleUnknownOrderPull(businessId: string): void {
+  if (unknownOrderPullTimers.has(businessId)) return;
+  const t = setTimeout(() => {
+    unknownOrderPullTimers.delete(businessId);
+    void import("../sync/sync-jobs.service")
+      .then((m) => m.pullRemoteOrders(businessId))
+      .catch(() => {});
+  }, UNKNOWN_ORDER_PULL_DEBOUNCE_MS);
+  unknownOrderPullTimers.set(businessId, t);
 }
 
 /**
