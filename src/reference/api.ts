@@ -66,7 +66,16 @@ export async function fetchReferenceData(
     const cached = await localNodeFetcher({ businessId, keys });
     const out: Record<ReferenceDataKey, unknown> = {} as Record<ReferenceDataKey, unknown>;
     for (const key of keys) {
-      if (cached[key]?.payload != null) out[key] = cached[key]!.payload;
+      const rec = cached[key];
+      if (rec?.payload == null) continue;
+      // LAN relays are untrusted for server-authoritative keys: only forward
+      // payloads carrying a signed envelope; signature is verified at
+      // evaluation time and the monotonic clock anchors to server_time.
+      if (key === "subscription:entitlements") {
+        const envelope = (rec.payload as { envelope?: { version?: string; server_time?: string; signature?: string } })?.envelope;
+        if (!envelope?.version || !envelope?.server_time || !envelope?.signature) continue;
+      }
+      out[key] = rec.payload;
     }
     return out;
   }

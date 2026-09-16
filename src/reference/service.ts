@@ -20,7 +20,10 @@ import {
   getReferenceData,
   getReferenceVersion,
   mergeReferenceData,
+  writeServerReferenceData,
 } from "./operations";
+import { anchorServerTime } from "./entitlement-clock";
+import { isServerAuthoritativeKey } from "./entitlements";
 import {
   fetchReferenceVersions,
   fetchReferenceData,
@@ -211,7 +214,28 @@ class ReferenceSyncService {
     }
 
     // LWW: newer HLC wins — local edits that are newer than server are preserved.
+    // Server-authoritative keys (subscription:entitlements) bypass LWW merge:
+    // only a newer verified server version overwrites, and the monotonic
+    // clock anchors to the envelope server_time. Never wall-clock.
     const hlc = version ?? generateUUID();
+    if (isServerAuthoritativeKey(key)) {
+      const record = payload as {
+        data?: unknown;
+        envelope?: { version?: string; server_time?: string };
+      } | null;
+      const envelope = record && typeof record === "object" ? record.envelope : undefined;
+      if (!envelope?.version || !envelope?.server_time) {
+        syncLogger.error("ReferenceSync", `Refusing unverified ${key} payload (no envelope)`, {
+          businessId,
+        });
+        throw new Error("Missing entitlement envelope");
+      }
+      const wrote = await writeServerReferenceData(db, businessId, key, payload as Record<string, unknown>, envelope.version);
+      try {
+        await anchorServerTime(envelope.server_time);
+      } catch {}
+      return wrote;
+    }
     await mergeReferenceData(
       db,
       businessId,
@@ -335,6 +359,17 @@ class ReferenceSyncService {
         return {
           payload,
           version: this.hashPayload(payload),
+        };
+      }
+      case "subscription:entitlements": {
+        // Direct full fetch; the syncKey server path requires the signed
+        // envelope and anchors the monotonic clock. Never fabricate one here.
+        const data = await fetchReferenceData(businessId, ["subscription:entitlements"]);
+        const payload = data["subscription:entitlements"];
+        const envelope = (payload as { envelope?: { version?: string } } | null)?.envelope;
+        return {
+          payload,
+          version: envelope?.version ?? this.hashPayload(payload),
         };
       }
       default:

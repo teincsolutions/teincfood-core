@@ -10,6 +10,7 @@ import { openSyncDatabase } from "../db/connection";
 import type { OperatingHoursEntry } from "../types/api/business.api";
 import { getAppInstanceId } from "../adapters/devices";
 import { notifyDbChange } from "../db/operations";
+import { isServerAuthoritativeKey } from "./entitlements";
 
 export async function getReferenceData<T>(
   db: SQLiteDatabase,
@@ -89,6 +90,10 @@ export async function mergeReferenceData<T extends Record<string, unknown>>(
   hlc: string,
   eventId: string,
 ): Promise<void> {
+  // Server-authoritative keys (subscription:entitlements) never merge locally:
+  // LWW poisoning via a forged future HLC would otherwise stick forever.
+  // Use writeServerReferenceData() for the verified server path instead.
+  if (isServerAuthoritativeKey(key)) return;
   const existing = await getReferenceData<T>(db, businessId, key);
   if (!existing) {
     await setReferenceData(db, businessId, {
@@ -114,6 +119,32 @@ export async function mergeReferenceData<T extends Record<string, unknown>>(
     lastEventId: eventId,
     lastHlc: hlc,
   });
+}
+
+/**
+ * Server-authoritative write for verified payloads (subscription:entitlements).
+ * Overwrites only when the incoming server version is newer — a stale or
+ * replayed envelope can never rewind the cache. Local callers must never use
+ * set/mergeReferenceData for these keys.
+ */
+export async function writeServerReferenceData<T>(
+  db: SQLiteDatabase,
+  businessId: string,
+  key: ReferenceDataKey,
+  payload: T,
+  serverVersion: string,
+): Promise<boolean> {
+  const existing = await getReferenceData<T>(db, businessId, key);
+  if (existing && compareHLCString(serverVersion, existing.version) <= 0) return false;
+  await setReferenceData(db, businessId, {
+    key,
+    version: serverVersion,
+    payload,
+    downloadedAt: new Date().toISOString(),
+    lastEventId: `server_${serverVersion}`,
+    lastHlc: serverVersion,
+  });
+  return true;
 }
 
 export async function deleteReferenceData(
