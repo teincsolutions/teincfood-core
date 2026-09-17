@@ -234,6 +234,42 @@ export function useAcceptBusinessInvitationMutation() {
   });
 }
 
+export function useDeclineBusinessInvitationMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { code: string }) => {
+      assertOnlineFor("member:manage");
+      return (businessService as unknown as { declineBusinessInvitation: (d: unknown) => Promise<unknown> }).declineBusinessInvitation(data);
+    },
+    onSuccess: () => {
+      notifySuccess("Invitation declined");
+      queryClient.invalidateQueries({ queryKey: INVITATION_KEYS.list() });
+    },
+    onError: (error) => {
+      notifyError(extractApiErrorMessage(error));
+    },
+  });
+}
+
+export function useResendMemberInvitationMutation() {
+  const queryClient = useQueryClient();
+  const businessId = useBusinessId();
+
+  return useMutation({
+    mutationFn: (invitationId: string) => {
+      assertOnlineFor("member:manage");
+      return (businessService as unknown as { resendBusinessMemberInvitation: (b: string, i: string) => Promise<unknown> }).resendBusinessMemberInvitation(businessId!, invitationId);
+    },
+    onSuccess: () => {
+      notifySuccess("Invitation resent");
+      queryClient.invalidateQueries({ queryKey: MEMBER_KEYS.invitations(businessId ?? "") });
+    },
+    onError: (error) => {
+      notifyError(extractApiErrorMessage(error));
+    },
+  });
+}
+
 // ─── Roles ───
 
 export function useBusinessRolesQuery(enabled = true) {
