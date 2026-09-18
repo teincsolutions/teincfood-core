@@ -206,7 +206,7 @@ export { getSyncJobsPendingCount, debugDumpSyncJobs, drainPending } from "./sync
 export { performFullSync } from "./sync/full-sync";
 export { stopHealthProbe } from "./sync/health-probe";
 export { notifyAuthChanged, subscribeAuth } from "./adapters/auth";
-export { isAuthenticated, hasActiveBusiness, canBusinessSync } from "./sync/sync-guard";
+export { isAuthenticated, hasActiveBusiness, canBusinessSync, setOfflineSyncEnabled, isOfflineSyncEnabled } from "./sync/sync-guard";
 // ── Session lifecycle (access-expired → refresh → refresh-expired → logout)
 export {
   ACCESS_EXPIRED_CODE,
