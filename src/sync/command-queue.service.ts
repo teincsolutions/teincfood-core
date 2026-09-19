@@ -23,6 +23,7 @@ import {
 import { syncLogger } from "../utils/sync-logger";
 import { recordAttempt } from "../utils/attempt-stats";
 import { TransitionError, isReplayDeferred, TRANSITION_ERROR_CODES } from "./transition-errors";
+import { assertBusinessOpenForCreate } from "../utils/business-hours";
 import { extractApiErrorCode } from "../utils/error";
 import { generateEventId } from "../utils/uuid";
 import {
@@ -230,6 +231,14 @@ class CommandQueueService {
    * Returns an optimistic domain event so the caller can update the UI.
    */
   async enqueue(command: Command): Promise<DomainEvent> {
+    // Queue-time hours gate: a closed business can never legally sync an
+    // order:create, so fail fast with BusinessHoursError instead of queuing
+    // an optimistic order that would sit pending forever. Other command
+    // types (transitions, payments, delivery) are unaffected so in-progress
+    // orders can still be completed while closed.
+    if (command.command_type === "order:create") {
+      await assertBusinessOpenForCreate(command.business_id);
+    }
     const db = getSyncDatabase();
     const preparedCommand = injectLocalOrderNumber(command);
     await insertCommand(db, { command: preparedCommand, status: "pending" });

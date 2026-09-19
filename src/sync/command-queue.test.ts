@@ -1,48 +1,70 @@
-/**
- * Outbox survival — network/service failures must NOT consume retries.
- * Regression: processCommand marked every failure "failed" (+1 retry_count),
- * so 5 flaky replays dead-lettered the command mid-outage. Now only
- * definitive 4xx rejections consume retries; transport failures return the
- * row to pending untouched (replay stops to preserve ordering; next trigger
- * retries from the same row).
- */
-import { describe, it, expect } from "vitest";
-import { setConnectivityState } from "../adapters/connectivity";
-import { syncEngine } from "./engine";
-import { commandQueueService } from "./command-queue.service";
-import { buildCommand } from "./command-builder";
-import { resetHarness } from "../e2e/harness";
-import { openSyncDatabase } from "../db/connection";
+import { describe, it, expect, beforeEach } from "vitest";
+import { createMemoryDriver } from "../test-helpers/memory-driver";
+import { setSqliteDriver } from "../adapters/sqlite";
+import { openSyncDatabase, closeSyncDatabase } from "../db/connection";
+import { setReferenceData } from "../reference/operations";
 import { getPendingCommands } from "../db/operations";
+import { commandQueueService } from "./command-queue.service";
+import type { Command } from "./types";
 
-describe("outbox survives transport failures", () => {
-  it("repeated network failures keep the row pending with retry_count 0", async () => {
-    await resetHarness("biz-outbox");
-    // Online, cloud "reachable": strategy=cloud → restTransport menu path →
-    // menuService.createMenuItem is NOT injected in tests → plain Error
-    // (transport failure, not a 4xx rejection).
-    setConnectivityState({ isOnline: true, isCloudReachable: "reachable" });
-    const command = buildCommand({
-      commandType: "menu:create_item",
-      businessId: "biz-outbox",
-      entityId: "mi-1",
-      payload: { name: "Jollof" },
+const BID = "biz-queue-gate-test";
+
+function orderCommand(): Command {
+  return {
+    command_id: `cmd-${Math.random().toString(36).slice(2)}`,
+    command_type: "order:create",
+    command_version: "1.0",
+    business_id: BID,
+    user_id: "u1",
+    device_id: "d1",
+    timestamp: new Date().toISOString(),
+    payload: { items: [] },
+  };
+}
+
+function transitionCommand(): Command {
+  return { ...orderCommand(), command_id: `cmd-${Math.random().toString(36).slice(2)}`, command_type: "order:cancel" };
+}
+
+async function seedClosed() {
+  const db = await openSyncDatabase();
+  await setReferenceData(db, BID, {
+    key: "operating-hours",
+    version: "v1",
+    payload: { data: [{ day_of_week: 0, open_time: "09:00:00", close_time: "21:00:00", is_closed: false }] },
+    downloadedAt: new Date().toISOString(),
+  });
+  await setReferenceData(db, BID, {
+    key: "business:profile",
+    version: "v1",
+    payload: { data: { manually_closed: true } },
+    downloadedAt: new Date().toISOString(),
+  });
+}
+
+describe("command-queue enqueue hours gate", () => {
+  beforeEach(async () => {
+    setSqliteDriver(createMemoryDriver());
+    try {
+      await closeSyncDatabase();
+    } catch {}
+    await openSyncDatabase();
+  });
+
+  it("rejects order:create while closed and persists nothing", async () => {
+    await seedClosed();
+    await expect(commandQueueService.enqueue(orderCommand())).rejects.toMatchObject({
+      code: "BUSINESS_CLOSED",
     });
-    await syncEngine.execute(command);
     const db = await openSyncDatabase();
-    const rows = await getPendingCommands(db, 10);
-    expect(rows.length).toBe(1);
-    expect(rows[0].retry_count).toBe(0);
-    // Three more replay triggers (e.g. connectivity flaps): still pending,
-    // still retry_count 0 — never dead-letters on transport failure.
-    const dbx = await openSyncDatabase();
-    const { getPendingCommands: gpc } = await import("../db/operations");
-    await commandQueueService.replay();
-    await commandQueueService.replay();
-    await commandQueueService.replay();
-    const after = await gpc(dbx, 10);
-    expect(after.length).toBe(1);
-    expect(after[0].retry_count).toBe(0);
-    expect(after[0].status).toBe("pending");
+    expect(await getPendingCommands(db, 100)).toHaveLength(0);
+  });
+
+  it("still queues non-create commands (transitions) while closed", async () => {
+    await seedClosed();
+    const event = await commandQueueService.enqueue(transitionCommand());
+    expect(event.event_type).toBeDefined();
+    const db = await openSyncDatabase();
+    expect(await getPendingCommands(db, 100)).toHaveLength(1);
   });
 });

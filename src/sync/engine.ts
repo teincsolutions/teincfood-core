@@ -168,6 +168,20 @@ export class SyncEngine {
         });
         return events;
       } catch (error) {
+        // Definitive hours-guard rejection (thrown by createLocalOrder before
+        // any HTTP): the business is closed. Surface it immediately — do not
+        // mark cloud unreachable and do not fall back to the outbox, which
+        // would either re-throw from the enqueue gate or mask a real decision
+        // as a connectivity problem.
+        const code = errorCodeOf(error);
+        if (code === "BUSINESS_CLOSED" || code === "HOURS_NOT_SYNCED") {
+          syncLogger.warn("SyncEngine", "Command blocked: business closed", {
+            command_type: command.command_type,
+            command_id: command.command_id,
+            code,
+          });
+          throw error;
+        }
         // Definitive server rejection (4xx): the backend answered with a real
         // decision (e.g. INVALID_TRANSITION, PAYMENT_REQUIRED, FORBIDDEN).
         // Surface it instead of masking it as a connectivity problem and
@@ -178,7 +192,6 @@ export class SyncEngine {
           ? (error as { status: number }).status
           : undefined;
         if (rejectionStatus !== undefined && rejectionStatus >= 400 && rejectionStatus < 500) {
-          const code = errorCodeOf(error);
           syncLogger.warn("SyncEngine", "Cloud command rejected by server", {
             command_type: command.command_type,
             command_id: command.command_id,
