@@ -67,7 +67,8 @@ export interface MenuItemListResponse {
 export interface MenuItemVariant {
   id: string;
   name: string;
-  price_adjustment: number;
+  /** Absolute variant price in minor units (replaces the base price). */
+  price: number;
 }
 
 export interface MenuItemAddon {
@@ -99,7 +100,8 @@ export interface CatalogItemRequest {
   variants: {
     id?: string;
     name: string;
-    price_adjustment: number;
+    /** Absolute variant price in minor units (replaces the base price). */
+    price: number;
   }[];
   extras: {
     id?: string;

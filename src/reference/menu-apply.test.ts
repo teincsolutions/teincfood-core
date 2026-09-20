@@ -122,9 +122,9 @@ describe("menu-apply — offline/LAN cache convergence", () => {
   });
 
   it("update replaces the cached record without clobbering untouched fields", async () => {
-    const created = buildMenuItemRecord({ businessId: BID, name: "Kenkey", priceMinor: 1000, categoryId: "c1", variants: [{ name: "Big", price_adjustment: 500 }] });
+    const created = buildMenuItemRecord({ businessId: BID, name: "Kenkey", priceMinor: 1000, categoryId: "c1", variants: [{ name: "Big", price: 1500 }] });
     await applyMenuCommandLocal(BID, cmd("menu:create_item", { id: created.id, cacheRecord: created }, created.id));
-    const updated = buildMenuItemRecord({ id: created.id, businessId: BID, name: "Kenkey Special", priceMinor: 1500, categoryId: "c1", variants: [{ name: "Big", price_adjustment: 500 }] });
+    const updated = buildMenuItemRecord({ id: created.id, businessId: BID, name: "Kenkey Special", priceMinor: 1500, categoryId: "c1", variants: [{ name: "Big", price: 1500 }] });
     await applyMenuCommandLocal(BID, cmd("menu:update_item", { id: created.id, name: "Kenkey Special", price_minor: 1500, cacheRecord: updated }, created.id));
     const m4 = (await items()).find((i) => i.id === created.id) as unknown as Record<string, unknown>;
     expect(m4.basePrice).toEqual({ amountMinor: 1500, currencyCode: "GHS" });

@@ -24,7 +24,7 @@ export interface MenuItemRecordInput {
   categoryId: string;
   categoryName?: string;
   dietaryTags?: string[];
-  variants?: Array<{ id?: string; name: string; price_adjustment?: number }>;
+  variants?: Array<{ id?: string; name: string; price?: number }>;
   extras?: Array<{ id?: string; name: string; price_minor?: number }>;
   available?: boolean;
   imageUrl?: string | null;
@@ -50,8 +50,8 @@ export function buildMenuItemRecord(input: MenuItemRecordInput): MenuItem {
     variants: (input.variants ?? []).map((v) => ({
       id: v.id ?? generateUUID(),
       name: v.name,
-      // Matches backend serializer: variant price = base + adjustment.
-      price: { amountMinor: input.priceMinor + (v.price_adjustment ?? 0), currencyCode },
+      // Absolute variant price (backend model) — no size defaults to base.
+      price: { amountMinor: v.price ?? input.priceMinor, currencyCode },
     })),
     extras: (input.extras ?? []).map((e) => ({
       id: e.id ?? generateUUID(),
@@ -156,8 +156,7 @@ function wireId(id: string | undefined): string | undefined {
 
 /**
  * Build the { wire, cacheRecord } pair for a menu item write. Callers pass
- * backend adjustment-shaped variants; absolute form prices are converted by
- * the caller (form layer owns both fields).
+ * absolute variant prices (backend model) — the form layer owns the field.
  *
  * Variant/extra ids are preserved when they are backend UUIDs. The backend
  * update path deletes existing rows absent from the incoming list, so
@@ -181,8 +180,8 @@ export function buildMenuItemEnvelope(input: MenuItemEnvelopeInput): {
     variants: (input.variants ?? []).map((v) => {
       const vid = wireId(v.id);
       return vid
-        ? { id: vid, name: v.name, price_adjustment: v.price_adjustment ?? 0 }
-        : { name: v.name, price_adjustment: v.price_adjustment ?? 0 };
+        ? { id: vid, name: v.name, price: v.price ?? input.priceMinor }
+        : { name: v.name, price: v.price ?? input.priceMinor };
     }),
     extras: (input.extras ?? []).map((e) => {
       const eid = wireId(e.id);

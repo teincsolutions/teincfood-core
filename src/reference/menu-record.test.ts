@@ -14,23 +14,34 @@ function baseInput() {
 
 describe("buildMenuItemEnvelope wire ids", () => {
   it("preserves backend UUID variant/extra ids so update does not wipe them", () => {
-    const { wire } = buildMenuItemEnvelope({
+    const { wire, cacheRecord } = buildMenuItemEnvelope({
       ...baseInput(),
-      variants: [{ id: UUID, name: "Large", price_adjustment: 1000 }],
+      variants: [{ id: UUID, name: "Large", price: 6000 }],
       extras: [{ id: UUID, name: "Egg", price_minor: 200 }],
     });
-    expect(wire.variants).toEqual([{ id: UUID, name: "Large", price_adjustment: 1000 }]);
+    expect(wire.variants).toEqual([{ id: UUID, name: "Large", price: 6000 }]);
     expect(wire.extras).toEqual([{ id: UUID, name: "Egg", price_minor: 200 }]);
+    // Cache record holds the absolute backend-shaped price.
+    expect(cacheRecord.variants?.[0]?.price?.amountMinor).toBe(6000);
   });
 
   it("omits form-local ids so the backend inserts new rows instead of raising", () => {
     const { wire } = buildMenuItemEnvelope({
       ...baseInput(),
-      variants: [{ id: "local-1757846400000", name: "Large", price_adjustment: 1000 }],
+      variants: [{ id: "local-1757846400000", name: "Large", price: 6000 }],
       extras: [{ id: "local-1757846400001", name: "Egg", price_minor: 200 }],
     });
-    expect(wire.variants).toEqual([{ name: "Large", price_adjustment: 1000 }]);
+    expect(wire.variants).toEqual([{ name: "Large", price: 6000 }]);
     expect(wire.extras).toEqual([{ name: "Egg", price_minor: 200 }]);
+  });
+
+  it("defaults a priceless variant to the base price", () => {
+    const { wire, cacheRecord } = buildMenuItemEnvelope({
+      ...baseInput(),
+      variants: [{ name: "Regular" }],
+    });
+    expect(wire.variants).toEqual([{ name: "Regular", price: 5000 }]);
+    expect(cacheRecord.variants?.[0]?.price?.amountMinor).toBe(5000);
   });
 
   it("passes image_url (S3 key) through to the wire", () => {

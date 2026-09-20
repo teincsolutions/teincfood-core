@@ -31,7 +31,7 @@ export function validateMenuItemInput(input: {
   priceMinor?: unknown;
   category_id?: unknown;
   categoryId?: unknown;
-  variants?: Array<{ name?: unknown }>;
+  variants?: Array<{ name?: unknown; price?: unknown; price_minor?: unknown }>;
   extras?: Array<{ name?: unknown }>;
 }): void {
   const details: Record<string, string> = {};
@@ -49,6 +49,12 @@ export function validateMenuItemInput(input: {
   }
   for (const v of input.variants ?? []) {
     if (!v || typeof v.name !== "string" || !v.name.trim()) fail("variants", "Variant name is required", details);
+    // Absolute variant price mirrors backend (must be 0 or more when given).
+    // Accepts both envelope shape (price) and form shape (price_minor).
+    const vp = v.price ?? (v as { price_minor?: unknown }).price_minor;
+    if (vp !== undefined && (typeof vp !== "number" || !Number.isFinite(vp) || vp < 0)) {
+      fail("variants", "Variant price must be 0 or more", details);
+    }
   }
   for (const e of input.extras ?? []) {
     if (!e || typeof e.name !== "string" || !e.name.trim()) fail("extras", "Extra name is required", details);
