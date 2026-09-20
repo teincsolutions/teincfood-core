@@ -71,7 +71,7 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
   // Operating-hours gate (fail-closed, offline-first): matches backend
   // validate_business_open. Throws BUSINESS_CLOSED / HOURS_NOT_SYNCED before
   // anything is written, so a doomed order never enters SQLite/sync_jobs.
-  await assertBusinessOpenForCreate(businessId);
+  await assertBusinessOpenForCreate(businessId, new Date(), "pos");
   // DD lease required (backend lease, not local alloc) — keep leased DD even offline
   let dd = getDeviceNumber(businessId);
   if (!dd) {

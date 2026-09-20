@@ -618,6 +618,19 @@ class LocalNodeServiceCore {
         const events = await withTimeout(restTransport.execute(command), timeoutMs);
         event = events[0] ?? null;
       } catch (error) {
+        // A 4xx is a backend rejection of THIS command (validation, auth,
+        // state) — not evidence the cloud is down. Rethrow without touching
+        // global reachability (mirrors sync engine); only network/5xx marks
+        // unreachable. Otherwise one rejected sync poisons every later
+        // resolveStrategy() into queueing and gates unrelated API ops.
+        const rejectionStatus = (error as { status?: unknown })?.status;
+        if (
+          typeof rejectionStatus === "number" &&
+          rejectionStatus >= 400 &&
+          rejectionStatus < 500
+        ) {
+          throw error;
+        }
         syncLogger.warn("LocalNodeService", "Cloud forward failed, queueing", { error: String(error) });
         try { setConnectivityState({ isCloudReachable: "unreachable" } as unknown as Record<string, unknown>); } catch {}
         event = await commandQueueService.enqueue(command);

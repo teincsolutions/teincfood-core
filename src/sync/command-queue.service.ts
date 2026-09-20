@@ -237,7 +237,7 @@ class CommandQueueService {
     // types (transitions, payments, delivery) are unaffected so in-progress
     // orders can still be completed while closed.
     if (command.command_type === "order:create") {
-      await assertBusinessOpenForCreate(command.business_id);
+      await assertBusinessOpenForCreate(command.business_id, new Date(), "pos");
     }
     const db = getSyncDatabase();
     const preparedCommand = injectLocalOrderNumber(command);

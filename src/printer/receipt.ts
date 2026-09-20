@@ -22,9 +22,43 @@ const ESC_BOLD_OFF = "\x1B\x45\x00";
 const GS_SIZE_NORMAL = "\x1D\x21\x00";
 const GS_SIZE_DOUBLE_W = "\x1D\x21\x11";
 const GS_SIZE_DOUBLE_WH = "\x1D\x21\x33";
+const GS_BAR_HEIGHT = "\x1D\x68\x3C";
+const GS_BAR_WIDTH = "\x1D\x77\x02";
 const LF = "\x0A";
 const ESC_FEED_3 = "\x1B\x64\x03";
 const GS_CUT_FULL = "\x1D\x56\x00";
+
+/**
+ * Thermal printers speak bytes, not Unicode. Control sequences are pushed
+ * raw, but every human-readable text segment must pass through here first:
+ * known symbols map to ASCII, anything else non-ASCII becomes "?".
+ * Without this, ₵/═/─/accents print as gibberish (UTF-8 bytes read as CP437).
+ */
+const ESCPOS_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/[₵]/g, "GHc"],
+  [/[€]/g, "EUR"],
+  [/[£]/g, "GBP"],
+  [/[—–]/g, "-"],
+  [/[•·]/g, "*"],
+  [/[═╬]/g, "="],
+  [/[─│]/g, "-"],
+  [/[“”]/g, '"'],
+  [/[‘’`]/g, "'"],
+  [/[…]/g, "..."],
+  [/[×]/g, "x"],
+  [/[°]/g, "deg"],
+  [/ /g, " "],
+];
+
+export function escposText(s: string | null | undefined): string {
+  if (s == null) return "";
+  let out = String(s);
+  for (const [re, sub] of ESCPOS_REPLACEMENTS) out = out.replace(re, sub);
+  // Strip any remaining non-ASCII (accents, emoji, CJK) — the printer cannot
+  // render them and would print garbage bytes.
+  out = out.replace(/[^\x20-\x7E\n]/g, "?");
+  return out;
+}
 
 function padR(text: string, width: number): string {
   if (text.length >= width) return text.slice(0, width);
@@ -63,12 +97,16 @@ function formatDatetime(iso?: string | null): string {
 }
 
 export function calloutNumber(order: SellerOrder): string {
+  // The backend assigns a real callout_number — always prefer it.
+  const direct = (order as unknown as { callout_number?: unknown }).callout_number;
+  if (typeof direct === "number" && Number.isFinite(direct)) return String(Math.abs(direct));
   const num = order.order_number || "";
   if (!num) return "----";
-  const last4 = num.slice(-4);
-  const n = parseInt(last4, 10);
-  if (Number.isNaN(n)) return last4;
-  return String(n);
+  // Strip non-digits first: local DD-RRR-CCC numbers end in "-CCC" and
+  // parseInt("-005") would give -5 (the old "-5" bug).
+  const digits = num.slice(-4).replace(/\D/g, "");
+  if (!digits) return num.slice(-4);
+  return String(parseInt(digits, 10));
 }
 
 function itemName(item: OrderItem): string {
@@ -106,10 +144,21 @@ function escHtml(s: string | null | undefined): string {
 }
 
 function businessAddress(business: SellerOrder["business"]): string | null {
-  const b = business as unknown as { location?: { address?: string }; address?: string } | null;
+  const b = business as unknown as {
+    location?: { address?: string };
+    address?: string | { fullAddress?: string; full_address?: string; street?: string; city?: string };
+  } | null;
   if (!b) return null;
   if (b.location?.address) return b.location.address;
-  if (b.address) return b.address;
+  if (typeof b.address === "string") return b.address;
+  // Desktop snapshots carry a structured address object — flatten it
+  // (printing the object itself would render "[object Object]").
+  if (b.address && typeof b.address === "object") {
+    if (b.address.fullAddress) return b.address.fullAddress;
+    if (b.address.full_address) return b.address.full_address;
+    const parts = [b.address.street, b.address.city].filter(Boolean);
+    if (parts.length) return parts.join(", ");
+  }
   return null;
 }
 
@@ -157,37 +206,44 @@ export function generateEscpos(order: SellerOrder): string {
   const parts: (string | null)[] = [];
 
   const push = (s: string | null | undefined) => { if (s != null) parts.push(s); };
+  // Sanitized text push: every human-readable segment goes through escposText
+  // (control codes and barcode data use raw push).
+  const pushT = (s: string | null | undefined) => { if (s != null) parts.push(escposText(s)); };
 
   // Header — matches receipt.ex to_escpos/1
+  // NOTE: no logo in ESC/POS text mode — a logo URL cannot be rendered without
+  // a raster pipeline (GS v 0). HTML receipts embed the logo instead.
   push(ESC_INIT);
   push(ESC_ALIGN_CENTER);
   push(GS_SIZE_DOUBLE_WH);
-  push(business?.name || "Teinc Food");
+  pushT(business?.name || "Teinc Food");
   push(LF);
   push(GS_SIZE_NORMAL);
   const addr = businessAddress(business);
-  if (addr) push(addr + LF);
+  if (addr) pushT(addr + LF);
   const bPhone = (business as unknown as { phone?: string } | null)?.phone;
-  if (bPhone) push(`Tel: ${bPhone}${LF}`);
+  if (bPhone) pushT(`Tel: ${bPhone}${LF}`);
   push(GS_SIZE_NORMAL);
-  push(doubleLineEscpos());
+  pushT(doubleLineEscpos());
   // Order info
   push(ESC_ALIGN_LEFT);
-  push(`Order: ${order.order_number}${LF}`);
+  pushT(`Order: ${order.order_number}${LF}`);
   // callout_box_escpos
   push(ESC_ALIGN_CENTER);
   push(GS_SIZE_DOUBLE_W);
-  push(`Callout: ${calloutNumber(order)}${LF}`);
+  pushT(`Callout: ${calloutNumber(order)}${LF}`);
   push(GS_SIZE_NORMAL);
   push(LF);
   push(ESC_ALIGN_LEFT);
-  push(`Date: ${formatDatetime(order.inserted_at)}${LF}`);
-  push(`Type: ${orderTypeEscpos(order)}${LF}`);
+  pushT(`Date: ${formatDatetime(order.inserted_at)}${LF}`);
+  pushT(`Type: ${orderTypeEscpos(order)}${LF}`);
   const custLine = customerLineEscpos(order);
-  if (custLine) push(custLine);
+  if (custLine) pushT(custLine);
   push(LF);
-  // Barcode — CODE128 GS k 73
+  // Barcode — CODE128 GS k 73, sized down (default height is huge).
   push(ESC_ALIGN_CENTER);
+  push(GS_BAR_HEIGHT);
+  push(GS_BAR_WIDTH);
   const data = order.order_number || "";
   push(String.fromCharCode(0x1d, 0x6b, 0x49, data.length) + data);
   push(LF);
@@ -195,44 +251,44 @@ export function generateEscpos(order: SellerOrder): string {
   push(ESC_ALIGN_LEFT);
   push(`${padR("Item", 16)} Qty   Price`);
   push(LF);
-  push(singleLineEscpos());
+  pushT(singleLineEscpos());
   push(LF);
   for (const item of items) {
     const qty = item.quantity || 1;
     const price = formatMoney((item.unit_price ?? 0) * qty, order);
-    push(`  ${padR(itemName(item), 16)} ${padR(String(qty), 4)} ${padR(price, 9)}${LF}`);
+    pushT(`  ${padR(itemName(item), 16)} ${padR(String(qty), 4)} ${padR(price, 9)}${LF}`);
     const addons = (item as unknown as { order_item_addons?: unknown[] }).order_item_addons ?? item.addons ?? [];
     for (const addon of addons as unknown[]) {
       const aName = addonName(addon);
       const aPriceMinor = (addon as { price_minor?: number; price?: number }).price_minor ?? (addon as { price?: number }).price ?? 0;
       const addonPrice = formatMoney(aPriceMinor, order);
-      push(`    + ${padR(aName, 12)}      ${padR(addonPrice, 9)}${LF}`);
+      pushT(`    + ${padR(aName, 12)}      ${padR(addonPrice, 9)}${LF}`);
     }
   }
-  push(singleLineEscpos());
+  pushT(singleLineEscpos());
   push(LF);
   // Subtotal section — mirrors subtotal_section_escpos/2
-  push(`${padR("Subtotal:", 20)} ${formatMoney(order.subtotal_minor, order)}${LF}`);
+  pushT(`${padR("Subtotal:", 20)} ${formatMoney(order.subtotal_minor, order)}${LF}`);
   if (order.delivery_fee_minor && order.delivery_fee_minor > 0) {
-    push(`${padR("Delivery Fee:", 20)} ${formatMoney(order.delivery_fee_minor, order)}${LF}`);
+    pushT(`${padR("Delivery Fee:", 20)} ${formatMoney(order.delivery_fee_minor, order)}${LF}`);
   }
   for (const tax of taxLines as SellerOrder["tax_lines"]) {
     const rateStr = tax.rate_basis_points ? `(${Math.floor(tax.rate_basis_points / 100)}%)` : "";
     const label = `${tax.name || ""} ${rateStr}`.trim().slice(0, 19);
-    push(`${padR(label, 20)} ${formatMoney((tax as { tax_amount_minor?: number }).tax_amount_minor as number, order)}${LF}`);
+    pushT(`${padR(label, 20)} ${formatMoney((tax as { tax_amount_minor?: number }).tax_amount_minor as number, order)}${LF}`);
   }
   if (order.discount_minor && order.discount_minor > 0) {
-    push(`${padR("Discount:", 20)} -${formatMoney(order.discount_minor, order)}${LF}`);
+    pushT(`${padR("Discount:", 20)} -${formatMoney(order.discount_minor, order)}${LF}`);
   }
   push(ESC_BOLD_ON);
-  push(`${padR("TOTAL:", 20)} ${formatMoney(order.total_minor, order)}${LF}`);
+  pushT(`${padR("TOTAL:", 20)} ${formatMoney(order.total_minor, order)}${LF}`);
   push(ESC_BOLD_OFF);
   push(LF);
   push(ESC_ALIGN_CENTER);
-  push(paymentLineEscpos(order));
+  pushT(paymentLineEscpos(order));
   push(LF);
   // Footer
-  push(doubleLineEscpos());
+  pushT(doubleLineEscpos());
   push("Thank you for your order!" + LF);
   push("Come back soon!" + LF);
   push(ESC_FEED_3);

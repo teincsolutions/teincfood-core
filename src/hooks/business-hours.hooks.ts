@@ -4,7 +4,7 @@
  * any reference-change invalidation (hours edited locally or background-synced).
  */
 import { useQuery } from "@tanstack/react-query";
-import { isBusinessOpenNow, type BusinessOpenState } from "../utils/business-hours";
+import { isBusinessOpenNow, type BusinessOpenState, type OrderChannel } from "../utils/business-hours";
 import { getReferenceData } from "../reference/operations";
 import { openSyncDatabase } from "../db/connection";
 import type { OperatingHoursEntry } from "../types/api/business.api";
@@ -14,12 +14,12 @@ export const BUSINESS_HOURS_KEYS = {
   open: (bid?: string) => [...BUSINESS_HOURS_KEYS.all, "open", bid] as const,
 };
 
-export function useBusinessOpenNow(businessId?: string, enabled = true) {
+export function useBusinessOpenNow(businessId?: string, enabled = true, channel: OrderChannel = "online") {
   return useQuery<BusinessOpenState>({
-    queryKey: BUSINESS_HOURS_KEYS.open(businessId),
+    queryKey: [...BUSINESS_HOURS_KEYS.open(businessId), channel],
     queryFn: async () => {
       if (!businessId) throw new Error("No business");
-      return isBusinessOpenNow(businessId);
+      return isBusinessOpenNow(businessId, new Date(), channel);
     },
     enabled: enabled && !!businessId,
     staleTime: 30 * 1000,

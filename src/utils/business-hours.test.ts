@@ -102,3 +102,31 @@ describe("business-hours — backend is_open? parity", () => {
     expect((await isBusinessOpenNow(BID, new Date("2026-09-07T10:00:00Z"))).open).toBe(true);
   });
 });
+
+describe("business-hours — channel-aware POS vs online", () => {
+  beforeEach(async () => {
+    setSqliteDriver(createMemoryDriver() as never);
+    try { await closeSyncDatabase(); } catch {}
+  });
+
+  it("manually_closed blocks online but not pos", async () => {
+    await seedHours([entry(0, "08:00:00", "22:00:00")], { manually_closed: true });
+    const at = new Date("2026-09-07T10:00:00Z");
+    const online = await isBusinessOpenNow(BID, at, "online");
+    expect(online.open).toBe(false);
+    expect(online.reason).toBe("manually_closed");
+    const pos = await isBusinessOpenNow(BID, at, "pos");
+    expect(pos.open).toBe(true);
+    await expect(assertBusinessOpenForCreate(BID, at, "online")).rejects.toMatchObject({
+      code: "BUSINESS_CLOSED",
+    });
+    await expect(assertBusinessOpenForCreate(BID, at, "pos")).resolves.toMatchObject({ open: true });
+  });
+
+  it("pos still fails outside hours", async () => {
+    await seedHours([entry(0, "08:00:00", "22:00:00")], { manually_closed: true });
+    const s = await isBusinessOpenNow(BID, new Date("2026-09-07T23:00:00Z"), "pos");
+    expect(s.open).toBe(false);
+    expect(s.reason).toBe("outside_hours");
+  });
+});

@@ -11,6 +11,7 @@ import {
   canTransition,
   getAllowedActions,
   CANCELLABLE_STATUSES,
+  stageStatuses,
 } from "./order-transitions";
 import type { SellerOrder } from "../types/api/seller.api";
 
@@ -130,5 +131,35 @@ describe("order-transitions", () => {
     expect(getAllowedActions(delWithRider)).toEqual(expect.arrayContaining(["confirm_handover"]));
     expect(getAllowedActions(order({ status: "awaiting_payment" }))).toEqual(expect.arrayContaining(["pay", "confirm_cash", "cancel"]));
     expect(getAllowedActions(order({ status: "cancelled" }))).toEqual([]);
+  });
+
+  it("stageStatuses derives hierarchical done/current/upcoming", () => {
+    expect(stageStatuses("pending").map((s) => s.state)).toEqual([
+      "current",
+      "upcoming",
+      "upcoming",
+      "upcoming",
+      "upcoming",
+    ]);
+    expect(stageStatuses("preparing").map((s) => s.state)).toEqual([
+      "done",
+      "done",
+      "current",
+      "upcoming",
+      "upcoming",
+    ]);
+    expect(stageStatuses("delivered").every((s) => s.state !== "upcoming")).toBe(true);
+  });
+
+  it("stageStatuses yields all upcoming for off-pipeline statuses", () => {
+    for (const status of ["cancelled", "awaiting_payment", "waiting_pickup"]) {
+      expect(stageStatuses(status).map((s) => s.state)).toEqual([
+        "upcoming",
+        "upcoming",
+        "upcoming",
+        "upcoming",
+        "upcoming",
+      ]);
+    }
   });
 });

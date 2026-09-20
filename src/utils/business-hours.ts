@@ -1,8 +1,10 @@
 /**
  * Business open/closed evaluation — single source for the lib.
  *
- * Mirrors backend `TeincFoodBackend.Businesses.is_open?/1` exactly:
- *   - `manually_closed` → closed
+ * Mirrors backend `TeincFoodBackend.Businesses.is_open?/1` for the `online`
+ * channel and `open_for_pos?/1` for the `pos` channel:
+ *   - `manually_closed` → closed for online; IGNORED for pos (temporary
+ *     online shutdown must not stop the POS terminal)
  *   - else UTC clock: day = Elixir `Date.day_of_week - 1` (Monday=0 … Sunday=6),
  *     a row matches when `day_of_week` equals today, `is_closed` is false and
  *     `open_time <= now < close_time` (open inclusive, close exclusive).
@@ -21,6 +23,9 @@ export type BusinessClosedReason =
   | "manually_closed"
   | "outside_hours"
   | "no_hours_configured";
+
+/** Order channel: online buyer orders vs in-store POS orders. */
+export type OrderChannel = "online" | "pos";
 
 export interface BusinessOpenState {
   open: boolean;
@@ -69,6 +74,7 @@ function normalizeEntries(payload: unknown): OperatingHoursEntry[] {
 export async function isBusinessOpenNow(
   businessId: string,
   now: Date = new Date(),
+  channel: OrderChannel = "online",
 ): Promise<BusinessOpenState> {
   const evaluatedAt = new Date().toISOString();
   // Backend: Date.day_of_week (Mon=1..Sun=7) minus 1 → Mon=0..Sun=6 (UTC).
@@ -89,7 +95,7 @@ export async function isBusinessOpenNow(
     profile && typeof profile === "object" && "data" in (profile as Record<string, unknown>) && (profile as { data?: unknown }).data !== undefined
       ? ((profile as { data?: unknown }).data as Record<string, unknown>)
       : ((profile ?? {}) as Record<string, unknown>);
-  if (profileData.manually_closed === true) {
+  if (profileData.manually_closed === true && channel !== "pos") {
     return { open: false, reason: "manually_closed", dayOfWeek, timeUtc, evaluatedAt };
   }
 
@@ -120,8 +126,9 @@ export async function isBusinessOpenNow(
 export async function assertBusinessOpenForCreate(
   businessId: string,
   now: Date = new Date(),
+  channel: OrderChannel = "online",
 ): Promise<BusinessOpenState> {
-  const state = await isBusinessOpenNow(businessId, now);
+  const state = await isBusinessOpenNow(businessId, now, channel);
   if (state.reason === "no_hours_configured") {
     throw new BusinessHoursError(
       "HOURS_NOT_SYNCED",

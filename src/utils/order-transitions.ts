@@ -35,6 +35,36 @@ export const CANCELLABLE_STATUSES = [
 
 export const PIPELINE = ["pending", "accepted", "preparing", "ready", "delivered"] as const;
 
+// ── Hierarchical stage derivation ─────────────────────────────────────
+// Backend exposes only the current status; a higher pipeline stage implies
+// all previous stages are complete. UIs derive done/current/upcoming from
+// the current status instead of requiring each stage to be stored.
+
+export type StageState = "done" | "current" | "upcoming";
+
+export interface PipelineStage {
+  status: string;
+  state: StageState;
+}
+
+/**
+ * Derives hierarchical stage states for `current` over `steps`
+ * (defaults to PIPELINE). Stages before the current index are `done`,
+ * the current index is `current`, later stages are `upcoming`.
+ * Unknown statuses (e.g. cancelled, awaiting_payment) yield all `upcoming`
+ * so callers can apply their own mapping first.
+ */
+export function stageStatuses(
+  current: string,
+  steps: readonly string[] = PIPELINE,
+): PipelineStage[] {
+  const idx = steps.indexOf(current);
+  return steps.map((status, i) => ({
+    status,
+    state: idx < 0 || i > idx ? "upcoming" : i === idx ? "current" : "done",
+  }));
+}
+
 export type OrderAction =
   | "accept"
   | "reject"
