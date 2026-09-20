@@ -26,6 +26,7 @@ import { getReferenceData } from "../reference/operations";
 import { openSyncDatabase } from "../db/connection";
 import { canBusinessSync } from "./sync-guard";
 import { TRANSITION_ERROR_CODES, TransitionError } from "./transition-errors";
+import { assertEntitledForCommand } from "../reference/entitlement-guard";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -92,6 +93,24 @@ export class SyncEngine {
         if (e instanceof ApiError && e.status === 403) throw e;
         // otherwise fail open
       }
+    }
+
+    // Entitlement guard (fail-closed, offline-first): subscription-gated
+    // commands need cached proof before routing. Backend 402 backstops.
+    try {
+      await assertEntitledForCommand(command.business_id, command.command_type);
+    } catch (e) {
+      if (
+        e instanceof TransitionError &&
+        e.code === TRANSITION_ERROR_CODES.SUBSCRIPTION_REQUIRED
+      ) {
+        throw e;
+      }
+      // Guard infra failure (no DB yet, corrupt cache) must not brick the
+      // terminal — backend remains the authority. Log and continue.
+      syncLogger.warn("SyncEngine", "entitlement guard skipped", {
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
 
     let strategy = this.resolveStrategy(command);

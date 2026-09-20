@@ -75,7 +75,7 @@ export function assertEntitledFor(
   evaluationReason?: string,
 ): void {
   const gated = new Set([
-    "order:create_online",
+    "order:create",
     "menu:create_item",
     "menu:update_item",
     "menu:delete_item",
@@ -84,7 +84,7 @@ export function assertEntitledFor(
     "member:invite",
     "member:manage",
     "terminal:link",
-    "fleet:dispatch_create",
+    "delivery:assign",
   ]);
   if (!gated.has(commandType)) return;
   if (!entitled) {

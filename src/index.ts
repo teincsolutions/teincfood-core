@@ -141,6 +141,7 @@ export * from "./reference/menu-record";
 export * from "./reference/menu-apply";
 export * from "./reference/capabilities";
 export * from "./reference/entitlements";
+export * from "./reference/entitlement-guard";
 export * from "./reference/entitlement-clock";
 export { hmacSha256Hex, sha256Hex } from "./reference/entitlement-crypto";
 
