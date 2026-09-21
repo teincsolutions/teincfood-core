@@ -83,6 +83,13 @@ export const DEFAULT_PAGE_SIZE = 20;
  */
 export const CLOUD_COMMAND_TIMEOUT_MS = 2_500;
 
+/**
+ * Max time the Sync Engine waits for a Local Node command before falling
+ * back to the offline outbox. LAN discovery can stall on a dead peer —
+ * this cap keeps every engine await bounded so the UI can never hang.
+ */
+export const LAN_COMMAND_TIMEOUT_MS = 5_000;
+
 // Expo version removed; expose static version for now
 export const appVersion = APP_VERSION;
 
@@ -99,4 +106,5 @@ export const DEFAULTS = {
   OTP_RESEND_DELAY_SECONDS,
   DEFAULT_PAGE_SIZE,
   CLOUD_COMMAND_TIMEOUT_MS,
+  LAN_COMMAND_TIMEOUT_MS,
 } as const;

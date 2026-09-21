@@ -20,7 +20,7 @@ import { getConnectivityState } from "../adapters/connectivity";
 import { ApiError } from "../adapters/http";
 import { errorCodeOf } from "./transition-errors";
 import { syncLogger } from "../utils/sync-logger";
-import { CLOUD_COMMAND_TIMEOUT_MS } from "../utils/constants";
+import { CLOUD_COMMAND_TIMEOUT_MS, LAN_COMMAND_TIMEOUT_MS } from "../utils/constants";
 import { CAPABILITY_BY_COMMAND } from "../reference/capabilities";
 import { getReferenceData } from "../reference/operations";
 import { openSyncDatabase } from "../db/connection";
@@ -49,6 +49,17 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 interface SyncEngineOptions {
   /** Ordered list of transports the engine may use. */
   transports: Transport[];
+}
+
+/**
+ * Cash sales must never be refused for lack of entitlement proof: the POS
+ * domain defaults a missing method to cash, and only cash can be fulfilled
+ * without the backend. Anything else keeps the fail-closed guard.
+ */
+function isCashOrderCreate(command: Command): boolean {
+  if (command.command_type !== "order:create") return false;
+  const method = (command.payload as { pos_payment_method?: unknown } | null)?.pos_payment_method;
+  return method === undefined || method === "cash";
 }
 
 export class SyncEngine {
@@ -95,8 +106,12 @@ export class SyncEngine {
       }
     }
 
-    // Entitlement guard (fail-closed, offline-first): subscription-gated
-    // commands need cached proof before routing. Backend 402 backstops.
+    // Entitlement guard (offline-first): subscription-gated commands need
+    // cached proof before routing — EXCEPT cash order:create, which always
+    // queues so the terminal never refuses a sale offline. The backend 402
+    // remains the backstop at replay; the queued event is flagged so the
+    // pending list can badge it until the server confirms.
+    let queueDespiteEntitlement = false;
     try {
       await assertEntitledForCommand(command.business_id, command.command_type);
     } catch (e) {
@@ -104,87 +119,120 @@ export class SyncEngine {
         e instanceof TransitionError &&
         e.code === TRANSITION_ERROR_CODES.SUBSCRIPTION_REQUIRED
       ) {
-        throw e;
+        if (isCashOrderCreate(command)) {
+          queueDespiteEntitlement = true;
+          syncLogger.warn("SyncEngine", "queueing cash order without entitlement proof", {
+            command_id: command.command_id,
+            business_id: command.business_id,
+          });
+        } else {
+          throw e;
+        }
+      } else {
+        // Guard infra failure (no DB yet, corrupt cache) must not brick the
+        // terminal — backend remains the authority. Log and continue.
+        syncLogger.warn("SyncEngine", "entitlement guard skipped", {
+          error: e instanceof Error ? e.message : String(e),
+        });
       }
-      // Guard infra failure (no DB yet, corrupt cache) must not brick the
-      // terminal — backend remains the authority. Log and continue.
-      syncLogger.warn("SyncEngine", "entitlement guard skipped", {
-        error: e instanceof Error ? e.message : String(e),
-      });
     }
 
-    let strategy = this.resolveStrategy(command);
+    const initialStrategy = this.resolveStrategy(command);
 
     const { isCloudReachable, isOnline } = getConnectivityState();
     syncLogger.info("SyncEngine", "Command strategy resolved", {
       command_id: command.command_id,
       command_type: command.command_type,
-      strategy,
+      strategy: initialStrategy,
       isCloudReachable,
       isOnline,
       cloud_available: restTransport.isAvailable(),
       lan_available: localNodeTransport.isAvailable(),
     });
 
-    if (strategy === "queue") {
-      // Replays must never re-enqueue-then-delete (the command would eat
-      // itself without executing). If no real transport is available, leave
-      // the row untouched for a later trigger.
-      if (opts?.forReplay) {
-        throw new TransitionError(TRANSITION_ERROR_CODES.REPLAY_DEFERRED, "No transport available, keeping command queued");
-      }
-      const event = await commandQueueService.enqueue(command);
-      this.broadcast(event);
-      // Menu writes need a visible local effect while queued: patch the
-      // durable reference cache optimistically and fan out
-      // reference_data.changed so reconciliation applies it locally and
-      // relays it to LAN peers (replay re-applies idempotently; the backend
-      // owns versions on cloud convergence).
-      if (command.command_type.startsWith("menu:")) {
-        try {
-          const { applyMenuCommandLocal } = await import("../reference/menu-apply");
-          const { keys } = await applyMenuCommandLocal(command.business_id, command);
-          if (keys.length) {
-            const { REFERENCE_CHANGED_EVENT_TYPE } = await import("../reference/events");
-            const { generateEventId } = await import("../utils/uuid");
-            this.broadcast({
-              event_id: generateEventId(),
-              event_type: REFERENCE_CHANGED_EVENT_TYPE as DomainEvent["event_type"],
-              event_version: "1.0",
-              entity_id: command.business_id,
-              user_id: command.user_id,
-              device_id: command.device_id,
-              payload: { business_id: command.business_id, keys } as unknown as Record<string, unknown>,
-              timestamp: new Date().toISOString(),
-            });
-          }
-        } catch (e) {
-          syncLogger.debug("SyncEngine", "queued menu optimistic apply failed", { err: String(e) });
-        }
-      }
-      return [event];
-    }
+    // Ordered attempts for THIS execution only. Every await below is capped,
+    // so the UI can never hang: a stale "reachable" belief may send the
+    // first attempt to a dead cloud, but it is tried ONCE (2.5s cap) and
+    // never re-entered — the command downgrades to LAN, then the outbox.
+    const attempts: Array<"cloud" | "local_node" | "queue"> =
+      initialStrategy === "cloud"
+        ? [
+            "cloud",
+            ...(localNodeTransport.isAvailable() ? (["local_node"] as const) : []),
+            "queue" as const,
+          ]
+        : initialStrategy === "local_node"
+          ? ["local_node", "queue"]
+          : ["queue"];
 
-    if (strategy === "cloud") {
+    let lastError: unknown = null;
+    for (const attempt of attempts) {
+      if (attempt === "queue") {
+        // Replays must never re-enqueue-then-delete (the command would eat
+        // itself without executing). If no real transport is available, leave
+        // the row untouched for a later trigger.
+        if (opts?.forReplay) {
+          throw new TransitionError(TRANSITION_ERROR_CODES.REPLAY_DEFERRED, "No transport available, keeping command queued");
+        }
+        const event = await commandQueueService.enqueue(command);
+        if (queueDespiteEntitlement) {
+          event.payload = {
+            ...(event.payload as Record<string, unknown>),
+            entitlement_unverified: true,
+          };
+        }
+        this.broadcast(event);
+        // Menu writes need a visible local effect while queued: patch the
+        // durable reference cache optimistically and fan out
+        // reference_data.changed so reconciliation applies it locally and
+        // relays it to LAN peers (replay re-applies idempotently; the backend
+        // owns versions on cloud convergence).
+        if (command.command_type.startsWith("menu:")) {
+          try {
+            const { applyMenuCommandLocal } = await import("../reference/menu-apply");
+            const { keys } = await applyMenuCommandLocal(command.business_id, command);
+            if (keys.length) {
+              const { REFERENCE_CHANGED_EVENT_TYPE } = await import("../reference/events");
+              const { generateEventId } = await import("../utils/uuid");
+              this.broadcast({
+                event_id: generateEventId(),
+                event_type: REFERENCE_CHANGED_EVENT_TYPE as DomainEvent["event_type"],
+                event_version: "1.0",
+                entity_id: command.business_id,
+                user_id: command.user_id,
+                device_id: command.device_id,
+                payload: { business_id: command.business_id, keys } as unknown as Record<string, unknown>,
+                timestamp: new Date().toISOString(),
+              });
+            }
+          } catch (e) {
+            syncLogger.debug("SyncEngine", "queued menu optimistic apply failed", { err: String(e) });
+          }
+        }
+        return [event];
+      }
+
+      const transport = attempt === "cloud" ? restTransport : localNodeTransport;
+      const cap = attempt === "cloud" ? CLOUD_COMMAND_TIMEOUT_MS : LAN_COMMAND_TIMEOUT_MS;
       try {
-        const events = await withTimeout(
-          restTransport.execute(command),
-          CLOUD_COMMAND_TIMEOUT_MS,
-        );
+        const events = await withTimeout(transport.execute(command), cap);
         for (const event of events) {
           this.broadcast(event);
         }
         syncLogger.command(command, "completed", {
           event_count: events.length,
+          transport: transport.name,
         });
-        // Cloud just worked: replay anything queued during the outage.
-        // Flag-neutral: only the health probe writes isCloudReachable — a
-        // single success here is not its decision to make either.
-        this.replayQueuedCommands().catch((error) => {
-          syncLogger.error("SyncEngine", "Replay after cloud success failed", {
-            error: String(error),
+        if (attempt === "cloud") {
+          // Cloud just worked: replay anything queued during the outage.
+          // Flag-neutral: only the health probe writes isCloudReachable — a
+          // single success here is not its decision to make either.
+          this.replayQueuedCommands().catch((error) => {
+            syncLogger.error("SyncEngine", "Replay after cloud success failed", {
+              error: String(error),
+            });
           });
-        });
+        }
         return events;
       } catch (error) {
         // Definitive hours-guard rejection (thrown by createLocalOrder before
@@ -211,9 +259,10 @@ export class SyncEngine {
           ? (error as { status: number }).status
           : undefined;
         if (rejectionStatus !== undefined && rejectionStatus >= 400 && rejectionStatus < 500) {
-          syncLogger.warn("SyncEngine", "Cloud command rejected by server", {
+          syncLogger.warn("SyncEngine", "Command rejected by server", {
             command_type: command.command_type,
             command_id: command.command_id,
+            transport: transport.name,
             status: rejectionStatus,
             code,
             message: error instanceof Error ? error.message : String(error),
@@ -221,56 +270,23 @@ export class SyncEngine {
           throw error;
         }
 
-        // Cloud is slow or unreachable: fall back to the Local Node or the
-        // outbox so the terminal stays responsive. Flag-neutral: only the
+        // Timeout or network error: downgrade to the next attempt (LAN, then
+        // outbox) so the terminal stays responsive. Flag-neutral: only the
         // health probe writes isCloudReachable — a failed request is never
         // evidence the cloud is down (it may be a logic rejection without a
         // numeric status, e.g. TransitionError). The probe detects real
         // outages; queued work replays when it reports recovery.
-        syncLogger.warn("SyncEngine", "Cloud command timed out, falling back", {
+        syncLogger.warn("SyncEngine", `${transport.name} attempt failed, downgrading`, {
           command_type: command.command_type,
+          command_id: command.command_id,
           error: String(error),
         });
-        strategy = this.resolveStrategy(command);
-    if (strategy === "queue") {
-      // Replays must never re-enqueue-then-delete (the command would eat
-      // itself without executing). If no real transport is available, leave
-      // the row untouched for a later trigger.
-      if (opts?.forReplay) {
-        throw new TransitionError(TRANSITION_ERROR_CODES.REPLAY_DEFERRED, "No transport available, keeping command queued");
-      }
-          const event = await commandQueueService.enqueue(command);
-          this.broadcast(event);
-          return [event];
-        }
-        syncLogger.info("SyncEngine", "Cloud timed out, using LAN fallback", {
-          command_id: command.command_id,
-          command_type: command.command_type,
-          strategy,
-        });
+        lastError = error;
       }
     }
 
-    const transport = this.selectTransport(command, strategy);
-    syncLogger.info("SyncEngine", "Executing via transport", {
-      command_id: command.command_id,
-      command_type: command.command_type,
-      strategy,
-      transport: transport.name,
-    });
-
-    const events = await transport.execute(command);
-
-    for (const event of events) {
-      this.broadcast(event);
-    }
-
-    syncLogger.command(command, "completed", {
-      event_count: events.length,
-      transport: transport.name,
-    });
-
-    return events;
+    // Unreachable: attempts always ends with "queue", which returns.
+    throw lastError ?? new Error("SyncEngine: no transport attempt succeeded");
   }
 
   /**
@@ -333,25 +349,6 @@ export class SyncEngine {
     }
 
     return "cloud";
-  }
-
-  private selectTransport(
-    _command: Command,
-    strategy: "cloud" | "local_node" | "queue",
-  ): Transport {
-    if (strategy === "local_node" && localNodeTransport.isAvailable()) {
-      return localNodeTransport;
-    }
-
-    if (strategy === "cloud" && restTransport.isAvailable()) {
-      return restTransport;
-    }
-
-    const transport = this.transports.find((t) => t.isAvailable()) ?? this.transports[0];
-    if (!transport) {
-      throw new Error("SyncEngine: no transports configured");
-    }
-    return transport;
   }
 
   private broadcast(event: DomainEvent): void {
