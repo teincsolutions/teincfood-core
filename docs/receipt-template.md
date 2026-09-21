@@ -47,7 +47,7 @@ Consistency is enforced by golden fixtures:
 [center] §4 company block (never truncated, all lines ≤ 32 cols):
          <website>                                  e.g. https://teincfood.com
          Powered by <company name>                  e.g. Powered by TeincFood
-         feed 3, full cut
+         feed 3 ×2 (clearance so the blade never slices the footer), full cut
 ```
 
 ## §0 Business logo (top, fixed size for all)

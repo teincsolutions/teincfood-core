@@ -408,6 +408,9 @@ export function generateEscpos(order: SellerOrder, logoRasterB64?: string | null
   push(LF);
   pushT(company.website + LF);
   pushT(`Powered by ${company.name}` + LF);
+  // Trailing space before the blade: feed past the print head so the cut
+  // never slices the last footer line.
+  push(ESC_FEED_3);
   push(ESC_FEED_3);
   push(GS_CUT_FULL);
 
