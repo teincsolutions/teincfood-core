@@ -146,8 +146,9 @@ export interface MenuItemEnvelopeInput extends MenuItemRecordInput {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * A variant/extra id is only safe to send when it is a real backend UUID.
- * Form-local ids (e.g. `local-<ts>`) must be omitted: the backend treats a
+ * A variant/extra id is only safe to send when it is a real UUID. Single
+ * global id space: clients generate UUIDs up front and the backend stores
+ * them verbatim. Non-UUID junk must be omitted: the backend treats a
  * missing/empty id as "insert new", but Repo.get/3 raises on a non-UUID.
  */
 function wireId(id: string | undefined): string | undefined {

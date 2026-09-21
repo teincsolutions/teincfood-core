@@ -25,11 +25,23 @@ describe("buildMenuItemEnvelope wire ids", () => {
     expect(cacheRecord.variants?.[0]?.price?.amountMinor).toBe(6000);
   });
 
-  it("omits form-local ids so the backend inserts new rows instead of raising", () => {
+  it("passes client-generated UUIDs through so the backend stores them verbatim", () => {
+    const clientVariant = "6f8d2c1a-3b4e-4f5a-9c6d-7e8f0a1b2c3d";
+    const clientExtra = "7a9e3d2b-4c5f-4a6b-8d7e-9f0a1b2c3d4e";
     const { wire } = buildMenuItemEnvelope({
       ...baseInput(),
-      variants: [{ id: "local-1757846400000", name: "Large", price: 6000 }],
-      extras: [{ id: "local-1757846400001", name: "Egg", price_minor: 200 }],
+      variants: [{ id: clientVariant, name: "Large", price: 6000 }],
+      extras: [{ id: clientExtra, name: "Egg", price_minor: 200 }],
+    });
+    expect(wire.variants).toEqual([{ id: clientVariant, name: "Large", price: 6000 }]);
+    expect(wire.extras).toEqual([{ id: clientExtra, name: "Egg", price_minor: 200 }]);
+  });
+
+  it("omits non-UUID junk ids so the backend inserts new rows instead of raising", () => {
+    const { wire } = buildMenuItemEnvelope({
+      ...baseInput(),
+      variants: [{ id: "not-a-uuid", name: "Large", price: 6000 }],
+      extras: [{ id: "not-a-uuid", name: "Egg", price_minor: 200 }],
     });
     expect(wire.variants).toEqual([{ name: "Large", price: 6000 }]);
     expect(wire.extras).toEqual([{ name: "Egg", price_minor: 200 }]);

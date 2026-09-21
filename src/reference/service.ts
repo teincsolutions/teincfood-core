@@ -442,7 +442,7 @@ class ReferenceSyncService {
       hash = (hash << 5) - hash + char;
       hash |= 0;
     }
-    return `local-${Math.abs(hash).toString(16)}`;
+    return `hash-${Math.abs(hash).toString(16)}`;
   }
 
   async getCached<T>(
