@@ -15,6 +15,7 @@ import { assertBusinessOpenForCreate } from "../../utils/business-hours";
 import { canTransition } from "../../utils/order-transitions";
 import { TRANSITION_ERROR_CODES, TransitionError } from "../../sync/transition-errors";
 import { validateOrderCreateInput } from "../../validation/offline";
+import { buildItemSnapshots, snapshotsToOrderLines } from "./snapshots";
 import { drainOne, pullRemoteOrders } from "../../sync/sync-jobs.service";
 import { getAuthToken } from "../../adapters/auth";
 import { canBusinessSync } from "../../sync/sync-guard";
@@ -94,9 +95,14 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
   // while offline retain their original creation time.
   const now = new Date().toISOString();
   const insertedAt = (input as unknown as { inserted_at?: string }).inserted_at || now;
-  // item_snapshots from CartPanel, else fallback
-  const snapshots = (input as unknown as { item_snapshots?: Array<{ menu_item_id: string; name: string; quantity: number; unit_price_minor: number }> }).item_snapshots;
-  const items = snapshots ? snapshots.map((s, i) => ({ id: `tmp-${id}-${i}`, menu_item: { id: s.menu_item_id, name: s.name }, quantity: s.quantity, unit_price: s.unit_price_minor, subtotal: s.unit_price_minor * s.quantity })) : (input.items ?? []).map((it, i) => ({ id: `tmp-${id}-${i}`, menu_item: { id: (it as unknown as { menu_item_id: string }).menu_item_id, name: "" }, quantity: (it as unknown as { quantity: number }).quantity, unit_price: 0, subtotal: 0 }));
+  // Sale-time snapshots (canonical builder): names are embedded once and
+  // never re-resolved from the menu cache — offline history is self-contained.
+  const snapshots = buildItemSnapshots(
+    ((input as unknown as { item_snapshots?: unknown }).item_snapshots as never) ??
+      (input.items as never) ??
+      [],
+  );
+  const items = snapshotsToOrderLines(snapshots, id);
 
   const totalMinor = (input as unknown as { total_minor?: number }).total_minor ?? 0;
   const subtotalMinor = (input as unknown as { subtotal_minor?: number }).subtotal_minor ?? totalMinor;

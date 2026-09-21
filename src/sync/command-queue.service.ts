@@ -26,6 +26,8 @@ import { TransitionError, isReplayDeferred, TRANSITION_ERROR_CODES } from "./tra
 import { assertBusinessOpenForCreate } from "../utils/business-hours";
 import { extractApiErrorCode } from "../utils/error";
 import { generateEventId } from "../utils/uuid";
+import { buildItemSnapshots, snapshotsToOrderLines } from "../domain/orders/snapshots";
+import type { SnapshotCartLine } from "../domain/orders/snapshots";
 import {
   generateLocalCalloutNumber,
   generateOrderNumberForBusiness,
@@ -128,8 +130,9 @@ function buildOptimisticOrder(
   command: Command,
   payload: Record<string, unknown>,
 ): SellerOrder {
-  const snapshots = (payload.item_snapshots as Array<{ menu_item_id: string; name: string; quantity: number; unit_price_minor: number; variant_name?: string; addons?: Array<{ name: string; price_minor: number }> }>) ?? null;
-  const items = (payload.items as Array<{ menu_item_id: string; quantity: number }>) ?? [];
+  const snapshots = buildItemSnapshots(
+    ((payload.item_snapshots ?? payload.items ?? []) as SnapshotCartLine[]),
+  );
   const totalMinor = (payload.total_minor as number) ?? 0;
   const subtotalMinor = (payload.subtotal_minor as number) ?? totalMinor;
   const taxMinor = (payload.tax_minor as number) ?? 0;
@@ -178,22 +181,7 @@ function buildOptimisticOrder(
     delivery_lat: null,
     delivery_lng: null,
     user: null,
-    items: (snapshots ? snapshots.map((s, index) => ({
-      id: `tmp-${command.command_id}-${index}`,
-      menu_item: { id: s.menu_item_id, name: s.name },
-      quantity: s.quantity,
-      unit_price: s.unit_price_minor,
-      subtotal: s.unit_price_minor * s.quantity,
-      variant_name: s.variant_name,
-      addons: (s.addons ?? []).map((a) => ({ name: a.name, price_minor: a.price_minor })),
-    })) : items.map((item, index) => ({
-      id: `tmp-${command.command_id}-${index}`,
-      menu_item: { id: item.menu_item_id, name: "" },
-      quantity: item.quantity,
-      unit_price: 0,
-      subtotal: 0,
-      addons: [],
-    }))) as SellerOrder["items"],
+    items: snapshotsToOrderLines(snapshots, command.command_id as string) as SellerOrder["items"],
     inserted_at: now,
   };
 }

@@ -73,6 +73,51 @@ describe("generateEscpos", () => {
   });
 });
 
+describe("snapshot-only history lines (menu rows gone)", () => {
+  it("renders sale-time names with no menu cache", () => {
+    const out = generateEscpos(
+      order({
+        items: [
+          {
+            id: "tmp-cmd-0",
+            menu_item: { id: "item-1", name: "Bowl" },
+            variant: null,
+            variant_name: "Large",
+            quantity: 1,
+            unit_price: 7000,
+            subtotal: 7000,
+            addons: [{ name: "Egg", price_minor: 200 }],
+          } as never,
+        ],
+      }),
+    );
+    expect(out).toContain("Large");
+    expect(out).toContain("Egg");
+    expect(out).not.toContain("(deleted item)");
+  });
+
+  it("prefers the snapshot over a renamed live row", () => {
+    const out = generateEscpos(
+      order({
+        items: [
+          {
+            menu_item: { name: "New Name" },
+            name: "Old Name",
+            variant: { name: "Family" },
+            variant_name: "Large",
+            quantity: 1,
+            unit_price: 7000,
+          } as never,
+        ],
+      }),
+    );
+    expect(out).toContain("Old Name");
+    expect(out).toContain("Large");
+    expect(out).not.toContain("New Name");
+    expect(out).not.toContain("Family");
+  });
+});
+
 describe("golden 80mm receipt (docs/receipt-template.md)", () => {
   const golden = (): SellerOrder =>
     ({

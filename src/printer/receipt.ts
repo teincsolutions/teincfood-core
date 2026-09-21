@@ -153,6 +153,10 @@ export function calloutNumber(order: SellerOrder): string {
 }
 
 function itemName(item: OrderItem): string {
+  // Snapshot-first: the sale-time name survives menu renames/deletes.
+  // The embedded menu join is fallback for pre-snapshot rows.
+  const snapshot = (item as { name?: unknown }).name;
+  if (typeof snapshot === "string" && snapshot !== "") return snapshot;
   return item.menu_item?.name || "(deleted item)";
 }
 
@@ -163,6 +167,10 @@ function addonName(addon: OrderItemAddon): string {
 }
 
 function variantName(item: OrderItem): string | null {
+  // Snapshot-first: the sale-time size name survives menu edits. The live
+  // variant join is fallback for pre-snapshot rows.
+  const snapshot = item.variant_name;
+  if (typeof snapshot === "string" && snapshot !== "") return snapshot;
   const n = item.variant?.name;
   return n ? n : null;
 }

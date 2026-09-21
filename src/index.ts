@@ -196,6 +196,7 @@ export * from "./hooks/business-hours.hooks";
 
 // ── Domain (offline-first primary DB) ──
 export * from "./domain/orders/service";
+export * from "./domain/orders/snapshots";
 
 // ── Realtime (single source — PHX WebSocket + business:{id}) ──
 export { phoenixSocket } from "./realtime/phoenix-socket";

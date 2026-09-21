@@ -49,6 +49,8 @@ export interface OrderItem {
   addons?: OrderItemAddon[];
   /** Backend order_items preload :variant (absolute size, has name). */
   variant?: { id?: string; name?: string } | null;
+  /** Sale-time size name snapshot — history never re-resolves the menu. */
+  variant_name?: string | null;
   /** Backend shape for addon lines. */
   order_item_addons?: OrderItemAddon[];
 }
