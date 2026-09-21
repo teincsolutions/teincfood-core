@@ -84,6 +84,7 @@ export async function updateCommandStatus(
   commandId: string,
   status: PersistedCommand["status"],
   error?: string,
+  incrementRetry?: boolean,
 ): Promise<void> {
   const now = new Date().toISOString();
   if (status === "failed") {
@@ -104,6 +105,16 @@ export async function updateCommandStatus(
     await db.runAsync(
       "UPDATE commands SET status = ?, error = NULL, updated_at = ? WHERE command_id = ?;",
       status,
+      now,
+      commandId,
+    );
+  } else if (incrementRetry) {
+    // Bounded 4xx retries count attempts without failing the row, so
+    // MAX_RETRIES caps blind retries while 5xx/network stay indefinite.
+    await db.runAsync(
+      "UPDATE commands SET status = ?, error = ?, retry_count = retry_count + 1, updated_at = ? WHERE command_id = ?;",
+      status,
+      error ?? null,
       now,
       commandId,
     );

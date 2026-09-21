@@ -1,10 +1,12 @@
 /**
  * Core Health Probe — periodic cloud reachability check.
  *
- * Probes `GET /health` using the injected HttpClient with a short timeout.
- * On success: marks cloud reachable (triggers sync replay via connectivity
- * subscribers). On failure: marks unreachable and schedules a retry with
- * exponential backoff (2s → 5min cap, ±20% jitter).
+ * SOLE OWNER of the `isCloudReachable` flag: success marks reachable
+ * (triggers sync replay via connectivity subscribers), failure marks
+ * unreachable and schedules a retry with exponential backoff (15s floor →
+ * 5min cap, ±20% jitter). No request path may write the flag — a single
+ * failed request is never evidence the cloud is down (see SyncEngine,
+ * LocalNodeService), so all failure handling there is flag-neutral.
  *
  * Started automatically by `createTeincCore()`. Host apps should not need
  * to call this directly.
@@ -59,12 +61,19 @@ export async function probeCloudHealth(): Promise<boolean> {
     }
     return true;
   } catch {
-    // Don't mark unreachable here — the sync engine already handles that
-    // when a command times out. This probe only detects recovery.
-    // Log and backoff so we re-check later.
-    syncLogger.debug("HealthProbe", "Probe failed — will retry", {
-      previous: getConnectivityState().isCloudReachable,
-    });
+    // Sole owner rule: the probe is the only writer of isCloudReachable.
+    // A failed probe IS evidence (dedicated check, short timeout), unlike a
+    // failed business request — mark unreachable so readers stop attempting
+    // cloud work until recovery is detected. Backoff bounds the retry rate.
+    const was = getConnectivityState().isCloudReachable;
+    if (was !== "unreachable") {
+      setCloudReachable("unreachable");
+      syncLogger.info("HealthProbe", "Cloud unreachable", { previous: was });
+    } else {
+      syncLogger.debug("HealthProbe", "Probe failed — still unreachable, will retry", {
+        previous: was,
+      });
+    }
     scheduleRetry();
     return false;
   }

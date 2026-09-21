@@ -37,6 +37,11 @@ import type {
 } from "./types";
 
 const DEFAULT_SYNC_KEYS: ReferenceDataKey[] = [
+  // Server-authoritative plan proof first: every gated command evaluates
+  // against this, so it must never starve behind slow/heavy keys (menu
+  // pagination). Capabilities second for the same reason (nav + guards).
+  "subscription:entitlements",
+  "capabilities",
   "menu:items",
   "menu:categories",
   "roles",
@@ -46,8 +51,6 @@ const DEFAULT_SYNC_KEYS: ReferenceDataKey[] = [
   "operating-hours",
   "delivery-settings",
   "payment-settings",
-  "subscription:entitlements",
-  "capabilities",
 ];
 
 class ReferenceSyncService {
@@ -234,6 +237,11 @@ class ReferenceSyncService {
       try {
         await anchorServerTime(envelope.server_time);
       } catch {}
+      syncLogger.info("ReferenceSync", `Server-authoritative ${key} cached`, {
+        businessId,
+        version: envelope.version,
+        server_time: envelope.server_time,
+      });
       return wrote;
     }
     await mergeReferenceData(

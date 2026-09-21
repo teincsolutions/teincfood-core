@@ -14,6 +14,7 @@ import type { POSOrderCreateRequest } from "../types/pos.types";
 import type { SellerOrder } from "../types/api/seller.api";
 import { createLocalOrder, transitionLocalOrder } from "../domain/orders/service";
 import { isFinalGuardRejection } from "./transition-errors";
+import { getQueuedStatus } from "../utils/order-transitions";
 import { openSyncDatabase } from "../db/connection";
 import { getOrderById, updateOrderStatus } from "../db/operations";
 
@@ -181,6 +182,28 @@ export class RestTransport implements Transport {
     eventType = "order.status_changed",
   ): Promise<DomainEvent | null> {
     const { business_id, entity_id } = command;
+    // Idempotent absorb: a duplicate tap / replayed command whose target
+    // status is already applied locally succeeds without touching the
+    // guards or the network (this was the "Cannot mark_ready from ready"
+    // error storm: the throw also poisoned global reachability before the
+    // probe-ownership rule). Genuinely invalid transitions still throw
+    // INVALID_TRANSITION from transitionLocalOrder below.
+    const target = getQueuedStatus(command.command_type);
+    if (target && entity_id) {
+      try {
+        const db = await openSyncDatabase();
+        const local = await getOrderById(db, business_id, entity_id);
+        if (local && local.status === target) {
+          syncLogger.info("RestTransport", "transition already applied, absorbing", {
+            command_type: command.command_type,
+            entity_id,
+            status: target,
+          });
+          const data: Record<string, unknown> = { ...local, order_id: local.id };
+          return this.wrapResponse(eventType, data, local.id, timestamp, command);
+        }
+      } catch {}
+    }
     try {
       const order = await transitionLocalOrder(business_id, entity_id!, action);
       const data: Record<string, unknown> = { ...order, order_id: order.id };

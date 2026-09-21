@@ -65,10 +65,10 @@ describe("local-node cloud forward reachability", () => {
     expect(await getPendingCommands(db, 100)).toHaveLength(0);
   });
 
-  it("marks unreachable and queues on network failure", async () => {
+  it("queues on network failure WITHOUT writing the reachability flag (probe owns it)", async () => {
     executeMock.mockRejectedValue(new Error("socket hang up"));
     await localNodeService.handleNodeCommand(inviteCommand());
-    expect(getConnectivityState().isCloudReachable).toBe("unreachable");
+    expect(getConnectivityState().isCloudReachable).toBe("unknown");
     const db = await openSyncDatabase();
     expect(await getPendingCommands(db, 100)).toHaveLength(1);
   });

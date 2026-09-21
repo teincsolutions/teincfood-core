@@ -15,7 +15,7 @@ import { openSyncDatabase } from "../db/connection";
 import { insertOrder } from "../db/operations";
 import { createLocalOrder, transitionLocalOrder } from "../domain/orders/service";
 import type { SellerOrder } from "../types/api/seller.api";
-import { getConnectivityState, setConnectivityState } from "../adapters/connectivity";
+import { getConnectivityState } from "../adapters/connectivity";
 import { deriveLanSecret as deriveSecretCore } from "./security";
 import type { Command, DomainEvent } from "../sync/types";
 import type { LocalNodeInfo } from "./types";
@@ -631,8 +631,10 @@ class LocalNodeServiceCore {
         ) {
           throw error;
         }
+        // Flag-neutral (probe owns isCloudReachable): a failed forward is
+        // never evidence the cloud is down. Fall back to the queue; the
+        // probe detects real outages and replays trigger on recovery.
         syncLogger.warn("LocalNodeService", "Cloud forward failed, queueing", { error: String(error) });
-        try { setConnectivityState({ isCloudReachable: "unreachable" } as unknown as Record<string, unknown>); } catch {}
         event = await commandQueueService.enqueue(command);
       }
     } else {

@@ -16,7 +16,7 @@ import type { Command, DomainEvent, Transport } from "./types";
 import { restTransport } from "./transport-rest";
 import { localNodeTransport } from "./transport-local-node";
 import { commandQueueService } from "./command-queue.service";
-import { getConnectivityState, setConnectivityState } from "../adapters/connectivity";
+import { getConnectivityState } from "../adapters/connectivity";
 import { ApiError } from "../adapters/http";
 import { errorCodeOf } from "./transition-errors";
 import { syncLogger } from "../utils/sync-logger";
@@ -177,9 +177,9 @@ export class SyncEngine {
         syncLogger.command(command, "completed", {
           event_count: events.length,
         });
-        // Cloud just worked: it is reachable again. Mark it so future commands
-        // go cloud-first, and replay anything queued during the outage.
-        setConnectivityState({ isCloudReachable: "reachable" });
+        // Cloud just worked: replay anything queued during the outage.
+        // Flag-neutral: only the health probe writes isCloudReachable — a
+        // single success here is not its decision to make either.
         this.replayQueuedCommands().catch((error) => {
           syncLogger.error("SyncEngine", "Replay after cloud success failed", {
             error: String(error),
@@ -221,13 +221,16 @@ export class SyncEngine {
           throw error;
         }
 
-        // Cloud is slow or unreachable: mark it and fall back to the Local
-        // Node or the outbox so the terminal stays responsive.
+        // Cloud is slow or unreachable: fall back to the Local Node or the
+        // outbox so the terminal stays responsive. Flag-neutral: only the
+        // health probe writes isCloudReachable — a failed request is never
+        // evidence the cloud is down (it may be a logic rejection without a
+        // numeric status, e.g. TransitionError). The probe detects real
+        // outages; queued work replays when it reports recovery.
         syncLogger.warn("SyncEngine", "Cloud command timed out, falling back", {
           command_type: command.command_type,
           error: String(error),
         });
-        setConnectivityState({ isCloudReachable: "unreachable" });
         strategy = this.resolveStrategy(command);
     if (strategy === "queue") {
       // Replays must never re-enqueue-then-delete (the command would eat

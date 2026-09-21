@@ -212,6 +212,13 @@ export function createMemoryDriver(): SqliteDriver {
         if (row) { row.status = "completed"; row.updated_at = updated_at; }
         return { lastInsertRowId: 0, changes: 1 };
       }
+      // sync_jobs update status=failed with last_error (permanent + exhausted retries)
+      if (s.includes("UPDATE sync_jobs SET status='failed'")) {
+        const [last_error, updated_at, id] = args as any[];
+        const row = tables.sync_jobs.find((r) => r.id === id);
+        if (row) { row.status = "failed"; row.last_error = last_error; row.updated_at = updated_at; }
+        return { lastInsertRowId: 0, changes: 1 };
+      }
       if (s.includes("UPDATE sync_jobs SET payload=")) {
         const [payload, updated_at, id] = args as any[];
         const row = tables.sync_jobs.find((r) => r.id === id);
@@ -322,6 +329,13 @@ export function createMemoryDriver(): SqliteDriver {
         const [business_id, id1, id2] = args as string[];
         const row = tables.orders.find((r) => r.business_id === business_id && (r.id === id1 || r.order_number === id2));
         return (row as unknown as T) ?? null;
+      }
+
+      // orders hlc probe (absorb-if-applied touch detection)
+      if (s.includes("SELECT hlc FROM orders WHERE business_id = ? AND id = ?")) {
+        const [business_id, id] = args as string[];
+        const row = tables.orders.find((r) => r.business_id === business_id && r.id === id);
+        return (row ? { hlc: row.hlc } as unknown as T : null);
       }
 
       // sync_jobs pending single

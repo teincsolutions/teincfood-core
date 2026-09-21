@@ -34,8 +34,21 @@ import {
 import type { SyncEngine } from "./engine";
 import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
 import { canBusinessSync } from "./sync-guard";
+import { backoffDelayMs } from "./backoff";
 
 const MAX_RETRIES = 5;
+
+/**
+ * 4xx that deserve another chance: transient races and rate limits, never
+ * permanent verdicts. Anything else 4xx (400 validation, 401 session,
+ * 402 plan, 403 forbidden) fails fast with a toast. 409 ORDER_NUMBER_TAKEN
+ * has its own regen path below and is not capped (every attempt mints a
+ * new order number, so it is never a blind retry).
+ */
+const RETRYABLE_4XX: ReadonlySet<number> = new Set([404, 408, 409, 422, 429]);
+
+/** In-memory next-eligible time per command (shared 2s→5min curve). */
+const retryNotBefore = new Map<string, number>();
 
 const QUEUED_STATUS_BY_COMMAND: Record<string, string> = {
   "order:accept": "accepted",
@@ -304,6 +317,16 @@ class CommandQueueService {
       return;
     }
 
+    // Backoff pacing for retryable failures: the next replay skips (defers)
+    // this command until its slot, preserving FIFO without a hot loop.
+    const notBefore = retryNotBefore.get(command.command_id);
+    if (notBefore !== undefined && notBefore > Date.now()) {
+      throw new TransitionError(
+        TRANSITION_ERROR_CODES.REPLAY_DEFERRED,
+        "In retry backoff, deferring queued command",
+      );
+    }
+
     if (!this.syncEngine) {
       throw new Error("CommandQueueService: SyncEngine not initialized");
     }
@@ -359,30 +382,49 @@ class CommandQueueService {
         await updateCommandStatus(db, command.command_id, "failed", `order_number_taken:${message}`);
         throw error;
       }
-      const isNonRetryable =
-        typeof apiErr?.status === "number" &&
-        apiErr.status >= 400 &&
-        apiErr.status < 500;
-      if (isNonRetryable) {
-        await updateCommandStatus(db, command.command_id, "failed", `permanent:${message}`);
-        syncLogger.warn("CommandQueueService", "Queued command rejected by server (not retrying)", {
+      const status = typeof apiErr?.status === "number" ? apiErr.status : undefined;
+      // Already-applied absorb: a 422/404 against an order the server
+      // already moved (duplicate tap, earlier drain won the race) is
+      // success, not failure. Verified against server truth via pull
+      // (HLC-guarded: pulled rows overwrite local), never the optimistic row.
+      if (
+        status === 422 ||
+        code === "INVALID_TRANSITION" ||
+        (status === 404 && command.command_type !== "order:create")
+      ) {
+        try {
+          if (await this.absorbIfApplied(command)) return;
+        } catch {}
+      }
+      // Retryable 4xx (FIFO races, rate limits): back off on the shared
+      // 2s→5min curve, then fail loudly after MAX_RETRIES. Throw a
+      // transport-neutral deferral so replay STOPS here (FIFO ordering) —
+      // rethrowing the 4xx itself would make the loop `continue` past it.
+      if (status !== undefined && RETRYABLE_4XX.has(status)) {
+        const attempts = command.retry_count + 1;
+        if (attempts >= MAX_RETRIES) {
+          await this.failPermanently(db, command, message, `retryable 4xx exhausted after ${attempts} attempts`);
+          return;
+        }
+        retryNotBefore.set(command.command_id, Date.now() + backoffDelayMs(command.retry_count));
+        await updateCommandStatus(db, command.command_id, "pending", `retry_4xx:${message}`, true);
+        syncLogger.warn("CommandQueueService", "Retryable 4xx — backing off", {
           command_id: command.command_id,
           command_type: command.command_type,
-          status: apiErr.status,
-          error: message,
+          status,
+          attempt: attempts,
         });
-        // Loud toast + revert: the optimistic local write is rolled back so
-        // the UI never shows what the backend refused.
-        try {
-          const { notifyError } = await import("../adapters/notify");
-          notifyError(`Server rejected ${command.command_type}: ${message}`);
-        } catch {}
-        try {
-          if (command.command_type.startsWith("menu:") && command.entity_id) {
-            const { revertMenuCommand } = await import("../reference/menu-apply");
-            await revertMenuCommand(command.business_id, command.command_type, command.entity_id);
-          }
-        } catch {}
+        throw new TransitionError(
+          TRANSITION_ERROR_CODES.REPLAY_DEFERRED,
+          `Retryable ${status} on ${command.command_type}, backing off`,
+        );
+      }
+      const isNonRetryable =
+        status !== undefined &&
+        status >= 400 &&
+        status < 500;
+      if (isNonRetryable) {
+        await this.failPermanently(db, command, message, "permanent 4xx");
         // Do not throw — allow replay to continue to next command.
         return;
       }
@@ -394,6 +436,76 @@ class CommandQueueService {
       syncLogger.command(parsedCommand, "queued", { error: message, deferred: true });
       throw error;
     }
+  }
+
+  /**
+   * Mark a command permanently failed: loud toast + optimistic revert, then
+   * replay continues to the next command. Shared by the exhausted-retry and
+   * permanent-rejection paths.
+   */
+  private async failPermanently(
+    db: ReturnType<typeof getSyncDatabase>,
+    command: PersistedCommand,
+    message: string,
+    reason: string,
+  ): Promise<void> {
+    await updateCommandStatus(db, command.command_id, "failed", `permanent:${message}`);
+    syncLogger.warn("CommandQueueService", `Queued command failed (${reason})`, {
+      command_id: command.command_id,
+      command_type: command.command_type,
+      error: message,
+    });
+    try {
+      const { notifyError } = await import("../adapters/notify");
+      notifyError(`Server rejected ${command.command_type}: ${message}`);
+    } catch {}
+    try {
+      if (command.command_type.startsWith("menu:") && command.entity_id) {
+        const { revertMenuCommand } = await import("../reference/menu-apply");
+        await revertMenuCommand(command.business_id, command.command_type, command.entity_id);
+      }
+    } catch {}
+  }
+
+  /**
+   * Already-applied absorb: pull server truth, and if the order is already
+   * at this command's target status, delete the command as success. The
+   * absorb ONLY fires when the pull actually touched the row (hlc change) —
+   * otherwise a stale local optimistic write could mask a genuine race and
+   * delete work the server never applied.
+   */
+  private async absorbIfApplied(command: PersistedCommand): Promise<boolean> {
+    const target = QUEUED_STATUS_BY_COMMAND[command.command_type];
+    if (!target || !command.entity_id) return false;
+    try {
+      const db = getSyncDatabase();
+      const before = await db.getFirstAsync<{ hlc: string | null }>(
+        `SELECT hlc FROM orders WHERE business_id = ? AND id = ?;`,
+        command.business_id,
+        command.entity_id,
+      );
+      const { pullRemoteOrders } = await import("./sync-jobs.service");
+      await pullRemoteOrders(command.business_id);
+      const afterHlc = await db.getFirstAsync<{ hlc: string | null }>(
+        `SELECT hlc FROM orders WHERE business_id = ? AND id = ?;`,
+        command.business_id,
+        command.entity_id,
+      );
+      if (!afterHlc || afterHlc.hlc === before?.hlc) return false;
+      const { getOrderById } = await import("../db/operations");
+      const order = await getOrderById(db, command.business_id, command.entity_id);
+      if (order && order.status === target) {
+        await deleteCommand(db, command.command_id);
+        retryNotBefore.delete(command.command_id);
+        syncLogger.info("CommandQueueService", "Transition already applied on server, absorbing", {
+          command_id: command.command_id,
+          command_type: command.command_type,
+          status: target,
+        });
+        return true;
+      }
+    } catch {}
+    return false;
   }
 
   /**

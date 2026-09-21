@@ -5,7 +5,7 @@
  */
 
 import { openSyncDatabase } from "../db/connection";
-import { insertOrder } from "../db/operations";
+import { insertOrder, getOrderById } from "../db/operations";
 import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
 import { getAuthToken, getRefreshToken, setAuthTokens, clearAuth, subscribeAuth } from "../adapters/auth";
 import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
@@ -17,12 +17,16 @@ import { BackoffTracker } from "./backoff";
 import { generateOrderNumber } from "./order-number";
 import { orderSnapshotsService } from "./order-snapshots.service";
 import { getTransitionPath, DELIVERY_COMMANDS } from "./transition-endpoints";
+import { getQueuedStatus } from "../utils/order-transitions";
 import { extractApiErrorCode } from "../utils/error";
 import { canBusinessSync, isAuthenticated } from "./sync-guard";
 
 const inflight = new Map<string, Promise<void>>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const backoffTracker = new BackoffTracker();
+
+/** Blind 4xx retries stop here, loudly. 5xx/network retry indefinitely. */
+const MAX_SYNC_JOB_ATTEMPTS = 5;
 
 function isOnline(): boolean {
   const s = getConnectivityState();
@@ -184,8 +188,48 @@ async function tryRest(businessId: string, payload: Record<string, unknown>, com
   }
 }
 
-export async function drainOne(businessId: string, entityId: string): Promise<void> {
-  if (!businessId || !canBusinessSync(businessId)) {
+/**
+ * Already-applied absorb for sync_jobs rows: pull server truth, and if the
+ * order is already at this command's target status, complete the job. Only
+ * fires when the pull actually touched the row (hlc change) so a stale
+ * local optimistic write can never delete work the server never applied.
+ */
+async function absorbSyncJobIfApplied(
+  db: Awaited<ReturnType<typeof openSyncDatabase>>,
+  businessId: string,
+  entityId: string,
+  commandType: string,
+  jobId: string,
+): Promise<boolean> {
+  const target = getQueuedStatus(commandType);
+  if (!target || !entityId) return false;
+  const before = await db.getFirstAsync<{ hlc: string | null }>(
+    `SELECT hlc FROM orders WHERE business_id = ? AND id = ?;`,
+    businessId,
+    entityId,
+  );
+  await pullRemoteOrders(businessId);
+  const afterHlc = await db.getFirstAsync<{ hlc: string | null }>(
+    `SELECT hlc FROM orders WHERE business_id = ? AND id = ?;`,
+    businessId,
+    entityId,
+  );
+  if (!afterHlc || afterHlc.hlc === before?.hlc) return false;
+  const order = await getOrderById(db, businessId, entityId);
+  if (order && order.status === target) {
+    await db.runAsync(`UPDATE sync_jobs SET status='completed', updated_at=? WHERE id=?;`, new Date().toISOString(), jobId);
+    syncLogger.info("SyncJobs", "Transition already applied on server, absorbing job", {
+      businessId,
+      entityId,
+      commandType,
+      status: target,
+    });
+    return true;
+  }
+  return false;
+}
+
+export async function drainOne(businessId: string, entityId: string): Promise<void> {  if (!businessId || !canBusinessSync(businessId)) {
     syncLogger.debug("SyncJobs", "drainOne early-return — no business/auth", { businessId, entityId });
     return;
   }
@@ -213,7 +257,7 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
   inflight.set(key, new Promise<void>((r) => { resolveInflight = r; }));
   try {
     const db = await openSyncDatabase();
-    const row = await db.getFirstAsync<{ id: string; business_id: string; command_type: string; payload: string }>(`SELECT * FROM sync_jobs WHERE business_id = ? AND entity_id = ? AND status='pending' ORDER BY created_at LIMIT 1;`, businessId, entityId);
+    const row = await db.getFirstAsync<{ id: string; business_id: string; command_type: string; entity_id: string; payload: string; attempts: number }>(`SELECT * FROM sync_jobs WHERE business_id = ? AND entity_id = ? AND status='pending' ORDER BY created_at LIMIT 1;`, businessId, entityId);
     syncLogger.debug("SyncJobs", "drainOne fetched row", { businessId, entityId, found: !!row, command_type: row?.command_type });
     if (!row) {
       syncLogger.debug("SyncJobs", "drainOne no pending row", { businessId, entityId });
@@ -311,14 +355,15 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
       return;
     }
     // Permanent 4xx: mark failed to stop the retry loop.
-    // 404 is only retryable for order:create (FIFO race: order not yet created
-    // on backend). For transitions, 404 means the order was deleted or never
-    // synced — permanent. 409 handled above for RRR regen. 401/408/429 need
-    // special handling below. Backend codes are exact (no message matching).
+    // Retryable (bounded, 5 attempts): 401 (refresh owns it below), 408,
+    // 409, 422, 429, any 404 (FIFO race: earlier command still in flight),
+    // BUSINESS_CLOSED (pending-by-design). Everything else 4xx (400
+    // validation, 402 plan, 403 forbidden) fails fast. Backend codes are
+    // exact (no message matching).
     const isBusinessClosed = rest.code === "BUSINESS_CLOSED" || rest.code === "HOURS_NOT_SYNCED";
     const is4xx = rest.status && rest.status >= 400 && rest.status < 500;
-    const isRetryable4xx = rest.status === 401 || rest.status === 408 || rest.status === 409 || rest.status === 429
-      || (rest.status === 404 && row.command_type === "order:create")
+    const isRetryable4xx = rest.status === 401 || rest.status === 408 || rest.status === 409
+      || rest.status === 422 || rest.status === 429 || rest.status === 404
       || isBusinessClosed;
     if (is4xx && !isRetryable4xx) {
       syncLogger.warn("SyncJobs", "Permanent 4xx — marking job failed to stop retry loop", { businessId, entityId, status: rest.status, code: rest.code, message: rest.message });
@@ -334,6 +379,36 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
       if (row.command_type !== "order:create") {
         try { void pullRemoteOrders(businessId).catch(() => {}); } catch {}
       }
+      return;
+    }
+    // Already-applied absorb for transitions: the server already moved the
+    // order (duplicate tap, earlier drain won the race) — complete the job
+    // instead of failing it. Server truth only (hlc-guarded pull), never the
+    // optimistic row.
+    if (
+      (rest.status === 422 || rest.code === "INVALID_TRANSITION" ||
+        (rest.status === 404 && row.command_type !== "order:create")) &&
+      getQueuedStatus(row.command_type) !== null
+    ) {
+      try {
+        if (await absorbSyncJobIfApplied(db, businessId, row.entity_id, row.command_type, row.id)) {
+          clearRetry(businessId);
+          return;
+        }
+      } catch {}
+    }
+    // Bounded retries: blind 4xx retries stop after 5 attempts with a loud
+    // toast (attempts only increments on the keep-pending path below).
+    if (is4xx && isRetryable4xx && (row.attempts ?? 0) + 1 >= 5) {
+      syncLogger.warn("SyncJobs", "Retryable 4xx exhausted — marking job failed", { businessId, entityId, status: rest.status, code: rest.code, attempts: row.attempts });
+      try {
+        await db.runAsync(`UPDATE sync_jobs SET status='failed', last_error=?, updated_at=? WHERE id=?;`, `${rest.status} ${rest.code ?? ""} ${rest.message ?? ""} (after ${MAX_SYNC_JOB_ATTEMPTS} attempts)`.trim(), new Date().toISOString(), row.id);
+      } catch {}
+      clearRetry(businessId);
+      try {
+        const { notifyError } = await import("../adapters/notify");
+        notifyError(`Server rejected ${row.command_type}: ${rest.message ?? rest.code ?? rest.status} (after retries)`);
+      } catch {}
       return;
     }
     if (isBusinessClosed) {
