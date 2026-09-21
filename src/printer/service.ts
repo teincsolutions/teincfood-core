@@ -7,7 +7,7 @@
 import { getHttpClient } from "../adapters/http";
 import { getTcpAdapter, getPrintFileAdapter } from "../adapters/print";
 import { getPrinterState } from "./store";
-import { generateEscpos, generateHtml } from "./receipt";
+import { generateEscpos, generateHtml, resolveLogoRaster } from "./receipt";
 import { API_BASE_URL } from "../utils/constants";
 import type { SellerOrder } from "../types/api/seller.api";
 
@@ -35,9 +35,27 @@ async function fetchReceipt(orderId: string, format: "html" | "escpos" = "html")
 
 /**
  * Generate receipt locally without network — used for offline queued DD-RRR-CCC orders.
+ * Pass a base64 logo raster (see resolveLogoRaster) to include the thermal header logo.
  */
-export function generateLocalReceipt(order: SellerOrder, format: "html" | "escpos" = "escpos", logoDataUri?: string | null): string {
-  return format === "escpos" ? generateEscpos(order) : generateHtml(order, logoDataUri);
+export function generateLocalReceipt(
+  order: SellerOrder,
+  format: "html" | "escpos" = "escpos",
+  logoDataUri?: string | null,
+  logoRasterB64?: string | null,
+): string {
+  return format === "escpos"
+    ? generateEscpos(order, logoRasterB64 ?? null)
+    : generateHtml(order, logoDataUri);
+}
+
+/** Async variant: resolves the cached logo raster before generating. */
+export async function generateLocalReceiptAsync(
+  order: SellerOrder,
+  format: "html" | "escpos" = "escpos",
+  logoDataUri?: string | null,
+): Promise<string> {
+  if (format !== "escpos") return generateHtml(order, logoDataUri);
+  return generateEscpos(order, await resolveLogoRaster(order));
 }
 
 /**
@@ -68,7 +86,7 @@ export async function printOrderReceipt(order: SellerOrder, opts?: { logoDataUri
           // fall back to local
         }
       }
-      if (!escpos) escpos = generateLocalReceipt(order, "escpos", opts?.logoDataUri ?? null);
+      if (!escpos) escpos = generateEscpos(order, await resolveLogoRaster(order));
       const tcp = getTcpAdapter();
       if (!tcp) throw new Error("TCP adapter not configured");
       await tcp.sendToTcpPrinter(printer!.ip, printer!.port, escpos);
@@ -112,6 +130,7 @@ export async function sendToTcpPrinter(ip: string, port: number, text: string): 
 export const printerService = {
   fetchReceipt,
   generateLocalReceipt,
+  generateLocalReceiptAsync,
   printOrderReceipt,
   sendToTcpPrinter,
   generateEscpos,

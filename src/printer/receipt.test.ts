@@ -143,6 +143,7 @@ describe("golden 80mm receipt (docs/receipt-template.md)", () => {
       "Tel: 0244123456",
       "================================",
       "Order: 07-014-042",
+      "",
       "Callout: 42",
       "",
       "Date: 19 Sep 2026 10:00",

@@ -59,6 +59,8 @@ export interface OrderBusiness {
   id: string;
   name: string;
   phone?: string;
+  /** Base64 `GS v 0` raster block for the thermal header (synced via business:profile). */
+  logo_escpos?: string | null;
   latitude?: number;
   longitude?: number;
   estimated_delivery_time?: number;

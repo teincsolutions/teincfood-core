@@ -230,6 +230,49 @@ async function fetchAsDataUri(url: string): Promise<string | null> {
   } catch { return null; }
 }
 
+/** Decode base64 raster bytes (from `business:profile` reference) to a byte string. */
+function binaryFromBase64(b64: string): string {
+  const clean = b64.replace(/\s/g, "");
+  if (typeof atob === "function") return atob(clean);
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let out = "";
+  let buf = 0;
+  let bits = 0;
+  for (const ch of clean) {
+    if (ch === "=") break;
+    const v = chars.indexOf(ch);
+    if (v < 0) continue;
+    buf = (buf << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out += String.fromCharCode((buf >> bits) & 0xff);
+    }
+  }
+  if (!out) throw new Error("empty raster");
+  return out;
+}
+
+/**
+ * Resolve cached logo raster (base64 `GS v 0` block) for an order: prefers
+ * `order.business.logo_escpos`, falls back to the synced `business:profile`
+ * reference. Null when none — fully offline, no network.
+ */
+export async function resolveLogoRaster(order: SellerOrder): Promise<string | null> {
+  const direct = (order.business as unknown as { logo_escpos?: unknown } | null)?.logo_escpos;
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  try {
+    const bId = order.business_id;
+    if (!bId) return null;
+    const db = await openSyncDatabase();
+    const ref = await getReferenceData<{ data?: { logo_escpos?: unknown } }>(
+      db, bId, "business:profile" as unknown as import("../reference/types").ReferenceDataKey,
+    );
+    const raster = (ref?.payload as unknown as { data?: { logo_escpos?: unknown } })?.data?.logo_escpos;
+    return typeof raster === "string" && raster.length > 0 ? raster : null;
+  } catch { return null; }
+}
+
 // ── ESC/POS ────────────────────────────────────────────────────────────
 
 function doubleLineEscpos(): string { return "═".repeat(LINE_WIDTH) + LF; }
@@ -245,7 +288,7 @@ function customerLineEscpos(order: SellerOrder): string | null {
 function orderTypeEscpos(order: SellerOrder): string { return orderTypeText(order); }
 function paymentLineEscpos(order: SellerOrder): string { return paymentLineText(order); }
 
-export function generateEscpos(order: SellerOrder): string {
+export function generateEscpos(order: SellerOrder, logoRasterB64?: string | null): string {
   const business = order.business;
   const items = order.items || [];
   const taxLines = ((order as unknown as { order_tax_lines?: SellerOrder["tax_lines"] }).order_tax_lines ?? order.tax_lines ?? []) as SellerOrder["tax_lines"];
@@ -260,6 +303,11 @@ export function generateEscpos(order: SellerOrder): string {
   // NOTE: no logo in ESC/POS text mode — a logo URL cannot be rendered without
   // a raster pipeline (GS v 0). HTML receipts embed the logo instead.
   push(ESC_INIT);
+  if (logoRasterB64) {
+    try {
+      push(binaryFromBase64(logoRasterB64));
+    } catch { /* logo is decorative — never fail the receipt */ }
+  }
   push(ESC_ALIGN_CENTER);
   for (const part of nameBlockEscpos(business?.name || "Teinc Food")) push(part);
   const addr = businessAddress(business);
@@ -271,7 +319,8 @@ export function generateEscpos(order: SellerOrder): string {
   // Order info
   push(ESC_ALIGN_LEFT);
   pushT(`Order: ${order.order_number}${LF}`);
-  // callout_box_escpos
+  // callout_box_escpos — symmetric blank lines, no border rules around it
+  push(LF);
   push(ESC_ALIGN_CENTER);
   push(GS_SIZE_DOUBLE_W);
   pushT(`Callout: ${calloutNumber(order)}${LF}`);
@@ -433,13 +482,13 @@ export function generateHtml(order: SellerOrder, logoDataUri?: string | null): s
 <style>
   body{font-family:monospace;max-width:320px;margin:0 auto;padding:16px;background:#fff;color:#111;}
   .header{text-align:center;border-top:2px solid #333;border-bottom:2px solid #333;padding:8px 0;margin-bottom:12px;}
-  .header .logo{max-width:180px;max-height:60px;margin:4px auto;display:block;object-fit:contain;}
+  .header .logo{max-width:200px;max-height:64px;margin:4px auto;display:block;object-fit:contain;}
   .header h2{margin:4px 0 0;}
   .header h2.name-2x{font-size:28px;font-weight:bold;}
   .header h2.name-1x-bold{font-size:16px;font-weight:bold;}
   .header h2.name-1x{font-size:14px;}
   .header .address{font-size:11px;color:#555;margin:2px 0;}
-  .callout{border:3px double #333;text-align:center;padding:10px;margin:10px 0;}
+  .callout{text-align:center;margin:16px 0;}
   .callout .number{font-size:36px;font-weight:bold;letter-spacing:4px;margin:0;}
   .callout .label{font-size:10px;color:#555;margin:0;}
   .order-info{font-size:12px;margin:8px 0;}

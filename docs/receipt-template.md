@@ -22,13 +22,15 @@ Consistency is enforced by golden fixtures:
 ## Sections (in order)
 
 ```
+[center] LOGO RASTER (when available, §0)
 [center] BUSINESS NAME (fit ladder, §1)
 [center] address (1x, if present)
 [center] Tel: <phone> (1x, if present)
 ================================  (32 "=")
 [left]   Order: <order_number>
-[center] Callout: <n> (2x width+height, GS ! 0x11)
-         <blank>
+
+[center] Callout: <n> (2x width+height, GS ! 0x11, blank line above and below, no border rules)
+
 [left]   Date: <dd Mon yyyy HH:MM>
 [left]   Type: <Takeout|Dine-in|Delivery|Pay on Delivery|Prepaid|Walk-in>
 [left]   Customer: <name> | Phone: <phone> (whichever present)
@@ -43,6 +45,19 @@ Consistency is enforced by golden fixtures:
 [center] Come back soon!
          feed 3, full cut
 ```
+
+## §0 Business logo (top, fixed size for all)
+
+When the business has a logo it prints centered above the name:
+- ESC/POS: pre-rasterized monochrome `GS v 0` block, fit inside
+  384×96 dots, thresholded at 50%, horizontally centered via `ESC $`.
+  PNG only; anything else (or any failure) prints no logo — never fail
+  the receipt. Backend rasterizes with `Orders.LogoRaster` (pure Elixir,
+  zero deps); the bytes travel base64 as `logo_escpos` in the
+  `business:profile` reference payload so offline devices splice
+  print-ready bytes with no image pipeline.
+- HTML twin: `<img class="logo">`, `max-width:200px;max-height:64px`,
+  centered. Same box on backend and frontend output.
 
 ## §1 Business-name fit ladder (centered, never truncated)
 
