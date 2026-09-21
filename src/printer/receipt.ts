@@ -6,6 +6,7 @@
  */
 
 import type { SellerOrder, OrderItem, OrderItemAddon } from "../types/api/seller.api";
+import { getCompanyInfo } from "./company";
 import { openSyncDatabase } from "../db/connection";
 import { getReferenceData } from "../reference/operations";
 import { cacheRemoteImage, resolveImageSource } from "../image-cache/service";
@@ -387,6 +388,9 @@ export function generateEscpos(order: SellerOrder, logoRasterB64?: string | null
   pushT(`${padR("TOTAL:", 20)} ${padL(escposText(formatMoney(order.total_minor, order)), 11)}${LF}`);
   push(ESC_BOLD_OFF);
   push(LF);
+  // Footer — template §4 company block (centered, never truncated)
+  const company = getCompanyInfo();
+  const contactLine = `${company.address} | ${company.phone}`;
   push(ESC_ALIGN_CENTER);
   pushT(paymentLineEscpos(order));
   push(LF);
@@ -394,6 +398,12 @@ export function generateEscpos(order: SellerOrder, logoRasterB64?: string | null
   pushT(doubleLineEscpos());
   push("Thank you for your order!" + LF);
   push("Come back soon!" + LF);
+  push(LF);
+  pushT(company.brand + LF);
+  pushT(contactLine + LF);
+  pushT(company.supportEmail + LF);
+  pushT(company.website + LF);
+  pushT(`Powered by ${company.name}` + LF);
   push(ESC_FEED_3);
   push(GS_CUT_FULL);
 
@@ -449,6 +459,7 @@ export function generateHtml(order: SellerOrder, logoDataUri?: string | null): s
   const logoSrc = logoDataUri || (business as unknown as { logo_url?: string } | null)?.logo_url || "";
   const hasLogo = !!logoSrc;
   const businessName = escHtml(business?.name || "Teinc Food");
+  const company = getCompanyInfo();
   const addr = businessAddress(business);
   const bPhone = (business as unknown as { phone?: string } | null)?.phone;
 
@@ -541,6 +552,7 @@ export function generateHtml(order: SellerOrder, logoDataUri?: string | null): s
 </div>
 <div class="footer">
   Thank you for your order!<br>Come back soon!
+  <br><br>${escHtml(company.brand)}<br>${escHtml(company.address)} | ${escHtml(company.phone)}<br>${escHtml(company.supportEmail)}<br>${escHtml(company.website)}<br>Powered by ${escHtml(company.name)}
 </div>
 </body></html>`;
 }

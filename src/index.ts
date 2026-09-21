@@ -173,6 +173,7 @@ export { SELLER_ORDERS_KEYS, BUSINESS_DELIVERIES_KEYS, MENU_KEYS, REFERENCE_KEYS
 export * from "./printer/types";
 export * from "./printer/store";
 export * from "./printer/receipt";
+export * from "./printer/company";
 export * from "./printer/service";
 export * from "./printer/hooks";
 
