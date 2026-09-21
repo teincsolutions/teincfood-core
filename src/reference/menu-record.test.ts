@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildMenuItemEnvelope } from "./menu-record";
+import { buildMenuItemEnvelope, imageUrlForUpdateWire } from "./menu-record";
 
 const UUID = "0f0764da-53aa-48e4-ac40-3bfd8a52b0ec";
 
@@ -94,5 +94,38 @@ describe("buildMenuItemEnvelope wire ids", () => {
       expect(wire.image_url).toBeNull();
       expect(cacheRecord.image_url).toBeNull();
     }
+  });
+});
+
+describe("imageUrlForUpdateWire", () => {
+  it("sends the fresh S3 key after a new upload", () => {
+    expect(
+      imageUrlForUpdateWire({ freshKey: "menus/biz/123-abc-photo.jpg", loadedUrl: "https://cdn/old.jpg?sig=x", hadImage: true }),
+    ).toBe("menus/biz/123-abc-photo.jpg");
+  });
+
+  it("omits image_url on plain edits so the server key is preserved", () => {
+    expect(
+      imageUrlForUpdateWire({ loadedUrl: "https://cdn/old.jpg?sig=x", hadImage: true }),
+    ).toBeUndefined();
+    expect(
+      imageUrlForUpdateWire({ loadedUrl: "menus/biz/123-abc-photo.jpg", hadImage: true }),
+    ).toBeUndefined();
+  });
+
+  it("sends explicit null when the user removed the photo", () => {
+    expect(imageUrlForUpdateWire({ loadedUrl: "", hadImage: true })).toBeNull();
+    expect(imageUrlForUpdateWire({ loadedUrl: null, hadImage: true })).toBeNull();
+  });
+
+  it("omits when there never was a photo", () => {
+    expect(imageUrlForUpdateWire({ loadedUrl: "", hadImage: false })).toBeUndefined();
+    expect(imageUrlForUpdateWire({ loadedUrl: null, hadImage: false })).toBeUndefined();
+  });
+
+  it("nulls poisoned tfimg URIs so stored rows heal", () => {
+    expect(
+      imageUrlForUpdateWire({ loadedUrl: "tfimg://localhost/abc123.jpg", hadImage: true }),
+    ).toBeNull();
   });
 });

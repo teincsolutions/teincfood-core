@@ -156,6 +156,28 @@ function wireId(id: string | undefined): string | undefined {
 }
 
 /**
+ * Image value for a menu-item UPDATE wire payload. The server is the source
+ * of truth for the stored key — never re-send a loaded URL and risk
+ * overwriting the key with a URL-shaped value. Returns `undefined` when the
+ * caller must OMIT `image_url` (server keeps its key untouched):
+ * - fresh upload → the bare S3 key;
+ * - user removed the photo (had one, now empty) → explicit null (clear it);
+ * - loaded an un-storable scheme (tfimg:/blob:/file: poison) → null (heal);
+ * - otherwise (loaded URL or bare key, no new upload) → omit (preserve).
+ */
+export function imageUrlForUpdateWire(opts: {
+  freshKey?: string | null;
+  loadedUrl?: string | null;
+  hadImage: boolean;
+}): string | null | undefined {
+  if (opts.freshKey) return opts.freshKey;
+  const loaded = opts.loadedUrl ?? null;
+  if (!loaded) return opts.hadImage ? null : undefined;
+  if (toStorableImageUrl(loaded) === null) return null;
+  return undefined;
+}
+
+/**
  * Build the { wire, cacheRecord } pair for a menu item write. Callers pass
  * absolute variant prices (backend model) — the form layer owns the field.
  *
