@@ -390,7 +390,6 @@ export function generateEscpos(order: SellerOrder, logoRasterB64?: string | null
   push(LF);
   // Footer — template §4 company block (centered, never truncated)
   const company = getCompanyInfo();
-  const contactLine = `${company.address} | ${company.phone}`;
   push(ESC_ALIGN_CENTER);
   pushT(paymentLineEscpos(order));
   push(LF);
@@ -399,9 +398,6 @@ export function generateEscpos(order: SellerOrder, logoRasterB64?: string | null
   push("Thank you for your order!" + LF);
   push("Come back soon!" + LF);
   push(LF);
-  pushT(company.brand + LF);
-  pushT(contactLine + LF);
-  pushT(company.supportEmail + LF);
   pushT(company.website + LF);
   pushT(`Powered by ${company.name}` + LF);
   push(ESC_FEED_3);
@@ -552,7 +548,7 @@ export function generateHtml(order: SellerOrder, logoDataUri?: string | null): s
 </div>
 <div class="footer">
   Thank you for your order!<br>Come back soon!
-  <br><br>${escHtml(company.brand)}<br>${escHtml(company.address)} | ${escHtml(company.phone)}<br>${escHtml(company.supportEmail)}<br>${escHtml(company.website)}<br>Powered by ${escHtml(company.name)}
+  <br><br>${escHtml(company.website)}<br>Powered by ${escHtml(company.name)}
 </div>
 </body></html>`;
 }

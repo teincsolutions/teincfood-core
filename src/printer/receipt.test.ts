@@ -171,9 +171,6 @@ describe("golden 80mm receipt (docs/receipt-template.md)", () => {
       "Thank you for your order!",
       "Come back soon!",
       "",
-      "TeincFood Business",
-      "Accra, Ghana | +233 50 398 1913",
-      "support@teincfood.com",
       "https://teincfood.com",
       "Powered by TeincFood",
     ]);

@@ -45,9 +45,6 @@ Consistency is enforced by golden fixtures:
 [center] Come back soon!
          <blank>
 [center] §4 company block (never truncated, all lines ≤ 32 cols):
-         <brand>                                    e.g. TeincFood Business
-         <address> | <phone>                        e.g. Accra, Ghana | +233 50 398 1913
-         <support email>                            e.g. support@teincfood.com
          <website>                                  e.g. https://teincfood.com
          Powered by <company name>                  e.g. Powered by TeincFood
          feed 3, full cut
@@ -71,14 +68,10 @@ When the business has a logo it prints centered above the name:
 Values (backend: `COMPANY_*` OS env; frontend: `VITE_COMPANY_*` /
 `EXPO_PUBLIC_COMPANY_*` wired to `setCompanyInfo`; identical defaults):
 
-| key       | default                |
-| --------- | ---------------------- |
-| name      | TeincFood              |
-| brand     | TeincFood Business     |
-| address   | Accra, Ghana           |
-| website   | https://teincfood.com  |
-| support   | support@teincfood.com  |
-| phone     | +233 50 398 1913       |
+| key     | default               |
+| ------- | --------------------- |
+| name    | TeincFood             |
+| website | https://teincfood.com |
 
 ## §1 Business-name fit ladder (centered, never truncated)
 
