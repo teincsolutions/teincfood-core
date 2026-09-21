@@ -1,13 +1,11 @@
 /**
- * Local receipt generation — 1:1 port of TeincFoodBackend.Orders.Receipt
- * Generates ESC/POS (80mm, 32 chars) and HTML from a SellerOrder snapshot.
- * Works fully offline for queued DD-RRR-CCC orders without backend fetch.
- *
- * Backend source: lib/teinc_food_backend/orders/receipt.ex
- * Keep this file in sync with backend when template changes.
+ * Local receipt generation — implements docs/receipt-template.md
+ * (single source of design; backend TeincFoodBackend.Orders.Receipt
+ * implements the same spec). Generates ESC/POS (80mm, 32 chars) and HTML
+ * (visual twin) from a SellerOrder snapshot. Works fully offline.
  */
 
-import type { SellerOrder, OrderItem } from "../types/api/seller.api";
+import type { SellerOrder, OrderItem, OrderItemAddon } from "../types/api/seller.api";
 import { openSyncDatabase } from "../db/connection";
 import { getReferenceData } from "../reference/operations";
 import { cacheRemoteImage, resolveImageSource } from "../image-cache/service";
@@ -21,7 +19,6 @@ const ESC_BOLD_ON = "\x1B\x45\x01";
 const ESC_BOLD_OFF = "\x1B\x45\x00";
 const GS_SIZE_NORMAL = "\x1D\x21\x00";
 const GS_SIZE_DOUBLE_W = "\x1D\x21\x11";
-const GS_SIZE_DOUBLE_WH = "\x1D\x21\x33";
 const GS_BAR_HEIGHT = "\x1D\x68\x3C";
 const GS_BAR_WIDTH = "\x1D\x77\x02";
 const LF = "\x0A";
@@ -63,6 +60,51 @@ export function escposText(s: string | null | undefined): string {
 function padR(text: string, width: number): string {
   if (text.length >= width) return text.slice(0, width);
   return text.padEnd(width, " ");
+}
+
+function padL(text: string | number, width: number): string {
+  const s = String(text);
+  if (s.length >= width) return s.slice(0, width);
+  return s.padStart(width, " ");
+}
+
+/** Word-wrap sanitized text to width. Long words hard-split. Never drops content. */
+export function wrapText(text: string, width: number): string[] {
+  const words: string[] = [];
+  for (const word of text.split(" ").filter(Boolean)) {
+    if (word.length <= width) words.push(word);
+    else for (let i = 0; i < word.length; i += width) words.push(word.slice(i, i + width));
+  }
+  const lines: string[] = [];
+  let cur = "";
+  for (const word of words) {
+    if (!cur) cur = word;
+    else if (cur.length + 1 + word.length <= width) cur += " " + word;
+    else { lines.push(cur); cur = word; }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+/**
+ * Business-name fit ladder (centered, never truncated):
+ * ≤16 chars → 2x, 17–64 → 1x bold (≤2 lines), longer → 1x (≤3 lines,
+ * keeps wrapping beyond that).
+ */
+function nameBlockEscpos(name: string): string[] {
+  const text = escposText(name);
+  if (text.length <= 16) return [GS_SIZE_DOUBLE_W, text, LF, GS_SIZE_NORMAL];
+  if (text.length <= 64) {
+    return [ESC_BOLD_ON, ...wrapText(text, 32).flatMap((l) => [escposText(l), LF]), ESC_BOLD_OFF];
+  }
+  return wrapText(text, 32).flatMap((l) => [escposText(l), LF]);
+}
+
+function nameSizeClass(name: string | null | undefined): string {
+  const len = (name || "").length;
+  if (len <= 16) return "name-2x";
+  if (len <= 64) return "name-1x-bold";
+  return "name-1x";
 }
 
 function currencySymbol(currency?: string | null): string {
@@ -113,11 +155,15 @@ function itemName(item: OrderItem): string {
   return item.menu_item?.name || "(deleted item)";
 }
 
-function addonName(addon: unknown): string {
-  const a = addon as { addon?: { name?: string }; name?: string };
-  if (a.addon?.name) return a.addon.name;
-  if (a.name) return a.name;
+function addonName(addon: OrderItemAddon): string {
+  if (addon.addon?.name) return addon.addon.name;
+  if (addon.name) return addon.name;
   return "Add-on";
+}
+
+function variantName(item: OrderItem): string | null {
+  const n = item.variant?.name;
+  return n ? n : null;
 }
 
 function orderTypeText(order: SellerOrder): string {
@@ -210,15 +256,12 @@ export function generateEscpos(order: SellerOrder): string {
   // (control codes and barcode data use raw push).
   const pushT = (s: string | null | undefined) => { if (s != null) parts.push(escposText(s)); };
 
-  // Header — matches receipt.ex to_escpos/1
+  // Header — implements docs/receipt-template.md §1
   // NOTE: no logo in ESC/POS text mode — a logo URL cannot be rendered without
   // a raster pipeline (GS v 0). HTML receipts embed the logo instead.
   push(ESC_INIT);
   push(ESC_ALIGN_CENTER);
-  push(GS_SIZE_DOUBLE_WH);
-  pushT(business?.name || "Teinc Food");
-  push(LF);
-  push(GS_SIZE_NORMAL);
+  for (const part of nameBlockEscpos(business?.name || "Teinc Food")) push(part);
   const addr = businessAddress(business);
   if (addr) pushT(addr + LF);
   const bPhone = (business as unknown as { phone?: string } | null)?.phone;
@@ -247,41 +290,52 @@ export function generateEscpos(order: SellerOrder): string {
   const data = order.order_number || "";
   push(String.fromCharCode(0x1d, 0x6b, 0x49, data.length) + data);
   push(LF);
-  // Items
+  // Items — template §2: name 17 | qty 3 (right) | price 10 (right) = 32
   push(ESC_ALIGN_LEFT);
-  push(`${padR("Item", 16)} Qty   Price`);
+  push(`${padR("Item", 17)} ${padL("Qty", 3)} ${padL("Price", 10)}`);
   push(LF);
   pushT(singleLineEscpos());
   push(LF);
   for (const item of items) {
     const qty = item.quantity || 1;
-    const price = formatMoney((item.unit_price ?? 0) * qty, order);
-    pushT(`  ${padR(itemName(item), 16)} ${padR(String(qty), 4)} ${padR(price, 9)}${LF}`);
-    const addons = (item as unknown as { order_item_addons?: unknown[] }).order_item_addons ?? item.addons ?? [];
-    for (const addon of addons as unknown[]) {
-      const aName = addonName(addon);
-      const aPriceMinor = (addon as { price_minor?: number; price?: number }).price_minor ?? (addon as { price?: number }).price ?? 0;
-      const addonPrice = formatMoney(aPriceMinor, order);
-      pushT(`    + ${padR(aName, 12)}      ${padR(addonPrice, 9)}${LF}`);
+    const price = escposText(formatMoney((item.unit_price ?? 0) * qty, order));
+    const nameLines = wrapText(escposText(itemName(item)), 17);
+    const first = nameLines[0] ?? "(deleted item)";
+    const rest = nameLines.slice(1, 2);
+    pushT(`${padR(first, 17)} ${padL(qty, 3)} ${padL(price, 10)}${LF}`);
+    for (const cont of rest) pushT(`${padR(cont, 17)}${LF}`);
+    const vName = variantName(item);
+    if (vName) {
+      for (const vl of wrapText(escposText(`Size: ${vName}`), 30)) pushT(`  ${vl}${LF}`);
+    }
+    const addons = item.order_item_addons ?? item.addons ?? [];
+    for (const addon of addons) {
+      const aPriceMinor = addon.price_minor ?? addon.price ?? 0;
+      const addonPrice = escposText(formatMoney(aPriceMinor, order));
+      const aLines = wrapText(escposText(addonName(addon)), 17);
+      if (!aLines.length) continue;
+      pushT(`  + ${padR(aLines[0], 17)} ${padL(addonPrice, 10)}${LF}`);
+      for (const aCont of aLines.slice(1, 2)) pushT(`      ${padR(aCont, 17)}${LF}`);
     }
   }
   pushT(singleLineEscpos());
   push(LF);
-  // Subtotal section — mirrors subtotal_section_escpos/2
-  pushT(`${padR("Subtotal:", 20)} ${formatMoney(order.subtotal_minor, order)}${LF}`);
+  // Subtotal section — template §3: label 20 + amount 11 (right)
+  pushT(`${padR("Subtotal:", 20)} ${padL(escposText(formatMoney(order.subtotal_minor, order)), 11)}${LF}`);
   if (order.delivery_fee_minor && order.delivery_fee_minor > 0) {
-    pushT(`${padR("Delivery Fee:", 20)} ${formatMoney(order.delivery_fee_minor, order)}${LF}`);
+    pushT(`${padR("Delivery Fee:", 20)} ${padL(escposText(formatMoney(order.delivery_fee_minor, order)), 11)}${LF}`);
   }
   for (const tax of taxLines as SellerOrder["tax_lines"]) {
     const rateStr = tax.rate_basis_points ? `(${Math.floor(tax.rate_basis_points / 100)}%)` : "";
     const label = `${tax.name || ""} ${rateStr}`.trim().slice(0, 19);
-    pushT(`${padR(label, 20)} ${formatMoney((tax as { tax_amount_minor?: number }).tax_amount_minor as number, order)}${LF}`);
+    pushT(`${padR(label, 20)} ${padL(escposText(formatMoney((tax as { tax_amount_minor?: number }).tax_amount_minor as number, order)), 11)}${LF}`);
   }
   if (order.discount_minor && order.discount_minor > 0) {
-    pushT(`${padR("Discount:", 20)} -${formatMoney(order.discount_minor, order)}${LF}`);
+    pushT(`${padR("Discount:", 20)} ${padL("-" + escposText(formatMoney(order.discount_minor, order)), 11)}${LF}`);
   }
+  push(LF);
   push(ESC_BOLD_ON);
-  pushT(`${padR("TOTAL:", 20)} ${formatMoney(order.total_minor, order)}${LF}`);
+  pushT(`${padR("TOTAL:", 20)} ${padL(escposText(formatMoney(order.total_minor, order)), 11)}${LF}`);
   push(ESC_BOLD_OFF);
   push(LF);
   push(ESC_ALIGN_CENTER);
@@ -354,13 +408,17 @@ export function generateHtml(order: SellerOrder, logoDataUri?: string | null): s
     // unit_price is already minor? backend format_money expects minor
     const price = formatMoney((item.unit_price ?? 0) * qty, order);
     const main = `<tr><td class="item-name">${escHtml(itemName(item))}</td><td class="item-qty">${qty}</td><td class="item-price">${price}</td></tr>`;
-    const addons = ((item as unknown as { order_item_addons?: unknown[] }).order_item_addons ?? item.addons ?? []) as unknown[];
+    const vName = variantName(item);
+    const variantRow = vName
+      ? `<tr class="variant-row"><td class="item-name" colspan="2">Size: ${escHtml(vName)}</td><td class="item-price"></td></tr>`
+      : "";
+    const addons = item.order_item_addons ?? item.addons ?? [];
     const addonRows = addons.map((addon) => {
       const aName = escHtml(addonName(addon));
-      const aPriceMinor = (addon as { price_minor?: number; price?: number }).price_minor ?? (addon as { price?: number }).price ?? 0;
+      const aPriceMinor = addon.price_minor ?? addon.price ?? 0;
       return `<tr class="addon-row"><td class="item-name">+ ${aName}</td><td class="item-qty"></td><td class="addon-price">${formatMoney(aPriceMinor, order)}</td></tr>`;
     }).join("\n");
-    return [main, addonRows].filter(Boolean).join("\n");
+    return [main, variantRow, addonRows].filter(Boolean).join("\n");
   }).join("\n");
 
   const taxRowsHtml = (taxLines as SellerOrder["tax_lines"]).map((tax) => {
@@ -376,22 +434,27 @@ export function generateHtml(order: SellerOrder, logoDataUri?: string | null): s
   body{font-family:monospace;max-width:320px;margin:0 auto;padding:16px;background:#fff;color:#111;}
   .header{text-align:center;border-top:2px solid #333;border-bottom:2px solid #333;padding:8px 0;margin-bottom:12px;}
   .header .logo{max-width:180px;max-height:60px;margin:4px auto;display:block;object-fit:contain;}
-  .header h2{margin:4px 0 0;font-size:14px;}
+  .header h2{margin:4px 0 0;}
+  .header h2.name-2x{font-size:28px;font-weight:bold;}
+  .header h2.name-1x-bold{font-size:16px;font-weight:bold;}
+  .header h2.name-1x{font-size:14px;}
   .header .address{font-size:11px;color:#555;margin:2px 0;}
   .callout{border:3px double #333;text-align:center;padding:10px;margin:10px 0;}
   .callout .number{font-size:36px;font-weight:bold;letter-spacing:4px;margin:0;}
   .callout .label{font-size:10px;color:#555;margin:0;}
   .order-info{font-size:12px;margin:8px 0;}
-  table{width:100%;font-size:12px;border-collapse:collapse;}
-  td{padding:2px 0;vertical-align:top;}
-  .item-name{width:50%;}
-  .item-qty{width:15%;text-align:center;}
-  .item-price{width:35%;text-align:right;}
+  table{width:100%;font-size:12px;border-collapse:collapse;table-layout:fixed;}
+  td{padding:2px 0;vertical-align:top;overflow-wrap:anywhere;}
+  .item-name{width:17ch;}
+  .item-qty{width:3ch;text-align:right;}
+  .item-price{width:10ch;text-align:right;}
   .addon-row td{font-size:11px;color:#666;padding-left:12px;}
   .addon-row td.addon-price{text-align:right;}
+  .variant-row td{font-size:11px;color:#444;padding-left:8px;}
   .totals{margin-top:8px;}
   .totals td.label{text-align:left;width:70%;}
   .totals td.amount{text-align:right;width:30%;}
+  .total-row td{padding-top:12px;}
   .total-row{font-weight:bold;font-size:15px;border-top:2px solid #333;border-bottom:2px solid #333;padding:4px 0;}
   .footer{text-align:center;margin-top:16px;padding-top:8px;font-size:12px;color:#555;}
   @media print{body{max-width:80mm;padding:0;}}
@@ -399,7 +462,7 @@ export function generateHtml(order: SellerOrder, logoDataUri?: string | null): s
 <body>
 <div class="header">
   ${hasLogo ? `<img class="logo" src="${escHtml(logoSrc)}" alt="${businessName}" />` : ""}
-  <h2>${businessName}</h2>
+  <h2 class="${nameSizeClass(business?.name)}">${businessName}</h2>
   <div class="address">${escHtml(addr || "")}</div>
   ${bPhone ? `<div class="address">Tel: ${escHtml(bPhone)}</div>` : ""}
 </div>

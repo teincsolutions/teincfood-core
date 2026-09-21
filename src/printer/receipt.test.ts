@@ -72,3 +72,104 @@ describe("generateEscpos", () => {
     expect(out).toContain("Callout: 5");
   });
 });
+
+describe("golden 80mm receipt (docs/receipt-template.md)", () => {
+  const golden = (): SellerOrder =>
+    ({
+      id: "golden-1",
+      order_number: "07-014-042",
+      callout_number: 42,
+      currency_code: "GHS",
+      subtotal_minor: 17900,
+      delivery_fee_minor: 0,
+      discount_minor: 1000,
+      total_minor: 17437,
+      inserted_at: "2026-09-19T10:00:00Z",
+      order_type: "takeout",
+      pos_payment_method: "cash",
+      customer_name: "Kwame Mensah",
+      business: {
+        name: "Mama Efya's Kitchen & Grill Spot Accra",
+        location: { address: "Osu Badu Street" },
+        phone: "0244123456",
+      },
+      items: [
+        {
+          quantity: 2,
+          unit_price: 5500,
+          menu_item: { name: "Jollof Rice" },
+          variant: { name: "Large" },
+          order_item_addons: [
+            { price_minor: 2500, addon: { name: "Extra Chicken" } },
+            { price_minor: 1200, addon: { name: "Salad" } },
+          ],
+        },
+        {
+          quantity: 1,
+          unit_price: 3200,
+          menu_item: { name: "Waakye Special Morning Meal" },
+          variant: null,
+          order_item_addons: [],
+        },
+      ],
+      tax_lines: [],
+      order_tax_lines: [{ name: "VAT", rate_basis_points: 300, tax_amount_minor: 537 }],
+    }) as unknown as SellerOrder;
+
+  function printableLines(out: string, orderNumber: string): string[] {
+    const withoutBarcode = out.split(
+      String.fromCharCode(0x1d, 0x6b, 0x49, orderNumber.length) + orderNumber,
+    ).join("");
+    // Normalize the Date line: backend renders UTC, JS renders local TZ.
+    const normalized = withoutBarcode.replace(
+      /^Date: .*$/m,
+      "Date: 19 Sep 2026 10:00",
+    );
+    const stripped = normalized.replace(
+      /\x1B(?:@|[aEd].)|\x1D(?:[!Vhw].)/g,
+      "",
+    );
+    const lines = stripped.split("\n");
+    while (lines.length && lines[lines.length - 1] === "") lines.pop();
+    return lines;
+  }
+
+  it("matches the backend byte-for-byte in printable lines", () => {
+    const lines = printableLines(generateEscpos(golden()), "07-014-042");
+    expect(lines).toEqual([
+      "Mama Efya's Kitchen & Grill Spot",
+      "Accra",
+      "Osu Badu Street",
+      "Tel: 0244123456",
+      "================================",
+      "Order: 07-014-042",
+      "Callout: 42",
+      "",
+      "Date: 19 Sep 2026 10:00",
+      "Type: Takeout",
+      "Customer: Kwame Mensah",
+      "",
+      "",
+      "Item              Qty      Price",
+      "--------------------------------",
+      "Jollof Rice         2  GHc110.00",
+      "  Size: Large",
+      "  + Extra Chicken       GHc25.00",
+      "  + Salad               GHc12.00",
+      "Waakye Special      1   GHc32.00",
+      "Morning Meal     ",
+      "--------------------------------",
+      "Subtotal:              GHc179.00",
+      "VAT (3%)                 GHc5.37",
+      "Discount:              -GHc10.00",
+      "",
+      "TOTAL:                 GHc174.37",
+      "",
+      "Payment: Cash",
+      "================================",
+      "Thank you for your order!",
+      "Come back soon!",
+    ]);
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(32);
+  });
+});

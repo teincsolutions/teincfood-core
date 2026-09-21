@@ -32,6 +32,10 @@ export interface OrderMenuItem {
 export interface OrderItemAddon {
   id: string;
   price: number;
+  /** Minor-unit price (backend order_item_addons carry price_minor). */
+  price_minor?: number;
+  name?: string;
+  addon?: { name?: string } | null;
 }
 
 // ─── Order Item ───
@@ -43,6 +47,10 @@ export interface OrderItem {
   unit_price: number;
   subtotal: number;
   addons?: OrderItemAddon[];
+  /** Backend order_items preload :variant (absolute size, has name). */
+  variant?: { id?: string; name?: string } | null;
+  /** Backend shape for addon lines. */
+  order_item_addons?: OrderItemAddon[];
 }
 
 // ─── Business Summary ───
