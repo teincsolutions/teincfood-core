@@ -37,8 +37,9 @@ import type { SyncEngine } from "./engine";
 import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
 import { canBusinessSync } from "./sync-guard";
 import { backoffDelayMs } from "./backoff";
+import { reportSyncFailure } from "../adapters/sync-failure";
 
-const MAX_RETRIES = 5;
+const MAX_ATTEMPTS = 8;
 
 /**
  * Stop a replay pass after this many consecutive transport-level failures
@@ -49,15 +50,8 @@ const MAX_RETRIES = 5;
 const TRANSPORT_FAILURE_BREAKER = 3;
 
 /**
- * 4xx that deserve another chance: transient races and rate limits, never
- * permanent verdicts. Anything else 4xx (400 validation, 401 session,
- * 402 plan, 403 forbidden) fails fast with a toast. 409 ORDER_NUMBER_TAKEN
- * has its own regen path below and is not capped (every attempt mints a
- * new order number, so it is never a blind retry).
+ * In-memory next-eligible time per command (shared 2s→5min curve).
  */
-const RETRYABLE_4XX: ReadonlySet<number> = new Set([404, 408, 409, 422, 429]);
-
-/** In-memory next-eligible time per command (shared 2s→5min curve). */
 const retryNotBefore = new Map<string, number>();
 
 const QUEUED_STATUS_BY_COMMAND: Record<string, string> = {
@@ -303,7 +297,7 @@ class CommandQueueService {
       payload: command.payload,
     };
 
-    if (command.retry_count >= MAX_RETRIES) {
+    if (command.retry_count >= MAX_ATTEMPTS) {
       await updateCommandStatus(
         db,
         command.command_id,
@@ -382,6 +376,13 @@ class CommandQueueService {
           } catch {}
         }
         await updateCommandStatus(db, command.command_id, "failed", `order_number_taken:${message}`);
+        this.reportFailure(command, {
+          status: 409,
+          code: "ORDER_NUMBER_TAKEN",
+          message,
+          attempts: command.retry_count + 1,
+          terminal: true,
+        });
         throw error;
       }
       const status = typeof apiErr?.status === "number" ? apiErr.status : undefined;
@@ -398,19 +399,28 @@ class CommandQueueService {
           if (await this.absorbIfApplied(command)) return;
         } catch {}
       }
-      // Retryable 4xx (FIFO races, rate limits): back off on the shared
-      // 2s→5min curve, then fail loudly after MAX_RETRIES. Throw a
-      // transport-neutral deferral so replay STOPS here (FIFO ordering) —
-      // rethrowing the 4xx itself would make the loop `continue` past it.
-      if (status !== undefined && RETRYABLE_4XX.has(status)) {
+      // Every other failure is retryable on the shared 2s→5min backoff.
+      //
+      // 4xx (validation/permission/plan races) is bounded: a device stuck in
+      // a bad local state keeps retrying, then dead-letters so an operator is
+      // alerted and can visit the device. 5xx/network is an outage, not a
+      // device problem — it keeps retrying indefinitely so a long outage can
+      // never lose good orders. Every attempt is reported to observability.
+      const is4xxResponse = status !== undefined && status >= 400 && status < 500;
+      if (is4xxResponse) {
         const attempts = command.retry_count + 1;
-        if (attempts >= MAX_RETRIES) {
-          await this.failPermanently(db, command, message, `retryable 4xx exhausted after ${attempts} attempts`);
+        if (attempts >= MAX_ATTEMPTS) {
+          await this.failPermanently(db, command, message, `4xx exhausted after ${attempts} attempts`, {
+            status,
+            code,
+            attempts,
+          });
           return;
         }
+        this.reportFailure(command, { status, code, message, attempts, terminal: false });
         retryNotBefore.set(command.command_id, Date.now() + backoffDelayMs(command.retry_count));
         await updateCommandStatus(db, command.command_id, "pending", `retry_4xx:${message}`, true);
-        syncLogger.warn("CommandQueueService", "Retryable 4xx — backing off", {
+        syncLogger.warn("CommandQueueService", "4xx — backing off", {
           command_id: command.command_id,
           command_type: command.command_type,
           status,
@@ -421,23 +431,32 @@ class CommandQueueService {
           `Retryable ${status} on ${command.command_type}, backing off`,
         );
       }
-      const isNonRetryable =
-        status !== undefined &&
-        status >= 400 &&
-        status < 500;
-      if (isNonRetryable) {
-        await this.failPermanently(db, command, message, "permanent 4xx");
-        // Do not throw — allow replay to continue to next command.
-        return;
-      }
-      // Network/timeout/5xx: NOT a rejection — keep the command retryable
-      // indefinitely (status back to pending, retry_count untouched) so a
-      // long outage never dead-letters the outbox via MAX_RETRIES. Replay
-      // stops here to preserve ordering; the next trigger retries.
+      // 5xx / network / timeout: keep the command retryable indefinitely
+      // (status back to pending, retry_count untouched) so a long outage never
+      // dead-letters the outbox. Replay defers this entity; the next trigger
+      // retries.
+      this.reportFailure(command, { status, code, message, attempts: command.retry_count, terminal: false });
       await updateCommandStatus(db, command.command_id, "pending", `network:${message}`);
       syncLogger.command(parsedCommand, "queued", { error: message, deferred: true });
       throw error;
     }
+  }
+
+  /** Forward a failed attempt to the host's observability reporter. */
+  private reportFailure(
+    command: PersistedCommand,
+    extra: { status?: number; code?: string; message?: string; attempts?: number; terminal: boolean },
+  ): void {
+    reportSyncFailure({
+      phase: "outbox",
+      business_id: command.business_id,
+      user_id: command.user_id,
+      device_id: command.device_id,
+      command_type: command.command_type,
+      command_id: command.command_id,
+      entity_id: command.entity_id,
+      ...extra,
+    });
   }
 
   /**
@@ -450,8 +469,10 @@ class CommandQueueService {
     command: PersistedCommand,
     message: string,
     reason: string,
+    extra?: { status?: number; code?: string; attempts?: number },
   ): Promise<void> {
     await updateCommandStatus(db, command.command_id, "failed", `permanent:${message}`);
+    this.reportFailure(command, { ...extra, message, terminal: true });
     syncLogger.warn("CommandQueueService", `Queued command failed (${reason})`, {
       command_id: command.command_id,
       command_type: command.command_type,

@@ -20,13 +20,15 @@ import { getTransitionPath, DELIVERY_COMMANDS } from "./transition-endpoints";
 import { getQueuedStatus } from "../utils/order-transitions";
 import { extractApiErrorCode } from "../utils/error";
 import { canBusinessSync, isAuthenticated } from "./sync-guard";
+import { reportSyncFailure } from "../adapters/sync-failure";
+import { getAppInstanceId } from "../adapters/devices";
 
 const inflight = new Map<string, Promise<void>>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const backoffTracker = new BackoffTracker();
 
-/** Blind 4xx retries stop here, loudly. 5xx/network retry indefinitely. */
-const MAX_SYNC_JOB_ATTEMPTS = 5;
+/** Bounded 4xx retries stop here, loudly. 5xx/network retry indefinitely. */
+const MAX_SYNC_JOB_ATTEMPTS = 8;
 
 function isOnline(): boolean {
   const s = getConnectivityState();
@@ -64,6 +66,39 @@ function clearRetry(businessId: string): void {
   const t = retryTimers.get(businessId);
   if (t) { clearTimeout(t); retryTimers.delete(businessId); }
   backoffTracker.reset(businessId);
+}
+
+/** Best-effort device id for failure reports (never throws). */
+function safeDeviceId(): string | undefined {
+  try {
+    return getAppInstanceId();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Forward a failed job attempt to the host's observability reporter. */
+function reportJobFailure(
+  businessId: string,
+  row: { id: string; command_type: string; entity_id: string; payload: string; attempts?: number },
+  extra: { status?: number; code?: string; message?: string; attempts?: number; terminal: boolean },
+): void {
+  let userId: string | undefined;
+  try {
+    const p = JSON.parse(row.payload) as Record<string, unknown>;
+    const candidate = p.user_id ?? (p.user as { id?: string } | undefined)?.id;
+    if (typeof candidate === "string") userId = candidate;
+  } catch {}
+  reportSyncFailure({
+    phase: "sync_jobs",
+    business_id: businessId,
+    user_id: userId,
+    device_id: safeDeviceId(),
+    command_type: row.command_type,
+    command_id: row.id,
+    entity_id: row.entity_id,
+    ...extra,
+  });
 }
 
 async function tryPhxPush(businessId: string, payload: Record<string, unknown>): Promise<boolean> {
@@ -354,33 +389,14 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
       syncLogger.debug("SyncJobs", "401 deferred until login", { businessId });
       return;
     }
-    // Permanent 4xx: mark failed to stop the retry loop.
-    // Retryable (bounded, 5 attempts): 401 (refresh owns it below), 408,
-    // 409, 422, 429, any 404 (FIFO race: earlier command still in flight),
-    // BUSINESS_CLOSED (pending-by-design). Everything else 4xx (400
-    // validation, 402 plan, 403 forbidden) fails fast. Backend codes are
+    // Any 4xx is retryable with backoff (bounded); 5xx/network keeps retrying
+    // indefinitely. Every failed attempt is reported to observability so an
+    // operator can see the device/app/user and visit it. BUSINESS_CLOSED is a
+    // legitimate closed state (keep pending, re-pull hours). Backend codes are
     // exact (no message matching).
     const isBusinessClosed = rest.code === "BUSINESS_CLOSED" || rest.code === "HOURS_NOT_SYNCED";
-    const is4xx = rest.status && rest.status >= 400 && rest.status < 500;
-    const isRetryable4xx = rest.status === 401 || rest.status === 408 || rest.status === 409
-      || rest.status === 422 || rest.status === 429 || rest.status === 404
-      || isBusinessClosed;
-    if (is4xx && !isRetryable4xx) {
-      syncLogger.warn("SyncJobs", "Permanent 4xx — marking job failed to stop retry loop", { businessId, entityId, status: rest.status, code: rest.code, message: rest.message });
-      try {
-        await db.runAsync(`UPDATE sync_jobs SET status='failed', last_error=?, updated_at=? WHERE id=?;`, `${rest.status} ${rest.code ?? ""} ${rest.message ?? ""}`.trim(), new Date().toISOString(), row.id);
-      } catch {}
-      clearRetry(businessId);
-      try {
-        const { notifyError } = await import("../adapters/notify");
-        notifyError(`Server rejected ${row.command_type}: ${rest.message ?? rest.code ?? rest.status}`);
-      } catch {}
-      // Retain optimistic row — pull will converge for transitions, create stays for manual retry.
-      if (row.command_type !== "order:create") {
-        try { void pullRemoteOrders(businessId).catch(() => {}); } catch {}
-      }
-      return;
-    }
+    const is4xx = !!rest.status && rest.status >= 400 && rest.status < 500;
+
     // Already-applied absorb for transitions: the server already moved the
     // order (duplicate tap, earlier drain won the race) — complete the job
     // instead of failing it. Server truth only (hlc-guarded pull), never the
@@ -397,22 +413,10 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
         }
       } catch {}
     }
-    // Bounded retries: blind 4xx retries stop after 5 attempts with a loud
-    // toast (attempts only increments on the keep-pending path below).
-    if (is4xx && isRetryable4xx && (row.attempts ?? 0) + 1 >= 5) {
-      syncLogger.warn("SyncJobs", "Retryable 4xx exhausted — marking job failed", { businessId, entityId, status: rest.status, code: rest.code, attempts: row.attempts });
-      try {
-        await db.runAsync(`UPDATE sync_jobs SET status='failed', last_error=?, updated_at=? WHERE id=?;`, `${rest.status} ${rest.code ?? ""} ${rest.message ?? ""} (after ${MAX_SYNC_JOB_ATTEMPTS} attempts)`.trim(), new Date().toISOString(), row.id);
-      } catch {}
-      clearRetry(businessId);
-      try {
-        const { notifyError } = await import("../adapters/notify");
-        notifyError(`Server rejected ${row.command_type}: ${rest.message ?? rest.code ?? rest.status} (after retries)`);
-      } catch {}
-      return;
-    }
+
     if (isBusinessClosed) {
       syncLogger.warn("SyncJobs", "Business closed — keeping pending for retry after hours sync", { businessId, entityId, code: rest.code });
+      reportJobFailure(businessId, row, { status: rest.status, code: rest.code, message: rest.message, attempts: row.attempts, terminal: false });
       try {
         await db.runAsync(`UPDATE sync_jobs SET last_error=?, updated_at=? WHERE id=?;`, `${rest.status} ${rest.code ?? ""} ${rest.message ?? ""}`.trim(), new Date().toISOString(), row.id);
       } catch {}
@@ -421,8 +425,26 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
       scheduleRetry(businessId);
       return;
     }
-    // Keep pending for retry (5xx / network) — auto retry with backoff
+
+    const attempts = (row.attempts ?? 0) + 1;
+    // Bounded 4xx: after MAX_SYNC_JOB_ATTEMPTS, dead-letter (retained) with a
+    // loud toast + observability report so an operator can visit the device.
+    if (is4xx && attempts >= MAX_SYNC_JOB_ATTEMPTS) {
+      syncLogger.warn("SyncJobs", "4xx exhausted — marking job failed", { businessId, entityId, status: rest.status, code: rest.code, attempts: row.attempts });
+      try {
+        await db.runAsync(`UPDATE sync_jobs SET status='failed', last_error=?, updated_at=? WHERE id=?;`, `${rest.status} ${rest.code ?? ""} ${rest.message ?? ""} (after ${MAX_SYNC_JOB_ATTEMPTS} attempts)`.trim(), new Date().toISOString(), row.id);
+      } catch {}
+      reportJobFailure(businessId, row, { status: rest.status, code: rest.code, message: rest.message, attempts, terminal: true });
+      clearRetry(businessId);
+      try {
+        const { notifyError } = await import("../adapters/notify");
+        notifyError(`Server rejected ${row.command_type}: ${rest.message ?? rest.code ?? rest.status} (after retries)`);
+      } catch {}
+      return;
+    }
+    // 4xx (bounded) or 5xx/network (indefinite): keep pending and back off.
     syncLogger.debug("SyncJobs", "drainOne kept pending for retry", { businessId, entityId, status: rest.status, code: rest.code });
+    reportJobFailure(businessId, row, { status: rest.status, code: rest.code, message: rest.message, attempts, terminal: false });
     try {
       await db.runAsync(`UPDATE sync_jobs SET attempts = attempts + 1, last_error = ?, updated_at = ? WHERE id = ?;`, `${rest.status ?? "network"} ${rest.code ?? ""} ${rest.message ?? ""}`.trim(), new Date().toISOString(), row.id);
     } catch {}

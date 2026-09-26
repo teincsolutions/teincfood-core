@@ -126,10 +126,10 @@ describe("drainOne bounded 4xx retry + absorb", () => {
     expect(row?.status).toBe("completed");
   });
 
-  it("5th attempt marks failed", async () => {
+  it("8th attempt marks failed (4xx cap)", async () => {
     await seedJob();
     const db = await openSyncDatabase();
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 7; i++) {
       await db.runAsync(`UPDATE sync_jobs SET attempts = attempts + 1, last_error = ?, updated_at = ? WHERE id = ?;`, "422", new Date().toISOString(), JOB_ID);
     }
     await drainOne(BID, ORDER_ID);

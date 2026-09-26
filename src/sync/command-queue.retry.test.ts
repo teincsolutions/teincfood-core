@@ -152,12 +152,12 @@ describe("command-queue bounded 4xx retry + absorb", () => {
     expect(executeMock).toHaveBeenCalledTimes(1);
   });
 
-  it("5th retryable attempt fails loudly with a toast", async () => {
+  it("8th attempt (4xx cap) fails loudly with a toast", async () => {
     await seedOrder("accepted");
     const row = await seedCommand(markReadyCommand());
     const db = getSyncDatabase();
     // retry_count only increments through the driver's matched UPDATE shape.
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 7; i++) {
       await db.runAsync(
         `UPDATE commands SET status = ?, error = ?, retry_count = retry_count + 1, updated_at = ? WHERE command_id = ?;`,
         "pending",
@@ -167,7 +167,7 @@ describe("command-queue bounded 4xx retry + absorb", () => {
       );
     }
     const seeded = (await getPendingCommands(db, 100))[0];
-    expect(seeded.retry_count).toBe(4);
+    expect(seeded.retry_count).toBe(7);
     executeMock.mockRejectedValue(api422());
     await commandQueueService.processCommand(seeded);
     const after = (await getPendingCommands(db, 100, true)).find((c) => c.command_id === row.command_id);
@@ -186,12 +186,36 @@ describe("command-queue bounded 4xx retry + absorb", () => {
     expect(notifyErrorMock).not.toHaveBeenCalled();
   });
 
-  it("permanent 400 fails immediately with a toast", async () => {
+  it("400 (validation) now retries with backoff instead of failing fast", async () => {
     await seedOrder("accepted");
     const row = await seedCommand(markReadyCommand());
     executeMock.mockRejectedValue(api400());
-    await commandQueueService.processCommand(row);
+    await expect(commandQueueService.processCommand(row)).rejects.toMatchObject({
+      code: TRANSITION_ERROR_CODES.REPLAY_DEFERRED,
+    });
     const db = await openSyncDatabase();
+    const after = (await getPendingCommands(db, 100)).find((c) => c.command_id === row.command_id);
+    expect(after?.status).toBe("pending");
+    expect(after?.retry_count).toBe(1);
+    expect(notifyErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("400 dead-letters only after the 4xx cap", async () => {
+    await seedOrder("accepted");
+    const row = await seedCommand(markReadyCommand());
+    const db = getSyncDatabase();
+    for (let i = 0; i < 7; i++) {
+      await db.runAsync(
+        `UPDATE commands SET status = ?, error = ?, retry_count = retry_count + 1, updated_at = ? WHERE command_id = ?;`,
+        "pending",
+        null,
+        new Date().toISOString(),
+        row.command_id,
+      );
+    }
+    const seeded = (await getPendingCommands(db, 100))[0];
+    executeMock.mockRejectedValue(api400());
+    await commandQueueService.processCommand(seeded);
     const after = (await getPendingCommands(db, 100, true)).find((c) => c.command_id === row.command_id);
     expect(after?.status).toBe("failed");
     expect(notifyErrorMock).toHaveBeenCalledTimes(1);

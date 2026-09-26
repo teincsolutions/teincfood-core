@@ -8,6 +8,7 @@ import { openSyncDatabase, closeSyncDatabase, getSyncDatabase } from "../db/conn
 import { insertCommand, getPendingCommands } from "../db/operations";
 import { commandQueueService } from "./command-queue.service";
 import { TransitionError, TRANSITION_ERROR_CODES } from "./transition-errors";
+import { setSyncFailureReporter, type SyncFailureReport } from "../adapters/sync-failure";
 import type { Command } from "./types";
 
 const BID = "biz-hol-test";
@@ -174,6 +175,29 @@ describe("command-queue replay head-of-line isolation", () => {
     expect(await getPendingCommands(db, 100)).toHaveLength(0);
     expect(executeMock).toHaveBeenCalledTimes(1);
     expect((executeMock.mock.calls[0][0] as Command).entity_id).toBe(uuid(2));
+  });
+
+  it("reports every failed attempt with device/app/user context", async () => {
+    const reports: SyncFailureReport[] = [];
+    setSyncFailureReporter((r) => reports.push(r));
+    try {
+      const a = uuid(1);
+      const row = await seed(createCommand(a));
+      executeMock.mockRejectedValue(networkError());
+      await expect(commandQueueService.processCommand(row)).rejects.toThrow();
+
+      expect(reports).toHaveLength(1);
+      expect(reports[0]).toMatchObject({
+        phase: "outbox",
+        business_id: BID,
+        user_id: "u1",
+        device_id: "d1",
+        command_type: "order:create",
+        terminal: false,
+      });
+    } finally {
+      setSyncFailureReporter(null);
+    }
   });
 
   it("recovers in-flight commands to pending on database open", async () => {

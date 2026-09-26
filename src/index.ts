@@ -40,6 +40,13 @@ export * from "./utils/customer-display";
 export * from "./utils/order-filter";
 export { useReferenceData } from "./reference/hooks";
 export { setNotifyHandlers } from "./adapters/notify";
+export {
+  setSyncFailureReporter,
+  reportSyncFailure,
+  type SyncFailureReport,
+  type SyncFailureReporter,
+  type SyncFailurePhase,
+} from "./adapters/sync-failure";
 export { walletService, riderService, fleetService, deliveryService, dashboardService, analyticsService, placesService } from "./adapters/services";
 export { buildMenuItemEnvelope, buildMenuCategoryEnvelope } from "./reference/menu-record";
 export { validateMenuItemInput, validateMenuCategoryInput, validateOrderCreateInput, validateInviteInput } from "./validation/offline";
