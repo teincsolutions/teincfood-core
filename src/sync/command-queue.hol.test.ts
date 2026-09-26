@@ -9,6 +9,7 @@ import { insertCommand, getPendingCommands } from "../db/operations";
 import { commandQueueService } from "./command-queue.service";
 import { TransitionError, TRANSITION_ERROR_CODES } from "./transition-errors";
 import { setSyncFailureReporter, type SyncFailureReport } from "../adapters/sync-failure";
+import { isRateLimited, resetRateLimitForTests } from "./rate-limit";
 import type { Command } from "./types";
 
 const BID = "biz-hol-test";
@@ -56,6 +57,16 @@ function noTransportError(): unknown {
   );
 }
 
+function rateLimitedError(): unknown {
+  const err = new Error("Too many requests. Please try again later.") as unknown as Record<string, unknown>;
+  err.status = 429;
+  err.response = {
+    status: 429,
+    data: { error: { code: "RATE_LIMIT_EXCEEDED", message: "Too many requests", retry_after_seconds: 60 } },
+  };
+  return err;
+}
+
 function eventsFor(command: Command) {
   return [
     {
@@ -75,6 +86,7 @@ describe("command-queue replay head-of-line isolation", () => {
   let executeMock: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
+    resetRateLimitForTests();
     setSqliteDriver(createMemoryDriver() as never);
     const kvStore = new Map<string, string>();
     setKVDriver({
@@ -197,6 +209,29 @@ describe("command-queue replay head-of-line isolation", () => {
       });
     } finally {
       setSyncFailureReporter(null);
+    }
+  });
+
+  it("429 opens a cooldown and defers without consuming an attempt", async () => {
+    const reports: SyncFailureReport[] = [];
+    setSyncFailureReporter((r) => reports.push(r));
+    try {
+      const a = uuid(1);
+      const row = await seed(createCommand(a));
+      executeMock.mockRejectedValue(rateLimitedError());
+      await expect(commandQueueService.processCommand(row)).rejects.toMatchObject({
+        code: TRANSITION_ERROR_CODES.REPLAY_DEFERRED,
+      });
+      const db = await openSyncDatabase();
+      const after = (await getPendingCommands(db, 100)).find((c) => c.command_id === row.command_id);
+      expect(after?.status).toBe("pending");
+      expect(after?.retry_count).toBe(0);
+      expect(reports).toHaveLength(1);
+      expect(reports[0]).toMatchObject({ status: 429, terminal: false });
+      expect(isRateLimited()).toBe(true);
+    } finally {
+      setSyncFailureReporter(null);
+      resetRateLimitForTests();
     }
   });
 

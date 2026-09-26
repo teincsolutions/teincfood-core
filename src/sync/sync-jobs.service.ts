@@ -22,6 +22,14 @@ import { extractApiErrorCode } from "../utils/error";
 import { canBusinessSync, isAuthenticated } from "./sync-guard";
 import { reportSyncFailure } from "../adapters/sync-failure";
 import { getAppInstanceId } from "../adapters/devices";
+import {
+  paceSync,
+  isRateLimited,
+  getRateLimitWaitMs,
+  extractRetryAfterMs,
+  noteRateLimited,
+  shouldReportRateLimit,
+} from "./rate-limit";
 
 const inflight = new Map<string, Promise<void>>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -44,13 +52,14 @@ function isOnlineForPhx(): boolean {
   return s.isOnline && s.isCloudReachable === "reachable";
 }
 
-function scheduleRetry(businessId: string): void {
+function scheduleRetry(businessId: string, delayOverrideMs?: number): void {
   if (!canBusinessSync(businessId)) return;
   if (retryTimers.has(businessId)) return;
   // Shared backoff curve: 2s doubling to a 5min cap with jitter. Attempts
   // reset on any success (clearRetry) so long outages go quiet instead of
-  // hammering a down backend every 30s.
-  const delay = backoffTracker.next(businessId);
+  // hammering a down backend every 30s. A 429 cooldown overrides with the
+  // server-provided Retry-After window.
+  const delay = delayOverrideMs ?? backoffTracker.next(businessId);
   recordAttempt("sync_drain", `retry-scheduled delay=${delay}`);
   syncLogger.debug("SyncJobs", "scheduleRetry backoff", { businessId, delay });
   const t = setTimeout(() => {
@@ -119,8 +128,10 @@ async function tryPhxPush(businessId: string, payload: Record<string, unknown>):
   } catch { return false; }
 }
 
-async function tryRest(businessId: string, payload: Record<string, unknown>, commandType: string): Promise<{ ok: boolean; status?: number; code?: string; message?: string }> {
+async function tryRest(businessId: string, payload: Record<string, unknown>, commandType: string): Promise<{ ok: boolean; status?: number; code?: string; message?: string; rateLimited?: boolean; retryAfterMs?: number }> {
   try {
+    // Pace background sync so a deep queue drains at ~3 req/sec, never a burst.
+    await paceSync();
     const http = getHttpClient();
     if (!http) return { ok: false };
     if (commandType === "reference:sync") {
@@ -214,6 +225,18 @@ async function tryRest(businessId: string, payload: Record<string, unknown>, com
     // Backend code via every envelope shape (core ApiError, axios, app ApiError).
     const bodyCode = extractApiErrorCode(e);
     const bodyMsg = (err.response as { data?: { error?: { message?: string } } } | undefined)?.data?.error?.message;
+    // 429: open the global cooldown and let the caller reschedule — never count
+    // this as a job attempt (the command is fine; the server is busy).
+    if (status === 429) {
+      const retryAfterMs = extractRetryAfterMs(e);
+      noteRateLimited(retryAfterMs);
+      syncLogger.warn("SyncJobs", "Rate limited (429) — pausing sync", {
+        businessId,
+        commandType,
+        retryAfterMs,
+      });
+      return { ok: false, status, code: bodyCode ?? "RATE_LIMIT_EXCEEDED", message: bodyMsg ?? err.message, rateLimited: true, retryAfterMs };
+    }
     return {
       ok: false,
       status,
@@ -277,6 +300,13 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
     syncLogger.debug("SyncJobs", "drainOne early-return gate", { businessId, entityId, onlineForRest, hasToken: isAuthenticated(), connectivity: state });
     return;
   }
+  // Global 429 cooldown: don't touch the network until the window clears.
+  if (isRateLimited()) {
+    const waitMs = getRateLimitWaitMs();
+    syncLogger.debug("SyncJobs", "drainOne deferred — rate limited", { businessId, entityId, waitMs });
+    scheduleRetry(businessId, waitMs);
+    return;
+  }
   const key = `${businessId}:${entityId}`;
   // Join an in-flight drain instead of skipping: concurrent drains (e.g. the
   // fire-and-forget drainOne after a write racing an awaited drainPending)
@@ -335,6 +365,22 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
           setTimeout(() => void drainOne(businessId, entityId), 50);
         }
       } catch {}
+      return;
+    }
+    // 429: global cooldown already opened by tryRest. Keep the job pending
+    // (no attempt consumed) and reschedule at the Retry-After window.
+    if (rest.rateLimited) {
+      if (shouldReportRateLimit()) {
+        reportJobFailure(businessId, row, {
+          status: 429,
+          code: rest.code ?? "RATE_LIMIT_EXCEEDED",
+          message: rest.message,
+          attempts: row.attempts,
+          terminal: false,
+        });
+      }
+      const waitMs = rest.retryAfterMs && rest.retryAfterMs > 0 ? rest.retryAfterMs : getRateLimitWaitMs();
+      scheduleRetry(businessId, waitMs);
       return;
     }
     // 3) Handle 409 RRR regen same UUID (POS create only, exact backend code)
@@ -463,8 +509,13 @@ export async function pullRemoteOrders(businessId: string): Promise<void> {
   }
   const onlineForRest = isOnlineForRest();
   syncLogger.debug("SyncJobs", "pullRemoteOrders entry", { businessId, onlineForRest, hasToken: isAuthenticated() });
-  if (!onlineForRest) {
+    if (!onlineForRest) {
     syncLogger.debug("SyncJobs", "pullRemoteOrders early-return gate", { businessId, onlineForRest, hasToken: isAuthenticated(), connectivity: getConnectivityState() });
+    return;
+  }
+  // Respect a global 429 cooldown for background pulls.
+  if (isRateLimited()) {
+    syncLogger.debug("SyncJobs", "pullRemoteOrders skipped — rate limited", { businessId });
     return;
   }
   try {
@@ -478,6 +529,7 @@ export async function pullRemoteOrders(businessId: string): Promise<void> {
     let totalPages = 1;
     do {
       syncLogger.debug("SyncJobs", "pullRemoteOrders GET start", { businessId, page });
+      await paceSync();
       const res = await http.get<{ data: unknown[]; pagination: { total_pages: number; total_entries?: number } }>(
         `/businesses/${businessId}/orders`,
         { params: { page, page_size: 20 } } as unknown as Record<string, unknown>,
@@ -506,7 +558,8 @@ export async function pullRemoteOrders(businessId: string): Promise<void> {
   // Also pull recent deliveries (single page recent) for single business
   try {
     const http = getHttpClient();
-    if (http) {
+    if (http && !isRateLimited()) {
+      await paceSync();
       const r2 = await http.get<{ data: unknown[] }>(`/businesses/${businessId}/deliveries`, { params: { page: 1, page_size: 20 } } as unknown as Record<string, unknown>);
       const d = (r2.data as unknown as { data?: unknown[] })?.data ?? [];
       syncLogger.debug("SyncJobs", "pullRemoteDeliveries result", { businessId, dataLen: (d as unknown[]).length });

@@ -15,6 +15,7 @@ import { menuService, businessService, rolesService } from "../adapters/services
 import { cacheImageBatch, pruneImageCache } from "../adapters/image-cache";
 import { getConnectivityState } from "../adapters/connectivity";
 import { canBusinessSync } from "../sync/sync-guard";
+import { paceSync, isRateLimited } from "../sync/rate-limit";
 import type { MenuItemListResponse, BusinessResponse } from "../types/api";
 import {
   getReferenceData,
@@ -113,6 +114,7 @@ class ReferenceSyncService {
       // endpoints, fall back to legacy full-fetch per key.
       let versions: { key: ReferenceDataKey; version: string }[] | null = null;
       try {
+        await paceSync();
         versions = await fetchReferenceVersions(options.businessId);
       } catch (error) {
         syncLogger.warn("ReferenceSync", "Version endpoint unavailable, using fallback", {
@@ -121,7 +123,14 @@ class ReferenceSyncService {
       }
 
       for (const key of keys) {
+        // Honour a global 429 cooldown: stop this pass; it resumes on the next
+        // trigger once the window clears.
+        if (isRateLimited()) {
+          result.skipped.push(key);
+          continue;
+        }
         try {
+          await paceSync();
           const synced = await this.syncKey(db, key, options, versions);
           if (synced) {
             result.synced.push(key);

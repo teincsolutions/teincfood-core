@@ -27,6 +27,7 @@ import { openSyncDatabase } from "../db/connection";
 import { canBusinessSync } from "./sync-guard";
 import { TRANSITION_ERROR_CODES, TransitionError } from "./transition-errors";
 import { assertEntitledForCommand } from "../reference/entitlement-guard";
+import { noteRateLimited, extractRetryAfterMs } from "./rate-limit";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -261,6 +262,12 @@ export class SyncEngine {
           ? (error as { status: number }).status
           : undefined;
         if (rejectionStatus !== undefined && rejectionStatus >= 400 && rejectionStatus < 500) {
+          // 429 is transient back-pressure, not a verdict: open the global
+          // cooldown so background sync pauses, then surface as usual (the
+          // outbox replay path classifies 429 separately and defers).
+          if (rejectionStatus === 429) {
+            noteRateLimited(extractRetryAfterMs(error));
+          }
           syncLogger.warn("SyncEngine", "Command rejected by server", {
             command_type: command.command_type,
             command_id: command.command_id,

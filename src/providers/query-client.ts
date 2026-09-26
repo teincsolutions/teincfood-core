@@ -33,6 +33,13 @@ export function createAppQueryClient(onMutationError: (message: string) => void)
           try {
             if (getConnectivityState().isCloudReachable === "unreachable") return false;
           } catch {}
+          // 429 is back-pressure, not a transient blip — retrying immediately
+          // deepens the storm. Background sync auto-resumes after the cooldown;
+          // queries refetch on reconnect/invalidation.
+          const status = (error as { status?: number })?.status;
+          const code = (error as { code?: string; response?: { data?: { error?: { code?: string } } } })?.code
+            ?? (error as { response?: { data?: { error?: { code?: string } } } })?.response?.data?.error?.code;
+          if (status === 429 || code === "RATE_LIMIT_EXCEEDED") return false;
           // Never retry explicit offline short-circuits (axios guard / adapters).
           const msg = error instanceof Error ? error.message : String(error ?? "");
           if (msg.startsWith("Offline") || (error as { code?: string })?.code === "OFFLINE") return false;

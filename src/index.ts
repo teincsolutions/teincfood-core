@@ -47,6 +47,17 @@ export {
   type SyncFailureReporter,
   type SyncFailurePhase,
 } from "./adapters/sync-failure";
+export {
+  noteRateLimited,
+  isRateLimited,
+  getRateLimitWaitMs,
+  extractRetryAfterMs,
+  shouldReportRateLimit,
+  paceSync,
+  waitForRateLimitClear,
+  SYNC_MIN_INTERVAL_MS,
+  resetRateLimitForTests,
+} from "./sync/rate-limit";
 export { walletService, riderService, fleetService, deliveryService, dashboardService, analyticsService, placesService } from "./adapters/services";
 export { buildMenuItemEnvelope, buildMenuCategoryEnvelope } from "./reference/menu-record";
 export { validateMenuItemInput, validateMenuCategoryInput, validateOrderCreateInput, validateInviteInput } from "./validation/offline";

@@ -38,6 +38,14 @@ import { getConnectivityState, subscribeConnectivity } from "../adapters/connect
 import { canBusinessSync } from "./sync-guard";
 import { backoffDelayMs } from "./backoff";
 import { reportSyncFailure } from "../adapters/sync-failure";
+import {
+  paceSync,
+  isRateLimited,
+  getRateLimitWaitMs,
+  extractRetryAfterMs,
+  noteRateLimited,
+  shouldReportRateLimit,
+} from "./rate-limit";
 
 const MAX_ATTEMPTS = 8;
 
@@ -321,6 +329,17 @@ class CommandQueueService {
       throw new Error("CommandQueueService: SyncEngine not initialized");
     }
 
+    // Global 429 cooldown: defer without consuming an attempt.
+    if (isRateLimited()) {
+      retryNotBefore.set(command.command_id, Date.now() + getRateLimitWaitMs());
+      throw new TransitionError(
+        TRANSITION_ERROR_CODES.REPLAY_DEFERRED,
+        "Rate limited, deferring queued command",
+      );
+    }
+    // Pace background replay so a deep queue drains at ~3 req/sec, not a burst.
+    await paceSync();
+
     await markCommandInFlight(db, command.command_id);
 
     try {
@@ -354,8 +373,34 @@ class CommandQueueService {
       }
       const apiErr = error as { status?: number; name?: string; code?: string; data?: unknown };
       const message = error instanceof Error ? error.message : String(error);
-      // 409 ORDER_NUMBER_TAKEN is retryable once with new RRR (exact backend code, any envelope)
       const code = extractApiErrorCode(error);
+      // 429: open the global cooldown, defer this entity, and DO NOT consume a
+      // retry attempt — the command is fine, the server is only busy.
+      if (apiErr?.status === 429) {
+        const retryAfterMs = extractRetryAfterMs(error);
+        noteRateLimited(retryAfterMs);
+        if (shouldReportRateLimit()) {
+          this.reportFailure(command, {
+            status: 429,
+            code: code ?? "RATE_LIMIT_EXCEEDED",
+            message,
+            attempts: command.retry_count,
+            terminal: false,
+          });
+        }
+        retryNotBefore.set(command.command_id, Date.now() + (retryAfterMs ?? getRateLimitWaitMs()));
+        await updateCommandStatus(db, command.command_id, "pending", `retry_429:${message}`);
+        syncLogger.warn("CommandQueueService", "Rate limited (429) — backing off", {
+          command_id: command.command_id,
+          command_type: command.command_type,
+          retry_after_ms: retryAfterMs,
+        });
+        throw new TransitionError(
+          TRANSITION_ERROR_CODES.REPLAY_DEFERRED,
+          `Rate limited on ${command.command_type}, backing off`,
+        );
+      }
+      // 409 ORDER_NUMBER_TAKEN is retryable once with new RRR (exact backend code, any envelope)
       if (apiErr?.status === 409 && code === "ORDER_NUMBER_TAKEN") {
         if (command.command_type === "order:create") {
           try {
