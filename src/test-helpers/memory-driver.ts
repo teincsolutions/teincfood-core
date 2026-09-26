@@ -107,6 +107,15 @@ export function createMemoryDriver(): SqliteDriver {
         return { lastInsertRowId: row.id, changes: 1 };
       }
 
+      // crash recovery: in_flight -> pending on open
+      if (s.includes("UPDATE commands SET status = 'pending'") && s.includes("WHERE status = 'in_flight'")) {
+        let changes = 0;
+        for (const row of tables.commands) {
+          if (row.status === "in_flight") { row.status = "pending"; row.error = null; changes += 1; }
+        }
+        return { lastInsertRowId: 0, changes };
+      }
+
       // commands update status (4- or 5-placeholder variants — always take the
       // LAST arg as command_id; older code assumed 5).
       if (s.includes("UPDATE commands SET status = ?")) {
@@ -372,7 +381,12 @@ export function createMemoryDriver(): SqliteDriver {
 
       if (s.includes("SELECT * FROM commands") && s.includes("WHERE status IN")) {
         const limit = args[args.length - 1] as number;
-        let rows = tables.commands.filter((r) => r.status === "pending" || r.status === "failed").sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+        // Mirror production: `failed` is terminal and only returned when the
+        // caller opts in (includeFailed -> SQL contains 'failed').
+        const includeFailed = s.includes("'failed'");
+        let rows = tables.commands
+          .filter((r) => r.status === "pending" || (includeFailed && r.status === "failed"))
+          .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
         if (limit) rows = rows.slice(0, limit);
         return rows as unknown as T[];
       }

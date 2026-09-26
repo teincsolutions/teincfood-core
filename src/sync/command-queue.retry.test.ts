@@ -170,7 +170,7 @@ describe("command-queue bounded 4xx retry + absorb", () => {
     expect(seeded.retry_count).toBe(4);
     executeMock.mockRejectedValue(api422());
     await commandQueueService.processCommand(seeded);
-    const after = (await getPendingCommands(db, 100)).find((c) => c.command_id === row.command_id);
+    const after = (await getPendingCommands(db, 100, true)).find((c) => c.command_id === row.command_id);
     expect(after?.status).toBe("failed");
     expect(notifyErrorMock).toHaveBeenCalledTimes(1);
   });
@@ -192,7 +192,7 @@ describe("command-queue bounded 4xx retry + absorb", () => {
     executeMock.mockRejectedValue(api400());
     await commandQueueService.processCommand(row);
     const db = await openSyncDatabase();
-    const after = (await getPendingCommands(db, 100)).find((c) => c.command_id === row.command_id);
+    const after = (await getPendingCommands(db, 100, true)).find((c) => c.command_id === row.command_id);
     expect(after?.status).toBe("failed");
     expect(notifyErrorMock).toHaveBeenCalledTimes(1);
   });

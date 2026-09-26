@@ -1,7 +1,15 @@
 /**
- * Full sync: push → pull → push.
- * Push first so local edits (already HLC-bumped) reach server before pull
- * overwrites them; then pull merges; final drain pushes any remainder.
+ * Full sync: reference → push → pull → push.
+ *
+ * Reference (menu/hours/tax/capabilities) is pulled FIRST and non-blockingly:
+ * every phase is independently swallowed, so a reference failure never
+ * prevents queued orders from flushing. Getting reference in before the order
+ * push means newly-launched terminals can satisfy order-creation prerequisites
+ * (hour/tax/capability guards) in the same cycle.
+ *
+ * Orders still push before the order pull, so local edits (already HLC-bumped)
+ * reach the server before the pull merge could overwrite them. The final
+ * drain flushes anything newly queued or retried after the pull.
  */
 
 import { getConnectivityState } from "../adapters/connectivity";
@@ -21,13 +29,15 @@ export async function performFullSync(businessId?: string): Promise<void> {
   if (inFlight) { try { await inFlight; } catch {} return; }
   const p = (async () => {
     try {
-      syncLogger.info("FullSync", "Starting push→pull→push", { businessId: bid });
-      // 1. Push pending FIFO first — HLC-bumped local edits outrank stale server
-      try { await drainPending(bid); } catch (e) { syncLogger.warn("FullSync", "drainPending(pre) failed", { err: String(e) }); }
-      // 2. Pull remote orders (HLC-guarded) and reference (LWW merge)
-      try { await pullRemoteOrders(bid); } catch (e) { syncLogger.warn("FullSync", "pullRemoteOrders failed", { err: String(e) }); }
+      syncLogger.info("FullSync", "Starting reference→push→pull→push", { businessId: bid });
+      // 1. Reference first (non-blocking): menu/hours/tax/caps so order
+      //    creation prerequisites are present before we flush orders.
       try { await referenceSyncService.sync({ businessId: bid }); } catch (e) { syncLogger.warn("FullSync", "reference sync failed", { err: String(e) }); }
-      // 3. Final drain — anything newly queued or retried after pull
+      // 2. Push pending FIFO — HLC-bumped local edits outrank stale server
+      try { await drainPending(bid); } catch (e) { syncLogger.warn("FullSync", "drainPending(pre) failed", { err: String(e) }); }
+      // 3. Pull remote orders (HLC-guarded)
+      try { await pullRemoteOrders(bid); } catch (e) { syncLogger.warn("FullSync", "pullRemoteOrders failed", { err: String(e) }); }
+      // 4. Final drain — anything newly queued or retried after pull
       try { await drainPending(bid); } catch (e) { syncLogger.warn("FullSync", "drainPending(post) failed", { err: String(e) }); }
       syncLogger.info("FullSync", "Complete", { businessId: bid });
     } catch (e) {

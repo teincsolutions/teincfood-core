@@ -22,7 +22,7 @@ import {
 } from "../db/operations";
 import { syncLogger } from "../utils/sync-logger";
 import { recordAttempt } from "../utils/attempt-stats";
-import { TransitionError, isReplayDeferred, TRANSITION_ERROR_CODES } from "./transition-errors";
+import { TransitionError, isReplayDeferred, isReplayNoTransport, TRANSITION_ERROR_CODES } from "./transition-errors";
 import { assertBusinessOpenForCreate } from "../utils/business-hours";
 import { extractApiErrorCode } from "../utils/error";
 import { generateEventId } from "../utils/uuid";
@@ -39,6 +39,14 @@ import { canBusinessSync } from "./sync-guard";
 import { backoffDelayMs } from "./backoff";
 
 const MAX_RETRIES = 5;
+
+/**
+ * Stop a replay pass after this many consecutive transport-level failures
+ * (network/timeout/5xx) so a dead server is not hammered once per queued
+ * command. Any server response (2xx, permanent 4xx) or deferral resets the
+ * counter. The next trigger (connectivity/backoff) starts a fresh pass.
+ */
+const TRANSPORT_FAILURE_BREAKER = 3;
 
 /**
  * 4xx that deserve another chance: transient races and rate limits, never
@@ -340,8 +348,14 @@ class CommandQueueService {
       // the next trigger (do not mark, do not count). Must reset the
       // in_flight flag first — rows stuck in_flight are invisible to the
       // outbox query and would wedge the queue forever.
-      if (isReplayDeferred(error)) {
+      if (isReplayNoTransport(error)) {
         await updateCommandStatus(db, command.command_id, "pending", "deferred:no-transport");
+        throw error;
+      }
+      // Per-command backoff (retry window or retryable-4xx backoff): leave the
+      // row pending and rethrow so the pass defers just this entity.
+      if (isReplayDeferred(error)) {
+        await updateCommandStatus(db, command.command_id, "pending", "deferred:backoff");
         throw error;
       }
       const apiErr = error as { status?: number; name?: string; code?: string; data?: unknown };
@@ -497,8 +511,13 @@ class CommandQueueService {
   }
 
   /**
-   * Replay all pending commands in order. Stops on the first failure to keep
-   * ordering consistent; the next replay will retry from the failed command.
+   * Replay pending commands in FIFO order with entity-aware skip-and-continue.
+   *
+   * Ordering is preserved per entity: a failing command defers only its own
+   * entity_id, so that order's later commands stay queued behind it, while
+   * independent entities keep syncing in the same pass. The pass stops only
+   * when nothing can make progress: no transport at all (REPLAY_NO_TRANSPORT)
+   * or TRANSPORT_FAILURE_BREAKER consecutive network/5xx failures.
    */
   async replay(): Promise<void> {
     if (!canBusinessSync()) return;
@@ -527,21 +546,58 @@ class CommandQueueService {
         count: pending.length,
       });
 
+      // Entities deferred in THIS pass (backoff window or a transport failure):
+      // later commands for the same entity are skipped to preserve per-entity
+      // FIFO without blocking independent commands.
+      const deferredEntities = new Set<string>();
+      let consecutiveTransportFailures = 0;
+
       for (const command of pending) {
+        const entity = command.entity_id;
+        if (entity && deferredEntities.has(entity)) {
+          syncLogger.debug("CommandQueueService", "Skipping command for deferred entity", {
+            command_id: command.command_id,
+            entity_id: entity,
+          });
+          continue;
+        }
         try {
           await this.processCommand(command);
+          consecutiveTransportFailures = 0;
         } catch (e) {
-          const replayErr = e as { status?: number };
-          const isNonRetryable =
-            typeof replayErr?.status === "number" &&
-            replayErr.status >= 400 &&
-            replayErr.status < 500;
-          if (isNonRetryable) {
-            // Already marked permanent in processCommand — continue to next.
+          // No transport at all: nothing in this pass can succeed — stop.
+          if (isReplayNoTransport(e)) {
+            syncLogger.info("CommandQueueService", "Replay stopped: no transport available", {
+              command_id: command.command_id,
+            });
+            break;
+          }
+          // Per-command deferral (backoff window / retryable-4xx backoff):
+          // defer this entity only and keep draining the rest.
+          if (isReplayDeferred(e)) {
+            if (entity) deferredEntities.add(entity);
+            consecutiveTransportFailures = 0;
             continue;
           }
-          // Network/5xx — stop to preserve ordering; retry later.
-          break;
+          const status = (e as { status?: number })?.status;
+          const is4xx =
+            typeof status === "number" && status >= 400 && status < 500;
+          if (is4xx) {
+            // Permanent/retryable-exhausted 4xx: processCommand already marked
+            // the row failed (or absorbed it) — continue to the next command.
+            consecutiveTransportFailures = 0;
+            continue;
+          }
+          // Network/timeout/5xx: defer this entity, continue, but trip the
+          // breaker if the transport looks dead so we stop hammering.
+          if (entity) deferredEntities.add(entity);
+          consecutiveTransportFailures += 1;
+          if (consecutiveTransportFailures >= TRANSPORT_FAILURE_BREAKER) {
+            syncLogger.warn("CommandQueueService", "Replay stopped: transport failure breaker tripped", {
+              consecutiveTransportFailures,
+            });
+            break;
+          }
         }
       }
     } finally {
@@ -579,7 +635,7 @@ class CommandQueueService {
   ): Promise<Array<{ id: string; command_type: string; status: string; retry_count: number; error: string | null; created_at: string }>> {
     try {
       const db = getSyncDatabase();
-      const rows = await getPendingCommands(db, Number.MAX_SAFE_INTEGER);
+      const rows = await getPendingCommands(db, Number.MAX_SAFE_INTEGER, true);
       return rows
         .filter((c) => !businessId || c.business_id === businessId)
         .map((c) => ({

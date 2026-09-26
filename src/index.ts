@@ -82,6 +82,17 @@ export {
 } from "./sync/order-number";
 export { deviceLeaseService, getDeviceNumber, isOnlineOnly, ensureLease } from "./sync/device-lease.service";
 export { useDeviceLease, ensureDeviceLease } from "./sync/use-device-lease";
+export {
+  getStartupReadiness,
+  ensureStartupReady,
+  REQUIRED_ORDER_KEYS,
+  type StartupReadiness,
+} from "./sync/startup-readiness";
+export {
+  useStartupReadiness,
+  type UseStartupReadinessOptions,
+  type UseStartupReadinessResult,
+} from "./hooks/startup-readiness.hooks";
 export * from "./utils/hlc";
 export * from "./reference/lww";
 export { orderSnapshotsService } from "./sync/order-snapshots.service";

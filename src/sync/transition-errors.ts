@@ -19,6 +19,13 @@ export const TRANSITION_ERROR_CODES = {
   FORBIDDEN: "FORBIDDEN",
   SUBSCRIPTION_REQUIRED: "SUBSCRIPTION_REQUIRED",
   REPLAY_DEFERRED: "REPLAY_DEFERRED",
+  /**
+   * Replay found no usable transport at all (cloud + LAN both unavailable).
+   * Distinct from REPLAY_DEFERRED (per-command backoff/retryable-4xx) so the
+   * outbox can stop the whole pass instead of skipping just this entity:
+   * nothing can succeed until a transport returns.
+   */
+  REPLAY_NO_TRANSPORT: "REPLAY_NO_TRANSPORT",
   MISSING_RIDER: "MISSING_RIDER",
   NO_DELIVERY: "NO_DELIVERY",
 } as const;
@@ -68,4 +75,8 @@ export function isFinalGuardRejection(error: unknown): boolean {
 
 export function isReplayDeferred(error: unknown): boolean {
   return errorCodeOf(error) === TRANSITION_ERROR_CODES.REPLAY_DEFERRED;
+}
+
+export function isReplayNoTransport(error: unknown): boolean {
+  return errorCodeOf(error) === TRANSITION_ERROR_CODES.REPLAY_NO_TRANSPORT;
 }

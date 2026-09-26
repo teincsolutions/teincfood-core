@@ -66,11 +66,17 @@ export async function insertCommand(
 export async function getPendingCommands(
   db: SQLiteDatabase,
   limit = 100,
+  includeFailed = false,
 ): Promise<PersistedCommand[]> {
+  // `failed` rows are terminal (permanent rejection / retries exhausted) — they
+  // must NOT be re-fetched by the replay loop, or every failed command would be
+  // re-POSTed and re-toasted on each pass. Diagnostics opts in via
+  // includeFailed for the full outbox dump.
+  const statuses = includeFailed ? "('pending', 'failed')" : "('pending')";
   const rows = await db.getAllAsync<PersistedCommandRow>(
     `
       SELECT * FROM commands
-      WHERE status IN ('pending', 'failed')
+      WHERE status IN ${statuses}
       ORDER BY created_at ASC
       LIMIT ?;
     `,

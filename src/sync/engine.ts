@@ -170,9 +170,11 @@ export class SyncEngine {
       if (attempt === "queue") {
         // Replays must never re-enqueue-then-delete (the command would eat
         // itself without executing). If no real transport is available, leave
-        // the row untouched for a later trigger.
+        // the row untouched for a later trigger. Distinct code so the outbox
+        // stops the whole replay pass (nothing can succeed) rather than
+        // skipping just this entity and hammering the rest.
         if (opts?.forReplay) {
-          throw new TransitionError(TRANSITION_ERROR_CODES.REPLAY_DEFERRED, "No transport available, keeping command queued");
+          throw new TransitionError(TRANSITION_ERROR_CODES.REPLAY_NO_TRANSPORT, "No transport available, keeping command queued");
         }
         const event = await commandQueueService.enqueue(command);
         if (queueDespiteEntitlement) {

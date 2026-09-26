@@ -26,6 +26,7 @@ export async function openSyncDatabase(): Promise<SQLiteDatabase> {
 
   initPromise = (async () => {
     await runMigrations(driver);
+    await recoverInFlightCommands(driver);
     dbInstance = driver;
     syncLogger.info("SQLite", "Database opened and migrated", {
       name: DB_NAME,
@@ -88,6 +89,33 @@ async function runMigrations(db: SQLiteDatabase): Promise<void> {
     await db.withTransactionAsync(doMigrate);
   } else {
     await doMigrate();
+  }
+}
+
+/**
+ * Crash recovery: a process kill between `markCommandInFlight` and the
+ * command's terminal update leaves rows stuck in `in_flight`. They are
+ * invisible to the outbox query (which selects pending only), so the order
+ * would silently never sync. Reset them to pending on open so the next replay
+ * picks them up. Idempotent and safe: a fresh process owns all in-flight work.
+ */
+async function recoverInFlightCommands(db: SQLiteDatabase): Promise<void> {
+  try {
+    const result = await db.runAsync(
+      "UPDATE commands SET status = 'pending', error = NULL, updated_at = ? WHERE status = 'in_flight';",
+      new Date().toISOString(),
+    );
+    const changes = (result as { changes?: number } | undefined)?.changes ?? 0;
+    if (changes > 0) {
+      syncLogger.warn("SQLite", "Recovered in-flight commands after restart", {
+        count: changes,
+      });
+    }
+  } catch (error) {
+    // Never block DB open on recovery — replay/backoff still works.
+    syncLogger.error("SQLite", "in-flight recovery failed", {
+      error: String(error),
+    });
   }
 }
 
