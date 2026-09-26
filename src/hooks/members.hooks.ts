@@ -79,7 +79,7 @@ export function useInviteMemberMutation() {
   return useMutation({
     mutationFn: (data: { email?: string; phone?: string; role?: string }) => {
       assertOnlineFor("member:invite");
-      validateInviteInput({ email: data.email });
+      validateInviteInput({ email: data.email, phone: data.phone });
       return (businessService as unknown as { inviteBusinessMember: (b: string, d: unknown) => Promise<unknown> }).inviteBusinessMember(businessId!, data);
     },
     onSuccess: () => {

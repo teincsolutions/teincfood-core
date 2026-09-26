@@ -9,6 +9,7 @@
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMAIL_RE = /^[^\s]+@[^\s]+\.[^\s]+$/;
+const PHONE_RE = /^\+?[0-9\s\-()]{6,20}$/;
 
 export class ValidationError extends Error {
   details: Record<string, string>;
@@ -90,10 +91,29 @@ export function validateOrderCreateInput(input: {
   }
 }
 
-/** Mirrors BusinessMemberInvitation changeset: email format. */
-export function validateInviteInput(input: { email?: unknown; invited_email?: unknown }): void {
+/** Mirrors BusinessMemberInvitation changeset: email OR phone, one of them required. */
+export function validateInviteInput(input: {
+  email?: unknown;
+  invited_email?: unknown;
+  phone?: unknown;
+  invited_phone?: unknown;
+}): void {
   const details: Record<string, string> = {};
   const email = input.invited_email ?? input.email;
-  if (typeof email !== "string" || !email.trim()) fail("email", "Email is required", details);
-  if (!EMAIL_RE.test(email)) fail("email", "Invalid email format", details);
+  const phone = input.invited_phone ?? input.phone;
+
+  const hasEmail = typeof email === "string" && email.trim() !== "";
+  const hasPhone = typeof phone === "string" && phone.trim() !== "";
+
+  if (!hasEmail && !hasPhone) {
+    fail("email", "Email or phone is required", details);
+  }
+
+  if (hasEmail && !EMAIL_RE.test(email as string)) {
+    fail("email", "Invalid email format", details);
+  }
+
+  if (hasPhone && !PHONE_RE.test((phone as string).trim())) {
+    fail("phone", "Invalid phone format", details);
+  }
 }

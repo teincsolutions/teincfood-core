@@ -66,7 +66,10 @@ export function useInviteRiderMutation() {
   return useMutation({
     mutationFn: (data: Record<string, unknown>) => {
       assertOnlineFor("member:invite");
-      validateInviteInput({ email: (data as { email?: unknown }).email ?? (data as { invited_email?: unknown }).invited_email });
+      validateInviteInput({
+        email: (data as { email?: unknown }).email ?? (data as { invited_email?: unknown }).invited_email,
+        phone: (data as { phone?: unknown }).phone ?? (data as { invited_phone?: unknown }).invited_phone,
+      });
       return fleetService.inviteRider(data, businessId);
     },
     onSuccess: () => {

@@ -28,5 +28,11 @@ describe("offline validation mirror", () => {
     expect(() => validateOrderCreateInput({ items: [{ id: "1" }], order_type: "delivery" })).toThrow(ValidationError);
     expect(() => validateInviteInput({ email: "not-an-email" })).toThrow(ValidationError);
     expect(() => validateInviteInput({ email: "a@b.co" })).not.toThrow();
+    // Phone is a first-class invite target.
+    expect(() => validateInviteInput({ phone: "+233244123456" })).not.toThrow();
+    expect(() => validateInviteInput({ phone: "0244123456" })).not.toThrow();
+    expect(() => validateInviteInput({ phone: "abc" })).toThrow(ValidationError);
+    expect(() => validateInviteInput({})).toThrow(ValidationError);
+    expect(() => validateInviteInput({ email: "", phone: "" })).toThrow(ValidationError);
   });
 });
