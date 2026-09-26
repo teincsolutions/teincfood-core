@@ -56,14 +56,31 @@ export function usePOSOrdersQuery(filters?: Record<string,string>, enabled=true)
   });
 }
 
-export function useSellerOrdersQuery(enabled=true, filters?: { status?: string; q?: string; search?: string }) {
+export interface SellerOrderFilters {
+  status?: string;
+  q?: string;
+  search?: string;
+  order_type?: string;
+  is_paid?: string;
+  date_from?: string;
+  date_to?: string;
+}
+
+export function useSellerOrdersQuery(enabled=true, filters?: SellerOrderFilters) {
   const bid = useBusinessId();
   return useInfiniteQuery({
     queryKey: SELLER_KEYS.orders(bid, filters as Record<string,unknown>),
     queryFn: async ({ pageParam=1 }) => {
       if (!bid) return { data: [], pagination: { page:1, page_size:20, total_pages:1, total_entries:0 } };
       const q = filters?.q ?? filters?.search;
-      const { data, total } = await listLocalOrders(bid, { status: filters?.status, q }, pageParam as number, 20);
+      const { data, total } = await listLocalOrders(bid, {
+        status: filters?.status,
+        q,
+        order_type: filters?.order_type,
+        is_paid: filters?.is_paid,
+        date_from: filters?.date_from,
+        date_to: filters?.date_to,
+      }, pageParam as number, 20);
       const merged = await mergePendingIntoList(data, bid, pageParam as number);
       const totalPages = Math.max(1, Math.ceil(total/20));
       return { data: merged, pagination: { page: pageParam as number, page_size:20, total_pages: totalPages, total_entries: total + (merged.length - data.length) } };

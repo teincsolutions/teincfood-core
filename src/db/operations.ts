@@ -575,7 +575,7 @@ export async function getOrderById(db: SQLiteDatabase, businessId: string, idOrN
   return row ? orderRowToSellerOrder(row) : null;
 }
 
-export async function listOrders(db: SQLiteDatabase, businessId: string, filters?: { status?: string; q?: string; is_pos?: string; order_type?: string; date_from?: string; date_to?: string }, page = 1, pageSize = 20): Promise<{ data: import("../types/api/seller.api").SellerOrder[]; total: number }> {
+export async function listOrders(db: SQLiteDatabase, businessId: string, filters?: { status?: string; q?: string; is_pos?: string; order_type?: string; date_from?: string; date_to?: string; is_paid?: string }, page = 1, pageSize = 20): Promise<{ data: import("../types/api/seller.api").SellerOrder[]; total: number }> {
   const where: string[] = ["business_id = ?"];
   const args: unknown[] = [businessId];
   if (filters?.status) {
@@ -584,6 +584,8 @@ export async function listOrders(db: SQLiteDatabase, businessId: string, filters
   }
   if (filters?.is_pos != null) { where.push("is_pos = ?"); args.push(filters.is_pos === "true" || filters.is_pos === "1" ? 1 : 0); }
   if (filters?.order_type) { where.push("order_type = ?"); args.push(filters.order_type); }
+  if (filters?.is_paid === "paid") { where.push("json_extract(payment, '$.is_paid') = 1"); }
+  else if (filters?.is_paid === "unpaid") { where.push("(json_extract(payment, '$.is_paid') IS NULL OR json_extract(payment, '$.is_paid') = 0)"); }
   if (filters?.q) { where.push("(order_number LIKE ? OR customer_name LIKE ? OR customer_phone LIKE ?)"); const q = `%${filters.q}%`; args.push(q, q, q); }
   if (filters?.date_from) { where.push("inserted_at >= ?"); args.push(filters.date_from); }
   if (filters?.date_to) { where.push("inserted_at < ?"); args.push(`${filters.date_to}T23:59:59`); }

@@ -191,7 +191,7 @@ export async function transitionLocalOrder(businessId: string, orderId: string, 
   return updated ?? order;
 }
 
-export async function listLocalOrders(businessId: string, filters?: { status?: string; q?: string; is_pos?: string; order_type?: string; date_from?: string; date_to?: string }, page = 1, pageSize = 20) {
+export async function listLocalOrders(businessId: string, filters?: { status?: string; q?: string; is_pos?: string; order_type?: string; date_from?: string; date_to?: string; is_paid?: string }, page = 1, pageSize = 20) {
   if (!businessId) {
     return { data: [], total: 0, page, pageSize, totalPages: 0 } as unknown as Awaited<ReturnType<typeof listOrders>>;
   }

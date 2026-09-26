@@ -43,6 +43,10 @@ function useBusinessId(): string | undefined {
 export interface DeliveryFilters {
   status?: string;
   search?: string;
+  order_type?: string;
+  is_paid?: string;
+  date_from?: string;
+  date_to?: string;
 }
 
 async function fetchOfflineDeliveries(
@@ -51,7 +55,19 @@ async function fetchOfflineDeliveries(
   page: number,
   pageSize: number,
 ): Promise<ListPage<BusinessDelivery>> {
-  const { data } = await listLocalOrders(businessId, { status: undefined, q: filters?.search }, page, pageSize);
+  const { data } = await listLocalOrders(
+    businessId,
+    {
+      status: undefined,
+      q: filters?.search,
+      order_type: filters?.order_type,
+      is_paid: filters?.is_paid,
+      date_from: filters?.date_from,
+      date_to: filters?.date_to,
+    },
+    page,
+    pageSize,
+  );
   const deliveryOrders = (data as unknown as { delivery_id?: string | null }[]).filter((o) => o.delivery_id);
   const statusSet = new Set((filters?.status ?? "").split(",").map((s) => s.trim()).filter(Boolean));
   const filtered =
@@ -90,6 +106,10 @@ export function useBusinessDeliveriesQuery(enabled = true, filters?: DeliveryFil
       const params: Record<string, unknown> = { page, page_size: pageSize };
       if (filters?.status) params.status = filters.status;
       if (filters?.search) params.search = filters.search;
+      if (filters?.order_type) params.order_type = filters.order_type;
+      if (filters?.is_paid) params.payment_status = filters.is_paid;
+      if (filters?.date_from) params.date_from = filters.date_from;
+      if (filters?.date_to) params.date_to = filters.date_to;
       const res = (await deliveryService.fetchBusinessDeliveries(businessId!, params)) as {
         data: BusinessDelivery[];
         pagination: { page: number; page_size: number; total_pages: number; total_entries?: number };

@@ -411,23 +411,51 @@ export function createMemoryDriver(): SqliteDriver {
         return rows as unknown as T[];
       }
 
-      // orders list with filters (simple business_id filter + pagination)
+      // orders list with filters (business_id + status/order_type/is_paid/q/date)
       if (s.includes("SELECT * FROM orders WHERE")) {
         const business_id = args[0] as string;
-        // args includes where-clause params plus LIMIT and OFFSET at end
-        // For test, just filter by business_id and apply basic status/q if present in sql string via args slicing?
-        // Simpler: return all orders for that business, sorted by inserted_at desc, handle LIMIT/OFFSET manually
         let rows = tables.orders.filter((r) => r.business_id === business_id);
-        // handle status filter if sql contains status IN
+        // Consume filter args in the exact clause order produced by listOrders.
+        let i = 1;
         if (s.includes("status IN")) {
-          // find args that are status values (excluding business_id, limit, offset)
-          // Our sql: SELECT * FROM orders WHERE business_id = ? AND status IN (?,?) ... LIMIT ? OFFSET ?
-          // So statuses are args[1]..args[?]
-          // Count statuses by parsing SQL placeholder count?
-          // For test, just extract known statuses from args that look like status strings
-          const possibleStatuses = ["pending","awaiting_payment","accepted","preparing","ready","waiting_pickup","on_the_way","arrived","delivered","cancelled","assigned","picked_up","en_route","failed"];
-          const statusArgs = (args as string[]).filter((v) => possibleStatuses.includes(String(v)));
-          if (statusArgs.length) rows = rows.filter((r) => statusArgs.includes(r.status));
+          const n = (s.match(/status IN \([^)]*\)/)![0].match(/\?/g) || []).length;
+          const statuses = (args as string[]).slice(i, i + n);
+          i += n;
+          if (statuses.length) rows = rows.filter((r) => statuses.includes(r.status));
+        }
+        if (s.includes("is_pos = ?")) {
+          const v = Number(args[i++]) === 1;
+          rows = rows.filter((r) => !!r.is_pos === v);
+        }
+        if (s.includes("order_type = ?")) {
+          const t = args[i++];
+          rows = rows.filter((r) => r.order_type === t);
+        }
+        if (s.includes("json_extract(payment, '$.is_paid') = 1")) {
+          rows = rows.filter((r) => {
+            try { return JSON.parse(r.payment ?? "{}").is_paid === true; } catch { return false; }
+          });
+        } else if (s.includes("json_extract(payment, '$.is_paid') IS NULL")) {
+          rows = rows.filter((r) => {
+            try { return JSON.parse(r.payment ?? "{}").is_paid !== true; } catch { return true; }
+          });
+        }
+        if (s.includes("order_number LIKE ?")) {
+          const term = String(args[i]).replace(/%/g, "").toLowerCase();
+          i += 3;
+          rows = rows.filter((r) =>
+            String(r.order_number ?? "").toLowerCase().includes(term) ||
+            String(r.customer_name ?? "").toLowerCase().includes(term) ||
+            String(r.customer_phone ?? "").toLowerCase().includes(term),
+          );
+        }
+        if (s.includes("inserted_at >= ?")) {
+          const from = String(args[i++]);
+          rows = rows.filter((r) => String(r.inserted_at) >= from);
+        }
+        if (s.includes("inserted_at < ?")) {
+          const to = String(args[i++]);
+          rows = rows.filter((r) => String(r.inserted_at) < to);
         }
         rows = rows.sort((a,b) => (a.inserted_at < b.inserted_at ? 1 : -1));
         const limit = args[args.length - 2] as number;
