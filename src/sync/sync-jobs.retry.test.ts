@@ -7,7 +7,7 @@ import { setActiveBusiness } from "../adapters/business";
 import { setHttpClient } from "../adapters/http";
 import { setConnectivityState } from "../adapters/connectivity";
 import { openSyncDatabase, closeSyncDatabase } from "../db/connection";
-import { insertOrder } from "../db/operations";
+import { insertOrder, getOrderById } from "../db/operations";
 import { drainOne } from "./sync-jobs.service";
 import { phoenixSocket } from "../realtime/phoenix-socket";
 
@@ -43,6 +43,7 @@ function localOrder(status: string, updatedAt: string): Record<string, unknown> 
 
 describe("drainOne bounded 4xx retry + absorb", () => {
   let serverStatus: string;
+  let markReadyError: unknown;
   const serverUpdatedAt = new Date(Date.now() + 60_000).toISOString();
 
   beforeEach(async () => {
@@ -68,6 +69,7 @@ describe("drainOne bounded 4xx retry + absorb", () => {
       status: 422,
       response: { status: 422, data: { error: { code: "INVALID_TRANSITION", message: "Cannot mark_ready" } } },
     });
+    markReadyError = err422;
     setHttpClient({
       get: vi.fn(async (url: string) => {
         if (url.includes(`/businesses/${BID}/orders`)) {
@@ -76,7 +78,7 @@ describe("drainOne bounded 4xx retry + absorb", () => {
         return { data: { data: [] } };
       }),
       post: vi.fn(async (url: string) => {
-        if (url.includes("/ready-for-delivery")) throw err422;
+        if (url.includes("/ready-for-delivery")) throw markReadyError;
         return { data: {} };
       }),
     } as never);
@@ -135,5 +137,36 @@ describe("drainOne bounded 4xx retry + absorb", () => {
     await drainOne(BID, ORDER_ID);
     const row = await anyJobRow();
     expect(row?.status).toBe("failed");
+  });
+
+  it("404 transition dead-letters the job immediately and flags the order", async () => {
+    await seedJob();
+    markReadyError = Object.assign(new Error("Resource not found"), {
+      status: 404,
+      response: { status: 404, data: { error: { code: "NOT_FOUND", message: "Resource not found" } } },
+    });
+    await drainOne(BID, ORDER_ID);
+    const row = await anyJobRow();
+    expect(row?.status).toBe("failed");
+    expect(row?.attempts).toBe(0);
+    const db = await openSyncDatabase();
+    const order = await getOrderById(db, BID, ORDER_ID);
+    expect((order as unknown as { sync_failed_at?: string | null })?.sync_failed_at).toBeTruthy();
+  });
+
+  it("cascades a failed order:create to its queued transition", async () => {
+    await seedJob();
+    const db = await openSyncDatabase();
+    const now = new Date().toISOString();
+    await db.runAsync(
+      `INSERT OR IGNORE INTO sync_jobs (id, business_id, command_type, entity_id, payload, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'failed', ?, ?);`,
+      "job-create-failed", BID, "order:create", ORDER_ID, JSON.stringify({ id: ORDER_ID }), now, now,
+    );
+    await db.runAsync(`UPDATE sync_jobs SET status='failed', last_error=?, updated_at=? WHERE id=?;`, "boom", now, "job-create-failed");
+    await drainOne(BID, ORDER_ID);
+    const rows = await db.getAllAsync<{ id: string; status: string }>(`SELECT * FROM sync_jobs WHERE business_id = ? AND command_type = 'order:mark_ready';`, BID);
+    expect(rows[0]?.status).toBe("failed");
+    const order = await getOrderById(db, BID, ORDER_ID);
+    expect((order as unknown as { sync_failed_at?: string | null })?.sync_failed_at).toBeTruthy();
   });
 });

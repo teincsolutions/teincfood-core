@@ -5,7 +5,7 @@
  */
 
 import { openSyncDatabase } from "../db/connection";
-import { insertOrder, getOrderById } from "../db/operations";
+import { insertOrder, getOrderById, markOrderSyncFailed } from "../db/operations";
 import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
 import { getAuthToken, getRefreshToken, setAuthTokens, clearAuth, subscribeAuth } from "../adapters/auth";
 import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
@@ -16,7 +16,7 @@ import { recordAttempt } from "../utils/attempt-stats";
 import { BackoffTracker } from "./backoff";
 import { generateOrderNumber } from "./order-number";
 import { orderSnapshotsService } from "./order-snapshots.service";
-import { getTransitionPath, DELIVERY_COMMANDS } from "./transition-endpoints";
+import { getTransitionPath, DELIVERY_COMMANDS, isOrderTransition, isOrderCreate } from "./transition-endpoints";
 import { getQueuedStatus } from "../utils/order-transitions";
 import { extractApiErrorCode } from "../utils/error";
 import { canBusinessSync, isAuthenticated } from "./sync-guard";
@@ -287,7 +287,69 @@ async function absorbSyncJobIfApplied(
   return false;
 }
 
-export async function drainOne(businessId: string, entityId: string): Promise<void> {  if (!businessId || !canBusinessSync(businessId)) {
+/**
+ * State of the order:create sync_job for an entity, used to enforce
+ * create-before-transition. A missing row means the create already synced
+ * (rows are retained as 'completed'/'failed', so 'none' means it never
+ * existed — a cloud-pulled order — and the transition may proceed).
+ */
+async function syncJobCreateState(
+  db: Awaited<ReturnType<typeof openSyncDatabase>>,
+  businessId: string,
+  entityId: string,
+): Promise<"none" | "pending" | "failed"> {
+  try {
+    const rows = await db.getAllAsync<{ status: string; command_type: string; entity_id: string }>(
+      `SELECT * FROM sync_jobs WHERE business_id = ?;`,
+      businessId,
+    );
+    const creates = rows.filter((r) => r.entity_id === entityId && r.command_type === "order:create");
+    if (creates.some((r) => r.status === "pending")) return "pending";
+    if (creates.some((r) => r.status === "failed")) return "failed";
+    return "none";
+  } catch {
+    return "none";
+  }
+}
+
+/** Dead-letter pending transitions for an entity whose order:create failed. */
+async function failDependentSyncJobs(
+  db: Awaited<ReturnType<typeof openSyncDatabase>>,
+  businessId: string,
+  entityId: string,
+  message: string,
+): Promise<void> {
+  try {
+    const all = await db.getAllAsync<{ id: string; command_type: string; entity_id: string; status: string; attempts: number }>(
+      `SELECT * FROM sync_jobs WHERE business_id = ?;`,
+      businessId,
+    );
+    const rows = all.filter(
+      (r) => r.entity_id === entityId && r.status === "pending" && r.command_type !== "order:create",
+    );
+    const now = new Date().toISOString();
+    for (const r of rows) {
+      await db.runAsync(`UPDATE sync_jobs SET status='failed', last_error=?, updated_at=? WHERE id=?;`, `parent_create_failed:${message}`, now, r.id);
+      reportSyncFailure({
+        phase: "sync_jobs",
+        business_id: businessId,
+        command_type: r.command_type,
+        command_id: r.id,
+        entity_id: entityId,
+        code: "PARENT_CREATE_FAILED",
+        message,
+        attempts: r.attempts,
+        terminal: true,
+      });
+    }
+    if (rows.length) {
+      syncLogger.warn("SyncJobs", "Dead-lettered transitions behind failed create", { businessId, entityId, count: rows.length });
+    }
+  } catch {}
+}
+
+export async function drainOne(businessId: string, entityId: string): Promise<void> {
+  if (!businessId || !canBusinessSync(businessId)) {
     syncLogger.debug("SyncJobs", "drainOne early-return — no business/auth", { businessId, entityId });
     return;
   }
@@ -329,6 +391,28 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
       return;
     }
     const payload = JSON.parse(row.payload) as Record<string, unknown>;
+    // Create-before-transition: a transition whose parent order:create has
+    // dead-lettered can never apply — fail it now rather than POSTing to a
+    // guaranteed 404. A still-pending create (defensive: FIFO normally drains
+    // it first) defers the transition.
+    if (isOrderTransition(row.command_type) && row.entity_id) {
+      const createState = await syncJobCreateState(db, businessId, row.entity_id);
+      if (createState === "failed") {
+        await db.runAsync(`UPDATE sync_jobs SET status='failed', last_error=?, updated_at=? WHERE id=?;`, "parent_create_failed", new Date().toISOString(), row.id);
+        try { await markOrderSyncFailed(db, businessId, row.entity_id, "Parent order creation failed"); } catch {}
+        reportJobFailure(businessId, row, { code: "PARENT_CREATE_FAILED", message: "Parent order creation failed", attempts: row.attempts, terminal: true });
+        try {
+          const { notifyError } = await import("../adapters/notify");
+          notifyError(`Order creation failed — discarded a follow-up ${row.command_type}`);
+        } catch {}
+        return;
+      }
+      if (createState === "pending") {
+        syncLogger.debug("SyncJobs", "Transition waiting on pending create", { businessId, entityId });
+        scheduleRetry(businessId);
+        return;
+      }
+    }
     // 1) PHX first (only when cloud reachable)
     let phxOk = false;
     if (isOnlineForPhx()) {
@@ -460,6 +544,24 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
       } catch {}
     }
 
+    // Transition 404: the server has no such order. Absorb above checked the
+    // already-applied race; if it did not apply, replaying can never create the
+    // order — dead-letter immediately instead of burning the 4xx retry budget.
+    if (rest.status === 404 && isOrderTransition(row.command_type)) {
+      syncLogger.warn("SyncJobs", "Transition 404 — order missing, failing job", { businessId, entityId, command_type: row.command_type });
+      try {
+        await db.runAsync(`UPDATE sync_jobs SET status='failed', last_error=?, updated_at=? WHERE id=?;`, `404 ${rest.code ?? ""} ${rest.message ?? ""}`.trim(), new Date().toISOString(), row.id);
+      } catch {}
+      try { await markOrderSyncFailed(db, businessId, row.entity_id, `Order not found on server (${rest.message ?? rest.code ?? "404"})`); } catch {}
+      reportJobFailure(businessId, row, { status: 404, code: rest.code ?? "NOT_FOUND", message: rest.message, attempts: (row.attempts ?? 0) + 1, terminal: true });
+      clearRetry(businessId);
+      try {
+        const { notifyError } = await import("../adapters/notify");
+        notifyError(`Order no longer exists on server — dropped ${row.command_type}`);
+      } catch {}
+      return;
+    }
+
     if (isBusinessClosed) {
       syncLogger.warn("SyncJobs", "Business closed — keeping pending for retry after hours sync", { businessId, entityId, code: rest.code });
       reportJobFailure(businessId, row, { status: rest.status, code: rest.code, message: rest.message, attempts: row.attempts, terminal: false });
@@ -482,6 +584,11 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
       } catch {}
       reportJobFailure(businessId, row, { status: rest.status, code: rest.code, message: rest.message, attempts, terminal: true });
       clearRetry(businessId);
+      // A dead-lettered order:create strands every transition behind it.
+      if (isOrderCreate(row.command_type)) {
+        try { await markOrderSyncFailed(db, businessId, row.entity_id, rest.message ?? "Order creation failed"); } catch {}
+        await failDependentSyncJobs(db, businessId, row.entity_id, rest.message ?? "Order creation failed");
+      }
       try {
         const { notifyError } = await import("../adapters/notify");
         notifyError(`Server rejected ${row.command_type}: ${rest.message ?? rest.code ?? rest.status} (after retries)`);

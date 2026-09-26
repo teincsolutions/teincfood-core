@@ -510,6 +510,8 @@ export interface OrderRow {
   updated_at: string | null;
   hlc: string | null;
   deleted_at: string | null;
+  sync_failed_at?: string | null;
+  sync_error?: string | null;
 }
 
 function orderRowToSellerOrder(row: OrderRow): import("../types/api/seller.api").SellerOrder {
@@ -547,6 +549,8 @@ function orderRowToSellerOrder(row: OrderRow): import("../types/api/seller.api")
     paid_at: row.payment ? JSON.parse(row.payment).paid_at ?? null : null,
     inserted_at: row.inserted_at,
     updated_at: row.updated_at ?? row.inserted_at,
+    sync_failed_at: row.sync_failed_at ?? null,
+    sync_error: row.sync_error ?? null,
   } as unknown as import("../types/api/seller.api").SellerOrder;
 }
 
@@ -556,7 +560,7 @@ export async function insertOrder(db: SQLiteDatabase, order: import("../types/ap
   await db.runAsync(
     `INSERT INTO orders (id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, updated_at, hlc)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET business_id=excluded.business_id, order_number=excluded.order_number, callout_number=excluded.callout_number, status=excluded.status, order_type=excluded.order_type, is_pos=excluded.is_pos, items=excluded.items, subtotal_minor=excluded.subtotal_minor, total_minor=excluded.total_minor, tax_minor=excluded.tax_minor, tax_lines=excluded.tax_lines, payment=excluded.payment, customer_name=excluded.customer_name, customer_phone=excluded.customer_phone, pos_payment_method=excluded.pos_payment_method, delivery_id=excluded.delivery_id, business=excluded.business, user=excluded.user, updated_at=excluded.updated_at, hlc=excluded.hlc
+     ON CONFLICT(id) DO UPDATE SET business_id=excluded.business_id, order_number=excluded.order_number, callout_number=excluded.callout_number, status=excluded.status, order_type=excluded.order_type, is_pos=excluded.is_pos, items=excluded.items, subtotal_minor=excluded.subtotal_minor, total_minor=excluded.total_minor, tax_minor=excluded.tax_minor, tax_lines=excluded.tax_lines, payment=excluded.payment, customer_name=excluded.customer_name, customer_phone=excluded.customer_phone, pos_payment_method=excluded.pos_payment_method, delivery_id=excluded.delivery_id, business=excluded.business, user=excluded.user, updated_at=excluded.updated_at, hlc=excluded.hlc, sync_failed_at=NULL, sync_error=NULL
      WHERE excluded.hlc >= orders.hlc OR orders.hlc IS NULL;`,
     order.id, order.business_id, order.order_number, order.callout_number, order.status, order.order_type, order.is_pos ? 1 : 0,
     JSON.stringify(order.items), order.subtotal_minor, order.total_minor, order.tax_minor, JSON.stringify(order.tax_lines), JSON.stringify(order.payment),
@@ -595,6 +599,25 @@ export async function updateOrderStatus(db: SQLiteDatabase, businessId: string, 
   const now = hlc ?? new Date().toISOString();
   await db.runAsync(`UPDATE orders SET status = ?, hlc = ? WHERE business_id = ? AND (id = ? OR order_number = ?);`, toStatus, now, businessId, orderId, orderId);
   notifyDbChange(businessId, "orders");
+}
+
+/**
+ * Flag an order whose queued work dead-lettered (parent create failed, or a
+ * transition 404'd because the server has no such order). The row is kept for
+ * audit rather than deleted; a later pull of the real order clears the flag.
+ */
+export async function markOrderSyncFailed(db: SQLiteDatabase, businessId: string, orderId: string, message: string): Promise<void> {
+  try {
+    await db.runAsync(
+      `UPDATE orders SET sync_failed_at = ?, sync_error = ? WHERE business_id = ? AND (id = ? OR order_number = ?);`,
+      new Date().toISOString(),
+      message,
+      businessId,
+      orderId,
+      orderId,
+    );
+    notifyDbChange(businessId, "orders");
+  } catch {}
 }
 
 export async function updateOrderPayment(db: SQLiteDatabase, businessId: string, orderId: string, patch: { is_paid: boolean; paid_at: string | null }): Promise<void> {

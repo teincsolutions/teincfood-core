@@ -26,6 +26,7 @@ import { getReferenceData } from "../reference/operations";
 import { openSyncDatabase } from "../db/connection";
 import { canBusinessSync } from "./sync-guard";
 import { TRANSITION_ERROR_CODES, TransitionError } from "./transition-errors";
+import { isOrderTransition } from "./transition-endpoints";
 import { assertEntitledForCommand } from "../reference/entitlement-guard";
 import { noteRateLimited, extractRetryAfterMs } from "./rate-limit";
 
@@ -89,6 +90,37 @@ export class SyncEngine {
       throw new TransitionError(TRANSITION_ERROR_CODES.NO_ACTIVE_BUSINESS, "Sync requires active business and login — business_id missing or not authenticated");
     }
     syncLogger.command(command, "issued");
+
+    // Create-before-transition: a transition can only apply to an order that
+    // exists server-side. If its order:create is still queued, queue the
+    // transition behind it; if the create dead-lettered, discard the
+    // transition. POSTing a transition ahead of (or without) its create is a
+    // guaranteed 404 and must never happen.
+    if (isOrderTransition(command.command_type) && command.entity_id) {
+      const gate = await commandQueueService.orderCreateGate(command.business_id, command.entity_id);
+      if (gate === "failed") {
+        syncLogger.warn("SyncEngine", "Transition discarded — parent order:create failed", {
+          command_id: command.command_id,
+          command_type: command.command_type,
+          entity_id: command.entity_id,
+        });
+        throw new TransitionError(
+          TRANSITION_ERROR_CODES.ORDER_NOT_FOUND,
+          "Parent order creation failed — transition discarded",
+        );
+      }
+      if (gate === "pending") {
+        if (opts?.forReplay) {
+          throw new TransitionError(
+            TRANSITION_ERROR_CODES.REPLAY_DEFERRED,
+            "Parent order:create still queued — deferring transition",
+          );
+        }
+        const event = await commandQueueService.enqueue(command);
+        this.broadcast(event);
+        return [event];
+      }
+    }
 
     // Perms guard (offline-capable): block before routing
     const required = CAPABILITY_BY_COMMAND[command.command_type];

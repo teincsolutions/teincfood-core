@@ -395,4 +395,19 @@ export const MIGRATIONS: Migration[] = [
         `);
     },
   },
+  {
+    version: 11,
+    up: async (db) => {
+      // Terminal sync failure marker: set when a queued order:create or a
+      // transition dead-letters (e.g. the parent order was never created, or a
+      // transition 404s because the order does not exist server-side). The row
+      // is retained for audit instead of being silently dropped.
+      await db.execAsync(`
+          ALTER TABLE orders ADD COLUMN sync_failed_at TEXT;
+        `);
+      await db.execAsync(`
+          ALTER TABLE orders ADD COLUMN sync_error TEXT;
+        `);
+    },
+  },
 ];

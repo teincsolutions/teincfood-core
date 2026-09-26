@@ -260,6 +260,12 @@ export function createMemoryDriver(): SqliteDriver {
         if (row) { row.order_number = order_number; row.hlc = hlc; }
         return { lastInsertRowId: 0, changes: 1 };
       }
+      if (s.includes("UPDATE orders SET sync_failed_at = ?")) {
+        const [sync_failed_at, sync_error, business_id, id1, id2] = args as any[];
+        const row = tables.orders.find((r) => r.business_id === business_id && (r.id === id1 || r.order_number === id2));
+        if (row) { (row as any).sync_failed_at = sync_failed_at; (row as any).sync_error = sync_error; }
+        return { lastInsertRowId: 0, changes: 1 };
+      }
 
       // cleanup deletes for v7
       if (s.includes("DELETE FROM orders WHERE order_number = '[object Object]'")) {

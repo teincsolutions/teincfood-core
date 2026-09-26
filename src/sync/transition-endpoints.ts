@@ -30,6 +30,33 @@ export const DELIVERY_COMMANDS = new Set([
 ]);
 
 /**
+ * Order-scoped transitions. Every one of these operates on an order that must
+ * already exist server-side (the `order:create` for the same entity_id must
+ * have landed). Used to enforce create-before-transition ordering and to make
+ * a 404 on a transition terminal instead of a blind retry: a transition whose
+ * order is gone can never succeed by being replayed.
+ */
+export const ORDER_TRANSITION_COMMANDS = new Set([
+  "order:accept",
+  "order:reject",
+  "order:start_preparing",
+  "order:mark_ready",
+  "order:complete_pickup",
+  "order:cancel",
+  "order:confirm_cash",
+  "order:pay",
+  "payment:confirm_cash",
+]);
+
+export function isOrderCreate(commandType: string): boolean {
+  return commandType === "order:create";
+}
+
+export function isOrderTransition(commandType: string): boolean {
+  return ORDER_TRANSITION_COMMANDS.has(commandType);
+}
+
+/**
  * Build the REST path for a given command type and order/delivery ID.
  * Returns null for unknown command types AND for delivery commands, which
  * need body/path resolution in tryRest (rider_id, delivery_id lookup).

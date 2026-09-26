@@ -19,10 +19,12 @@ import {
   updateCommandStatus,
   deleteCommand,
   insertEvent,
+  markOrderSyncFailed,
 } from "../db/operations";
 import { syncLogger } from "../utils/sync-logger";
 import { recordAttempt } from "../utils/attempt-stats";
 import { TransitionError, isReplayDeferred, isReplayNoTransport, TRANSITION_ERROR_CODES } from "./transition-errors";
+import { isOrderCreate, isOrderTransition } from "./transition-endpoints";
 import { assertBusinessOpenForCreate } from "../utils/business-hours";
 import { extractApiErrorCode } from "../utils/error";
 import { generateEventId } from "../utils/uuid";
@@ -238,6 +240,51 @@ class CommandQueueService {
   }
 
   /**
+   * Create-before-transition gate.
+   *
+   * A transition can only be applied to an order that exists server-side. If
+   * the `order:create` for the same entity_id is still queued, the transition
+   * must wait behind it (never POST first — that is a guaranteed 404). If the
+   * create dead-lettered, the transition can never succeed and must be failed
+   * too. A missing create row means it already synced (rows are deleted on
+   * success), so the transition may proceed.
+   */
+  async orderCreateGate(
+    businessId: string,
+    entityId: string,
+  ): Promise<"none" | "pending" | "failed"> {
+    try {
+      const db = getSyncDatabase();
+      const rows = await getPendingCommands(db, Number.MAX_SAFE_INTEGER, true);
+      let pending = false;
+      let failed = false;
+      for (const c of rows) {
+        if (
+          c.business_id === businessId &&
+          c.entity_id === entityId &&
+          c.command_type === "order:create"
+        ) {
+          if (c.status === "pending" || c.status === "in_flight") pending = true;
+          else if (c.status === "failed") failed = true;
+        }
+      }
+      if (pending) return "pending";
+      if (failed) return "failed";
+      return "none";
+    } catch {
+      // Fail open: never brick a terminal because the DB read failed.
+      return "none";
+    }
+  }
+
+  private async flagOrderSyncFailed(command: PersistedCommand, message: string): Promise<void> {
+    if (!command.entity_id) return;
+    try {
+      await markOrderSyncFailed(getSyncDatabase(), command.business_id, command.entity_id, message);
+    } catch {}
+  }
+
+  /**
    * Enqueue a command because no transport is currently available.
    * Returns an optimistic domain event so the caller can update the UI.
    */
@@ -304,6 +351,27 @@ class CommandQueueService {
       timestamp: command.timestamp,
       payload: command.payload,
     };
+
+    // Create-before-transition: never replay a transition whose parent
+    // order:create is still queued (it would 404), and fail it outright if
+    // the create already dead-lettered (it can never succeed).
+    if (isOrderTransition(command.command_type) && command.entity_id) {
+      const gate = await this.orderCreateGate(command.business_id, command.entity_id);
+      if (gate === "failed") {
+        await this.flagOrderSyncFailed(command, "Parent order creation failed");
+        await this.failPermanently(db, command, "Parent order creation failed", "parent-create-failed", {
+          code: "PARENT_CREATE_FAILED",
+          attempts: command.retry_count,
+        });
+        return;
+      }
+      if (gate === "pending") {
+        throw new TransitionError(
+          TRANSITION_ERROR_CODES.REPLAY_DEFERRED,
+          "Parent order:create still queued — deferring transition",
+        );
+      }
+    }
 
     if (command.retry_count >= MAX_ATTEMPTS) {
       await updateCommandStatus(
@@ -444,6 +512,19 @@ class CommandQueueService {
           if (await this.absorbIfApplied(command)) return;
         } catch {}
       }
+      // Transition 404: the server has no such order. The absorb above already
+      // checked the duplicate-tap / replayed-race case; if it did not apply,
+      // replaying can never create the order — fail fast instead of burning
+      // the bounded 4xx retry budget on a resource that is gone.
+      if (status === 404 && isOrderTransition(command.command_type)) {
+        await this.flagOrderSyncFailed(command, `Order not found on server (${message})`);
+        await this.failPermanently(db, command, message, "404-order-missing", {
+          status,
+          code,
+          attempts: command.retry_count + 1,
+        });
+        return;
+      }
       // Every other failure is retryable on the shared 2s→5min backoff.
       //
       // 4xx (validation/permission/plan races) is bounded: a device stuck in
@@ -532,6 +613,57 @@ class CommandQueueService {
         const { revertMenuCommand } = await import("../reference/menu-apply");
         await revertMenuCommand(command.business_id, command.command_type, command.entity_id);
       }
+    } catch {}
+    try {
+      if (isOrderTransition(command.command_type) || isOrderCreate(command.command_type)) {
+        await this.flagOrderSyncFailed(command, message);
+      }
+    } catch {}
+    // A failed order:create strands every transition queued behind it — fail
+    // them too (they can never apply) instead of replaying them into a 404.
+    if (isOrderCreate(command.command_type) && command.entity_id) {
+      await this.failDependentTransitions(db, command, message);
+    }
+  }
+
+  /**
+   * Dead-letter every pending transition for an entity whose parent
+   * order:create permanently failed.
+   */
+  private async failDependentTransitions(
+    db: ReturnType<typeof getSyncDatabase>,
+    createCommand: PersistedCommand,
+    message: string,
+  ): Promise<void> {
+    try {
+      const pending = await getPendingCommands(db, Number.MAX_SAFE_INTEGER);
+      const rows = pending.filter(
+        (c) =>
+          c.business_id === createCommand.business_id &&
+          c.entity_id === createCommand.entity_id &&
+          c.command_type !== "order:create",
+      );
+      if (!rows.length) return;
+      for (const row of rows) {
+        await updateCommandStatus(db, row.command_id, "failed", `parent_create_failed:${message}`);
+        reportSyncFailure({
+          phase: "outbox",
+          business_id: createCommand.business_id,
+          user_id: createCommand.user_id,
+          device_id: createCommand.device_id,
+          command_type: row.command_type,
+          command_id: row.command_id,
+          entity_id: createCommand.entity_id,
+          code: "PARENT_CREATE_FAILED",
+          message,
+          attempts: 0,
+          terminal: true,
+        });
+      }
+      syncLogger.warn("CommandQueueService", "Dead-lettered transitions behind failed create", {
+        entity_id: createCommand.entity_id,
+        count: rows.length,
+      });
     } catch {}
   }
 
