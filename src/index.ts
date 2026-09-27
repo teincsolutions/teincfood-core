@@ -12,6 +12,10 @@ export * from "./types/rider";
 export * from "./types/places";
 export * from "./adapters/notify";
 
+// ── Customer display (shared model + platform driver contract) ──
+export * from "./customer-display/model";
+export type { CustomerDisplayDriver, CustomerDisplayCapabilities } from "./customer-display/driver";
+
 // ── Pricing (server-parity) ──
 export {
   calculatePricing,
@@ -37,8 +41,7 @@ export { resolveDateRange, DATE_PRESET_LABELS } from "./utils/date-range";
 export type { DatePreset, DateRange } from "./utils/date-range";
 export * from "./utils/validation";
 export * from "./validation/offline";
-export * from "./utils/copyToClipBoard";
-export * from "./utils/customer-display";
+export * from "./utils/copyToClipBoard";export * from "./utils/customer-display";
 export * from "./utils/order-filter";
 export { useReferenceData } from "./reference/hooks";
 export { setNotifyHandlers } from "./adapters/notify";
