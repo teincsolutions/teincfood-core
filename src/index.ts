@@ -241,7 +241,7 @@ export { useEventsConnection } from "./realtime/useEventsConnection";
 // ── Sync jobs (POS primary sync) — debug helpers for DiagnosticsScreen
 export { getSyncJobsPendingCount, debugDumpSyncJobs, drainPending } from "./sync/sync-jobs.service";
 export { performFullSync } from "./sync/full-sync";
-export { stopHealthProbe } from "./sync/health-probe";
+export { stopHealthProbe, probeCloudHealth } from "./sync/health-probe";
 export { notifyAuthChanged, subscribeAuth } from "./adapters/auth";
 export { isAuthenticated, hasActiveBusiness, canBusinessSync, setOfflineSyncEnabled, isOfflineSyncEnabled } from "./sync/sync-guard";
 // ── Session lifecycle (access-expired → refresh → refresh-expired → logout)
