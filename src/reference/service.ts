@@ -15,6 +15,7 @@ import { menuService, businessService, rolesService } from "../adapters/services
 import { cacheImageBatch, pruneImageCache } from "../adapters/image-cache";
 import { getConnectivityState } from "../adapters/connectivity";
 import { canBusinessSync } from "../sync/sync-guard";
+import { getAuthToken } from "../adapters/auth";
 import { paceSync, isRateLimited } from "../sync/rate-limit";
 import type { MenuItemListResponse, BusinessResponse } from "../types/api";
 import {
@@ -140,6 +141,22 @@ class ReferenceSyncService {
         } catch (error) {
           result.failed.push(key);
           result.errors[key] = String(error);
+          // A persisted-but-expired session can pass `canBusinessSync` on the
+          // stale token; the first request then 401s and core's session
+          // lifecycle clears auth mid-pass. Every remaining key would just fail
+          // with "no authentication token" — abort quietly instead of emitting
+          // one error per key. Expected logout, not a sync fault.
+          if (!getAuthToken()) {
+            for (const remaining of keys.slice(keys.indexOf(key) + 1)) {
+              result.skipped.push(remaining);
+            }
+            syncLogger.warn(
+              "ReferenceSync",
+              "Aborting sync — session ended mid-pass (logged out)",
+              { key },
+            );
+            break;
+          }
           syncLogger.error("ReferenceSync", `Failed to sync ${key}`, {
             error: String(error),
           });
