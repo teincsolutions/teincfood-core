@@ -5,6 +5,12 @@
 import type { SQLiteDatabase, SQLiteRunResult } from "../adapters/sqlite";
 import type { Command, DomainEvent, PersistedCommand } from "../sync/types";
 import { syncLogger } from "../utils/sync-logger";
+import { getQueuedStatus } from "../utils/order-transitions";
+
+/** Target status a queued command will produce on the server. */
+function queuedStatusOf(commandType: string): string | null {
+  return getQueuedStatus(commandType);
+}
 
 // ─────────────────────────────────────────────────────────────
 // Commands
@@ -509,12 +515,57 @@ export interface OrderRow {
   inserted_at: string;
   updated_at: string | null;
   hlc: string | null;
+  paid_at?: string | null;
   deleted_at: string | null;
   sync_failed_at?: string | null;
   sync_error?: string | null;
 }
 
+const EMPTY_PAYMENT = {
+  is_paid: false,
+  reference: null,
+  amount_minor: null,
+  currency: null,
+  paid_at: null,
+} as const;
+
+/**
+ * Effective payment of a stored order.
+ *
+ * `payment` (server payment summary) is the primary shape, but the order's
+ * own `paid_at` column wins when the server did not report a payment. Cash
+ * sales taken at a POS terminal only carry `paid_at` — no payment
+ * transaction — so reading the blob alone made them look unpaid.
+ */
+function paymentStateOf(row: OrderRow): {
+  payment: Record<string, unknown>;
+  isPaid: boolean;
+  paidAt: string | null;
+} {
+  let parsed: Record<string, unknown> = {};
+  if (row.payment) {
+    try {
+      const value = JSON.parse(row.payment);
+      if (value && typeof value === "object") parsed = value as Record<string, unknown>;
+    } catch {}
+  }
+  const payment: Record<string, unknown> = { ...EMPTY_PAYMENT, ...parsed };
+  const paidAt =
+    (payment.paid_at as string | null | undefined) ?? row.paid_at ?? null;
+  const isPaid = payment.is_paid === true || !!paidAt;
+  return { payment: { ...payment, paid_at: paidAt, is_paid: isPaid }, isPaid, paidAt };
+}
+
+/** True when the order has any recorded payment. */
+export function isOrderPaid(order: { is_paid?: boolean; paid_at?: string | null; payment?: unknown } | null | undefined): boolean {
+  if (!order) return false;
+  if (order.is_paid === true || order.paid_at) return true;
+  const payment = order.payment as { is_paid?: boolean; paid_at?: string | null } | undefined;
+  return payment?.is_paid === true || !!payment?.paid_at;
+}
+
 function orderRowToSellerOrder(row: OrderRow): import("../types/api/seller.api").SellerOrder {
+  const { payment, isPaid, paidAt } = paymentStateOf(row);
   return {
     id: row.id,
     business_id: row.business_id,
@@ -528,7 +579,7 @@ function orderRowToSellerOrder(row: OrderRow): import("../types/api/seller.api")
     total_minor: row.total_minor,
     tax_minor: row.tax_minor,
     tax_lines: row.tax_lines ? JSON.parse(row.tax_lines) : [],
-    payment: row.payment ? JSON.parse(row.payment) : { is_paid: false, reference: null, amount_minor: null, currency: null, paid_at: null },
+    payment,
     customer_name: row.customer_name,
     customer_phone: row.customer_phone,
     pos_payment_method: row.pos_payment_method,
@@ -538,15 +589,15 @@ function orderRowToSellerOrder(row: OrderRow): import("../types/api/seller.api")
     delivery_lat: null,
     delivery_lng: null,
     user: row.user ? JSON.parse(row.user) : null,
-    currency: (row.payment ? JSON.parse(row.payment).currency : "GHS") ?? "GHS",
-    currency_code: (row.payment ? JSON.parse(row.payment).currency : "GHS") ?? "GHS",
+    currency: (payment.currency as string | null) ?? "GHS",
+    currency_code: (payment.currency as string | null) ?? "GHS",
     discount_minor: 0,
     promo_code: null,
     tip_minor: null,
     delivery_fee_minor: 0,
     delivery_status: null,
-    is_paid: row.payment ? JSON.parse(row.payment).is_paid ?? false : false,
-    paid_at: row.payment ? JSON.parse(row.payment).paid_at ?? null : null,
+    is_paid: isPaid,
+    paid_at: paidAt,
     inserted_at: row.inserted_at,
     updated_at: row.updated_at ?? row.inserted_at,
     sync_failed_at: row.sync_failed_at ?? null,
@@ -557,13 +608,17 @@ function orderRowToSellerOrder(row: OrderRow): import("../types/api/seller.api")
 export async function insertOrder(db: SQLiteDatabase, order: import("../types/api/seller.api").SellerOrder & { hlc?: string }): Promise<void> {
   const hlc = (order as unknown as { hlc?: string }).hlc ?? new Date().toISOString();
   const updatedAt = order.updated_at ?? order.inserted_at;
+  const paidAt =
+    order.paid_at ??
+    (order.payment as { paid_at?: string | null } | undefined)?.paid_at ??
+    (isOrderPaid(order) ? updatedAt : null);
   await db.runAsync(
-    `INSERT INTO orders (id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, updated_at, hlc)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET business_id=excluded.business_id, order_number=excluded.order_number, callout_number=excluded.callout_number, status=excluded.status, order_type=excluded.order_type, is_pos=excluded.is_pos, items=excluded.items, subtotal_minor=excluded.subtotal_minor, total_minor=excluded.total_minor, tax_minor=excluded.tax_minor, tax_lines=excluded.tax_lines, payment=excluded.payment, customer_name=excluded.customer_name, customer_phone=excluded.customer_phone, pos_payment_method=excluded.pos_payment_method, delivery_id=excluded.delivery_id, business=excluded.business, user=excluded.user, updated_at=excluded.updated_at, hlc=excluded.hlc, sync_failed_at=NULL, sync_error=NULL
+    `INSERT INTO orders (id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, updated_at, hlc)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET business_id=excluded.business_id, order_number=excluded.order_number, callout_number=excluded.callout_number, status=excluded.status, order_type=excluded.order_type, is_pos=excluded.is_pos, items=excluded.items, subtotal_minor=excluded.subtotal_minor, total_minor=excluded.total_minor, tax_minor=excluded.tax_minor, tax_lines=excluded.tax_lines, payment=excluded.payment, paid_at=COALESCE(excluded.paid_at, orders.paid_at), customer_name=excluded.customer_name, customer_phone=excluded.customer_phone, pos_payment_method=excluded.pos_payment_method, delivery_id=excluded.delivery_id, business=excluded.business, user=excluded.user, updated_at=excluded.updated_at, hlc=excluded.hlc, sync_failed_at=NULL, sync_error=NULL
      WHERE excluded.hlc >= orders.hlc OR orders.hlc IS NULL;`,
     order.id, order.business_id, order.order_number, order.callout_number, order.status, order.order_type, order.is_pos ? 1 : 0,
-    JSON.stringify(order.items), order.subtotal_minor, order.total_minor, order.tax_minor, JSON.stringify(order.tax_lines), JSON.stringify(order.payment),
+    JSON.stringify(order.items), order.subtotal_minor, order.total_minor, order.tax_minor, JSON.stringify(order.tax_lines), JSON.stringify(order.payment), paidAt,
     order.customer_name, order.customer_phone, order.pos_payment_method, order.delivery_id, order.business ? JSON.stringify(order.business) : null, order.user ? JSON.stringify(order.user) : null,
     order.inserted_at, updatedAt, hlc
   );
@@ -575,6 +630,133 @@ export async function getOrderById(db: SQLiteDatabase, businessId: string, idOrN
   return row ? orderRowToSellerOrder(row) : null;
 }
 
+/**
+ * Local intent for an order that still has unsynced work in `sync_jobs`.
+ *
+ * While a command is queued the device's intent must win over the server
+ * copy: a pull that lands before the command syncs would otherwise revert a
+ * queued accept (or a queued cash payment) back to the server's older state.
+ *
+ * `status` is the target status of the LAST queued transition, `isPaid` is
+ * true when a cash confirmation is still queued.
+ */
+export interface PendingOrderIntent {
+  status: string | null;
+  isPaid: boolean;
+  hasPending: boolean;
+}
+
+export async function getPendingOrderIntent(
+  db: SQLiteDatabase,
+  businessId: string,
+  orderId: string,
+): Promise<PendingOrderIntent> {
+  const empty: PendingOrderIntent = { status: null, isPaid: false, hasPending: false };
+  try {
+    const rows = await db.getAllAsync<{ command_type: string; payload: string | null }>(
+      `SELECT command_type, payload FROM sync_jobs WHERE business_id = ? AND entity_id = ? AND status = 'pending' ORDER BY created_at ASC, rowid ASC;`,
+      businessId,
+      orderId,
+    );
+    if (!rows.length) return empty;
+    let status: string | null = null;
+    let isPaid = false;
+    for (const row of rows) {
+      const commandType = row.command_type ?? "";
+      const target = queuedStatusOf(commandType);
+      if (target) status = target;
+      if (commandType === "payment:confirm_cash" || commandType === "order:confirm_cash") {
+        isPaid = true;
+      }
+      // A cash sale is paid at the moment it is rung up — the queued create
+      // itself is the record of that intent. Without this, a pull landing
+      // before the create reaches the backend replaces the paid local row
+      // with the server's (older, unpaid) copy.
+      if (commandType === "order:create") {
+        try {
+          const payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : null;
+          const method = (payload?.pos_payment_method as string | undefined) ?? "cash";
+          if (method === "cash") isPaid = true;
+        } catch {}
+      }
+    }
+    return { status, isPaid, hasPending: true };
+  } catch {
+    return empty;
+  }
+}
+
+/**
+ * Write a server order into the local read model.
+ *
+ * Unlike `insertOrder` (which is HLC-guarded for local/LAN writes), the
+ * server copy is authoritative: it always overwrites the row. The only
+ * exception is an order with unsynced local work — its status and payment
+ * stay as the device intended until the queued command is acknowledged.
+ *
+ * The HLC is taken from the server's own `updated_at` so device clock skew
+ * can never make a fresh server state look stale.
+ */
+export async function upsertServerOrder(
+  db: SQLiteDatabase,
+  order: import("../types/api/seller.api").SellerOrder,
+  opts: { preserveStatus?: boolean; preservePayment?: boolean } = {},
+): Promise<void> {
+  if (!order?.id || !order?.business_id) return;
+  const existing = await getOrderById(db, order.business_id, order.id);
+  const status = opts.preserveStatus && existing ? existing.status : order.status;
+
+  const serverPayment = (order.payment ?? {}) as {
+    is_paid?: boolean;
+    paid_at?: string | null;
+    reference?: string | null;
+    amount_minor?: number | null;
+    currency?: string | null;
+  };
+  const serverPaidAt = order.paid_at ?? serverPayment.paid_at ?? null;
+  const serverIsPaid =
+    order.is_paid === true || !!serverPaidAt || serverPayment.is_paid === true;
+
+  let payment: Record<string, unknown>;
+  if (
+    existing &&
+    (opts.preservePayment || (!serverIsPaid && isOrderPaid(existing)))
+  ) {
+    // Keep the device's payment. A pull must never un-pay an order: the
+    // server copy of a cash sale rung up moments ago can lag behind, and it
+    // used to reset the row to UNPAID until the create finished syncing.
+    payment = { ...(existing.payment as unknown as Record<string, unknown>) };
+  } else {
+    payment = {
+      ...serverPayment,
+      is_paid: serverIsPaid,
+      paid_at: serverPaidAt,
+      amount_minor: serverPayment.amount_minor ?? order.total_minor ?? null,
+      currency: serverPayment.currency ?? order.currency_code ?? null,
+    };
+  }
+  const paidAt = (payment.paid_at as string | null | undefined) ?? null;
+
+  const hlc =
+    (order as unknown as { hlc?: string }).hlc ??
+    order.updated_at ??
+    order.inserted_at ??
+    new Date().toISOString();
+  const updatedAt = order.updated_at ?? order.inserted_at;
+  await db.runAsync(
+    `INSERT INTO orders (id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, updated_at, hlc)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET business_id=excluded.business_id, order_number=excluded.order_number, callout_number=excluded.callout_number, status=excluded.status, order_type=excluded.order_type, is_pos=excluded.is_pos, items=excluded.items, subtotal_minor=excluded.subtotal_minor, total_minor=excluded.total_minor, tax_minor=excluded.tax_minor, tax_lines=excluded.tax_lines, payment=excluded.payment, paid_at=COALESCE(excluded.paid_at, orders.paid_at), customer_name=excluded.customer_name, customer_phone=excluded.customer_phone, pos_payment_method=excluded.pos_payment_method, delivery_id=excluded.delivery_id, business=excluded.business, user=excluded.user, updated_at=excluded.updated_at, hlc=excluded.hlc, sync_failed_at=NULL, sync_error=NULL;`,
+    order.id, order.business_id, order.order_number, order.callout_number, status, order.order_type, order.is_pos ? 1 : 0,
+    JSON.stringify(order.items ?? []), order.subtotal_minor ?? 0, order.total_minor ?? 0, order.tax_minor ?? 0,
+    JSON.stringify(order.tax_lines ?? []), JSON.stringify(payment), paidAt,
+    order.customer_name, order.customer_phone, order.pos_payment_method, order.delivery_id,
+    order.business ? JSON.stringify(order.business) : null, order.user ? JSON.stringify(order.user) : null,
+    order.inserted_at, updatedAt, hlc,
+  );
+  notifyDbChange(order.business_id, "orders");
+}
+
 export async function listOrders(db: SQLiteDatabase, businessId: string, filters?: { status?: string; q?: string; is_pos?: string; order_type?: string; date_from?: string; date_to?: string; is_paid?: string }, page = 1, pageSize = 20): Promise<{ data: import("../types/api/seller.api").SellerOrder[]; total: number }> {
   const where: string[] = ["business_id = ?"];
   const args: unknown[] = [businessId];
@@ -584,8 +766,10 @@ export async function listOrders(db: SQLiteDatabase, businessId: string, filters
   }
   if (filters?.is_pos != null) { where.push("is_pos = ?"); args.push(filters.is_pos === "true" || filters.is_pos === "1" ? 1 : 0); }
   if (filters?.order_type) { where.push("order_type = ?"); args.push(filters.order_type); }
-  if (filters?.is_paid === "paid") { where.push("json_extract(payment, '$.is_paid') = 1"); }
-  else if (filters?.is_paid === "unpaid") { where.push("(json_extract(payment, '$.is_paid') IS NULL OR json_extract(payment, '$.is_paid') = 0)"); }
+  // Paid means "the order has a payment timestamp" (cash at the till) or the
+  // payment blob says so (gateway payment) — mirroring the backend filter.
+  if (filters?.is_paid === "paid") { where.push("(json_extract(payment, '$.is_paid') = 1 OR paid_at IS NOT NULL)"); }
+  else if (filters?.is_paid === "unpaid") { where.push("(COALESCE(json_extract(payment, '$.is_paid'), 0) = 0 AND paid_at IS NULL)"); }
   if (filters?.q) { where.push("(order_number LIKE ? OR customer_name LIKE ? OR customer_phone LIKE ?)"); const q = `%${filters.q}%`; args.push(q, q, q); }
   if (filters?.date_from) { where.push("inserted_at >= ?"); args.push(filters.date_from); }
   if (filters?.date_to) { where.push("inserted_at < ?"); args.push(`${filters.date_to}T23:59:59`); }
@@ -626,7 +810,15 @@ export async function updateOrderPayment(db: SQLiteDatabase, businessId: string,
   const row = await getOrderById(db, businessId, orderId);
   if (!row) return;
   const payment = { ...(row.payment as object), is_paid: patch.is_paid, paid_at: patch.paid_at } as unknown as string;
-  await db.runAsync(`UPDATE orders SET payment = ?, hlc = ? WHERE business_id = ? AND (id = ? OR order_number = ?);`, JSON.stringify(payment), new Date().toISOString(), businessId, orderId, orderId);
+  await db.runAsync(
+    `UPDATE orders SET payment = ?, paid_at = COALESCE(?, paid_at), hlc = ? WHERE business_id = ? AND (id = ? OR order_number = ?);`,
+    JSON.stringify(payment),
+    patch.is_paid ? patch.paid_at : null,
+    new Date().toISOString(),
+    businessId,
+    orderId,
+    orderId,
+  );
   notifyDbChange(businessId, "orders");
 }
 

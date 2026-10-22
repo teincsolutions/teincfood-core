@@ -1,7 +1,8 @@
 /**
  * Local Orders Service — SQLite is real DB (like backend Orders).
  * Device-partitioned by UUID PK + DD-RRR-CCC per business.
- * is_pos orders are accepted at create; online payment requires online.
+ * POS orders start in the business's configured flow (staged → accepted,
+ * direct → delivered); online payment requires connectivity.
  */
 
 import { openSyncDatabase } from "../../db/connection";
@@ -16,6 +17,7 @@ import { canTransition } from "../../utils/order-transitions";
 import { TRANSITION_ERROR_CODES, TransitionError } from "../../sync/transition-errors";
 import { validateOrderCreateInput } from "../../validation/offline";
 import { buildItemSnapshots, snapshotsToOrderLines } from "./snapshots";
+import { getBusinessOrderFlowMode, initialPosOrderStatus } from "./order-flow";
 import { drainOne, pullRemoteOrders } from "../../sync/sync-jobs.service";
 import { getAuthToken } from "../../adapters/auth";
 import { canBusinessSync } from "../../sync/sync-guard";
@@ -69,6 +71,10 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
   // Offline validation mirror — backend Order.changeset rules, pre-commit.
   validateOrderCreateInput(input as unknown as Parameters<typeof validateOrderCreateInput>[0]);
   const method = (input.pos_payment_method as string) ?? "cash";
+  // Business-configurable fulfilment flow (cached business profile, offline).
+  // "direct" completes walk-in sales the moment they are rung up; "staged"
+  // keeps accept → preparing → ready → completed.
+  const flowMode = await getBusinessOrderFlowMode(businessId);
   // Operating-hours gate (fail-closed, offline-first): matches backend
   // validate_business_open. Throws BUSINESS_CLOSED / HOURS_NOT_SYNCED before
   // anything is written, so a doomed order never enters SQLite/sync_jobs.
@@ -89,7 +95,14 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
   if (!dd) throw new Error("No device number leased (99 max) — connect online once to lease DD");
 
   const id = ((input as unknown as { id?: string }).id ?? (input as unknown as { command_id?: string }).command_id ?? generateUUID());
-  const orderNumber = (input as unknown as { order_number?: string }).order_number?.toString() ?? generateOrderNumberForBusiness(businessId);
+  // Order numbers must be real strings. A non-string value used to be
+  // coerced with `.toString()`, which wrote "[object Object]" into the local
+  // DB and broke every lookup for that order.
+  const rawOrderNumber = (input as unknown as { order_number?: unknown }).order_number;
+  const orderNumber =
+    typeof rawOrderNumber === "string" && /^[A-Za-z0-9-]{1,32}$/.test(rawOrderNumber)
+      ? rawOrderNumber
+      : generateOrderNumberForBusiness(businessId);
   const callout = parseInt(orderNumber.split("-")[2] ?? "0", 10) || 0;
   // Use client-provided timestamps for offline-first sync so records created
   // while offline retain their original creation time.
@@ -114,7 +127,7 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
     id,
     order_number: orderNumber,
     callout_number: callout,
-    status: isPos ? "accepted" : "pending",
+    status: isPos ? initialPosOrderStatus(method, flowMode) : "pending",
     order_type: (input.order_type as string) ?? "takeout",
     is_pos: isPos,
     customer_name: (input.customer_name as string) ?? null,
@@ -148,7 +161,7 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
 
   const db = await openSyncDatabase();
   await insertOrder(db, order as unknown as SellerOrder & { hlc?: string });
-  syncLogger.debug("DomainOrders", "createLocalOrder inserted", { businessId, id, orderNumber, isPos, connectivity: getConnectivityState(), hasToken: !!getAuthToken(), deviceNumber: dd });
+  syncLogger.debug("DomainOrders", "createLocalOrder inserted", { businessId, id, orderNumber, isPos, flowMode, status: order.status, connectivity: getConnectivityState(), hasToken: !!getAuthToken(), deviceNumber: dd });
   try {
     await db.runAsync(`INSERT OR IGNORE INTO sync_jobs (id, business_id, command_type, entity_id, payload, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?);`, id, businessId, "order:create", id, JSON.stringify({ ...input, order_number: orderNumber, id }), now, now);
     syncLogger.debug("DomainOrders", "sync_jobs enqueued", { businessId, id, command_type: "order:create" });
@@ -181,10 +194,23 @@ export async function transitionLocalOrder(businessId: string, orderId: string, 
   }
   try {
     const now = new Date().toISOString();
-    const jobId = generateUUID();
-    await db.runAsync(`INSERT OR IGNORE INTO sync_jobs (id, business_id, command_type, entity_id, payload, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?);`, jobId, businessId, `order:${action}`, orderId, JSON.stringify({ action, orderId }), now, now);
-    syncLogger.debug("DomainOrders", "transition sync_jobs enqueued", { businessId, orderId, action, jobId });
-    void drainOne(businessId, orderId).catch((e) => syncLogger.debug("DomainOrders", "drainOne after transition caught", { err: String(e) }));
+    const commandType = `order:${action}`;
+    // Coalesce duplicates: the same transition queued twice (double tap,
+    // replay) must not be sent to the backend twice.
+    const duplicate = await db.getFirstAsync<{ id: string }>(
+      `SELECT id FROM sync_jobs WHERE business_id = ? AND entity_id = ? AND command_type = ? AND status = 'pending' LIMIT 1;`,
+      businessId,
+      orderId,
+      commandType,
+    );
+    if (!duplicate) {
+      const jobId = generateUUID();
+      await db.runAsync(`INSERT OR IGNORE INTO sync_jobs (id, business_id, command_type, entity_id, payload, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?);`, jobId, businessId, commandType, orderId, JSON.stringify({ action, orderId }), now, now);
+      syncLogger.debug("DomainOrders", "transition sync_jobs enqueued", { businessId, orderId, action, jobId });
+      void drainOne(businessId, orderId).catch((e) => syncLogger.debug("DomainOrders", "drainOne after transition caught", { err: String(e) }));
+    } else {
+      syncLogger.debug("DomainOrders", "transition already queued — job not duplicated", { businessId, orderId, action, jobId: duplicate.id });
+    }
   } catch (e) { syncLogger.debug("DomainOrders", "transition enqueue fail", { err: String(e) }); }
   const updated = await getOrderById(db, businessId, orderId);
   syncLogger.debug("DomainOrders", "transitionLocalOrder done", { businessId, orderId, action, from: order.status, to: updated?.status });
@@ -199,11 +225,14 @@ export async function listLocalOrders(businessId: string, filters?: { status?: s
   const db = await openSyncDatabase();
   const res = await listOrders(db, businessId, filters, page, pageSize);
   if (res.total === 0) {
-    // blank-screen: snapshot fallback already tried — if still empty and online, fetch from cloud now so listing populates without manual refresh
+    // Cold device (no local rows yet): fetch in the BACKGROUND. Blocking the
+    // render on a multi-page network pull froze the screen for seconds on a
+    // fresh terminal; the pull writes to SQLite and the reconciliation
+    // bridge refreshes the list when it lands.
     if (isOnline() && canBusinessSync(businessId)) {
-      try { await pullRemoteOrders(businessId); } catch {}
-      const afterPull = await listOrders(db, businessId, filters, page, pageSize);
-      if (afterPull.total > 0) return afterPull;
+      void pullRemoteOrders(businessId).catch((e) =>
+        syncLogger.debug("DomainOrders", "background pull failed", { businessId, err: String(e) }),
+      );
     }
     // filtered miss — still try backfill re-read
     if (!filters || Object.keys(filters).length === 0) {

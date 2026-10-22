@@ -1,138 +1,41 @@
 /**
- * Realtime invalidation hooks — bridge Phoenix WebSocket events into the
- * Sync Engine so useSyncReconciliation fires and React Query caches refresh.
+ * Realtime invalidation hooks.
  *
- * Both hooks are idempotent-safe and can be called from multiple screens.
- * Invalidations are debounced: a reconnect/replay burst can deliver dozens
+ * The cloud → local event path now has a single owner: the global realtime
+ * bridge (`src/realtime/realtime-bridge.ts`), mounted once per app. It
+ * publishes every cloud event through the Sync Engine, and
+ * `useSyncReconciliation` reacts by journaling the event, patching the
+ * offline read model, invalidating the affected caches (debounced, 400 ms)
+ * and relaying the event to LAN peers.
+ *
+ * `useOrderRealtimeUpdates` used to be mounted per screen (POS, Orders,
+ * Kitchen, Display). That meant every mounted screen processed the same
+ * event — duplicated persistence, duplicated invalidations, duplicated
+ * fetches — and every screen that did NOT mount it (Dashboard, Settings)
+ * never saw another terminal's order at all. It is kept as a no-op so
+ * existing call sites keep compiling; new code must not use it.
+ *
+ * Invalidations stay coalesced: a reconnect/replay burst can deliver dozens
  * of events at once, and an immediate invalidate-per-event forces repeated
- * full re-renders of boards/grids — a major CPU spike source on low-power
- * POS hardware. Coalescing into one invalidation per ~400ms window keeps
- * the UI fresh without the render storm.
+ * full re-renders of boards/grids — a major CPU spike on low-power POS
+ * hardware. One invalidation per ~400 ms window keeps the UI fresh without
+ * the render storm.
  */
 
-import { useEffect } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { orderEventsService } from "../realtime/order-events.service";
-import { orderSnapshotsService } from "../sync/order-snapshots.service";
-import { syncEngine } from "../sync/engine";
-import { generateEventId } from "../utils/uuid";
-import { getAppInstanceId } from "../adapters/devices";
-import { getActiveBusiness } from "../adapters/business";
-import { openSyncDatabase } from "../db/connection";
-import { getOrderById } from "../db/operations";
-import type { DomainEvent } from "../sync/types";
-
-const INVALIDATE_DEBOUNCE_MS = 400;
-const UNKNOWN_ORDER_PULL_DEBOUNCE_MS = 1500;
+import { useGlobalRealtimeBridge } from "../realtime/realtime-bridge";
 
 /**
- * Subscribe to real-time order events and invalidate all queries under the
- * given root key prefix (e.g. ['seller'], ['pos'], ['kiosk']).
- *
- * Each event is also persisted to the durable offline read model so order
- * history and states survive a restart while offline, and published through
- * the Sync Engine so useSyncReconciliation + LAN relay fire without polling.
- *
- * Call once per screen that needs live updates (POS, Orders, Kitchen, etc.).
+ * @deprecated Mount the global bridge once at the app root instead
+ * (`useRealtimeInvalidation` or `useSyncReconciliation`). Kept as a no-op
+ * so legacy call sites remain source-compatible.
  */
-export function useOrderRealtimeUpdates(rootKey: readonly string[]): void {
-  const queryClient = useQueryClient();
+export function useOrderRealtimeUpdates(_rootKey: readonly string[]): void {}
 
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const pendingOrderIds = new Set<string>();
-    const pending = { rootKey: false };
-    const ownDeviceId = getAppInstanceId();
-
-    const flush = () => {
-      timer = undefined;
-      if (pending.rootKey) queryClient.invalidateQueries({ queryKey: rootKey });
-      for (const oid of pendingOrderIds) {
-        queryClient.invalidateQueries({ queryKey: [...rootKey, "order", oid] });
-      }
-      pendingOrderIds.clear();
-      pending.rootKey = false;
-    };
-
-    const unsub = orderEventsService.onOrderUpdates((event) => {
-      pending.rootKey = true;
-      if (event.order_id) pendingOrderIds.add(event.order_id);
-
-      const payload = { ...event } as Record<string, unknown>;
-      // Delivery events carry no business_id — the socket already filtered by
-      // business, so stamp the active one for read-model patching.
-      if (!payload.business_id && !payload.businessId) {
-        try {
-          const bid = getActiveBusiness()?.id;
-          if (bid) payload.business_id = bid;
-        } catch {}
-      }
-      const domainEvent: DomainEvent = {
-        event_id: (payload.event_id as string) ?? generateEventId(),
-        event_type: event.type,
-        event_version: (payload.event_version as string) ?? "1.0",
-        timestamp: (payload.timestamp as string) ?? new Date().toISOString(),
-        device_id: (payload.device_id as string) ?? ownDeviceId,
-        user_id: (payload.user_id as string) ?? "system",
-        entity_id: event.order_id ?? "",
-        payload,
-      };
-
-      // Persist to durable offline read model (entity_snapshots table).
-      orderSnapshotsService.persistOrderEvent(domainEvent, "cloud").catch(() => {});
-
-      // order.created from another terminal is summary-only (no full body):
-      // invalidate alone can't surface it because SQLite has no row. Pull
-      // once (debounced) when the order is unknown locally. Event-driven —
-      // no polling.
-      if (event.type === "order.created" && event.order_id) {
-        const bid = payload.business_id as string | undefined;
-        if (bid) {
-          void (async () => {
-            try {
-              const db = await openSyncDatabase();
-              const known = await getOrderById(db, bid, event.order_id as string);
-              if (!known) scheduleUnknownOrderPull(bid);
-            } catch {}
-          })();
-        }
-      }
-
-      // Publish through the Sync Engine so useSyncReconciliation + LAN relay
-      // fire without waiting for the next poll.
-      try {
-        syncEngine.publish(domainEvent);
-      } catch {}
-
-      if (!timer) timer = setTimeout(flush, INVALIDATE_DEBOUNCE_MS);
-    });
-
-    return () => {
-      if (timer) clearTimeout(timer);
-      unsub();
-    };
-  }, [queryClient, rootKey]);
+/**
+ * Global realtime invalidation — mounts the single app-wide Phoenix
+ * subscription. Pair with `useSyncReconciliation` (which reacts to the
+ * published events) at the app root.
+ */
+export function useRealtimeInvalidation(): void {
+  useGlobalRealtimeBridge();
 }
-
-/**
- * Debounced pull for remotely-created orders (one timer per business).
- * Module-level so bursts across screens coalesce into a single pull.
- */
-const unknownOrderPullTimers = new Map<string, ReturnType<typeof setTimeout>>();
-function scheduleUnknownOrderPull(businessId: string): void {
-  if (unknownOrderPullTimers.has(businessId)) return;
-  const t = setTimeout(() => {
-    unknownOrderPullTimers.delete(businessId);
-    void import("../sync/sync-jobs.service")
-      .then((m) => m.pullRemoteOrders(businessId))
-      .catch(() => {});
-  }, UNKNOWN_ORDER_PULL_DEBOUNCE_MS);
-  unknownOrderPullTimers.set(businessId, t);
-}
-
-/**
- * Global realtime invalidation — currently handled entirely by
- * useOrderRealtimeUpdates + useSyncReconciliation. Kept as a no-op for
- * backward compatibility with any lingering call sites.
- */
-export function useRealtimeInvalidation(): void {}

@@ -5,7 +5,8 @@
  */
 
 import { openSyncDatabase } from "../db/connection";
-import { insertOrder, getOrderById, markOrderSyncFailed } from "../db/operations";
+import { markOrderSyncFailed } from "../db/operations";
+import { mergeOrderFromServer } from "./order-merge";
 import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
 import { getAuthToken, getRefreshToken, setAuthTokens, clearAuth, subscribeAuth } from "../adapters/auth";
 import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
@@ -247,10 +248,11 @@ async function tryRest(businessId: string, payload: Record<string, unknown>, com
 }
 
 /**
- * Already-applied absorb for sync_jobs rows: pull server truth, and if the
- * order is already at this command's target status, complete the job. Only
- * fires when the pull actually touched the row (hlc change) so a stale
- * local optimistic write can never delete work the server never applied.
+ * Already-applied absorb for sync_jobs rows: the server already moved the
+ * order to this command's target status, so the queued job is redundant.
+ *
+ * The comparison uses the SERVER status reported by the pull — never the
+ * local row, which may show the device's own queued intent.
  */
 async function absorbSyncJobIfApplied(
   db: Awaited<ReturnType<typeof openSyncDatabase>>,
@@ -261,20 +263,9 @@ async function absorbSyncJobIfApplied(
 ): Promise<boolean> {
   const target = getQueuedStatus(commandType);
   if (!target || !entityId) return false;
-  const before = await db.getFirstAsync<{ hlc: string | null }>(
-    `SELECT hlc FROM orders WHERE business_id = ? AND id = ?;`,
-    businessId,
-    entityId,
-  );
-  await pullRemoteOrders(businessId);
-  const afterHlc = await db.getFirstAsync<{ hlc: string | null }>(
-    `SELECT hlc FROM orders WHERE business_id = ? AND id = ?;`,
-    businessId,
-    entityId,
-  );
-  if (!afterHlc || afterHlc.hlc === before?.hlc) return false;
-  const order = await getOrderById(db, businessId, entityId);
-  if (order && order.status === target) {
+  const serverStatuses = await pullRemoteOrders(businessId);
+  const serverStatus = serverStatuses.get(entityId);
+  if (serverStatus === target) {
     await db.runAsync(`UPDATE sync_jobs SET status='completed', updated_at=? WHERE id=?;`, new Date().toISOString(), jobId);
     syncLogger.info("SyncJobs", "Transition already applied on server, absorbing job", {
       businessId,
@@ -384,7 +375,10 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
   inflight.set(key, new Promise<void>((r) => { resolveInflight = r; }));
   try {
     const db = await openSyncDatabase();
-    const row = await db.getFirstAsync<{ id: string; business_id: string; command_type: string; entity_id: string; payload: string; attempts: number }>(`SELECT * FROM sync_jobs WHERE business_id = ? AND entity_id = ? AND status='pending' ORDER BY created_at LIMIT 1;`, businessId, entityId);
+    // FIFO with a stable tiebreaker: two commands created in the same
+    // millisecond (fast taps) must still drain in insertion order, otherwise
+    // a transition can overtake the command it depends on.
+    const row = await db.getFirstAsync<{ id: string; business_id: string; command_type: string; entity_id: string; payload: string; attempts: number }>(`SELECT * FROM sync_jobs WHERE business_id = ? AND entity_id = ? AND status='pending' ORDER BY created_at ASC, rowid ASC LIMIT 1;`, businessId, entityId);
     syncLogger.debug("SyncJobs", "drainOne fetched row", { businessId, entityId, found: !!row, command_type: row?.command_type });
     if (!row) {
       syncLogger.debug("SyncJobs", "drainOne no pending row", { businessId, entityId });
@@ -424,7 +418,7 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
         syncLogger.info("SyncJobs", "Drained via PHX", { businessId, entityId });
         clearRetry(businessId);
         try {
-          const next = await db.getFirstAsync<{ id: string }>(`SELECT id FROM sync_jobs WHERE business_id=? AND entity_id=? AND status='pending' ORDER BY created_at LIMIT 1;`, businessId, entityId);
+          const next = await db.getFirstAsync<{ id: string }>(`SELECT id FROM sync_jobs WHERE business_id=? AND entity_id=? AND status='pending' ORDER BY created_at ASC, rowid ASC LIMIT 1;`, businessId, entityId);
           if (next) setTimeout(() => void drainOne(businessId, entityId), 50);
         } catch {}
         return;
@@ -442,7 +436,7 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
       clearRetry(businessId);
       // Immediately drain next pending for same entity (FIFO chain: create -> prepare -> ready -> pickup should sync in order without waiting for timer)
       try {
-        const next = await db.getFirstAsync<{ id: string }>(`SELECT id FROM sync_jobs WHERE business_id=? AND entity_id=? AND status='pending' ORDER BY created_at LIMIT 1;`, businessId, entityId);
+        const next = await db.getFirstAsync<{ id: string }>(`SELECT id FROM sync_jobs WHERE business_id=? AND entity_id=? AND status='pending' ORDER BY created_at ASC, rowid ASC LIMIT 1;`, businessId, entityId);
         if (next) {
           syncLogger.debug("SyncJobs", "chaining next job for same entity", { businessId, entityId });
           // fire next without inflight block — we already cleared inflight for this key, so recurse
@@ -609,27 +603,36 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
   }
 }
 
-export async function pullRemoteOrders(businessId: string): Promise<void> {
+/**
+ * Pull the server's recent orders into the local read model.
+ *
+ * Returns the SERVER status per order id. The local row can show a
+ * different status (a queued transition keeps the device's intent on top of
+ * the server copy), so a caller that needs to know what the server actually
+ * holds must read it from this map — never from the merged local row.
+ */
+export async function pullRemoteOrders(businessId: string): Promise<Map<string, string>> {
+  const serverStatuses = new Map<string, string>();
   if (!businessId || !canBusinessSync(businessId)) {
     syncLogger.debug("SyncJobs", "pullRemoteOrders early-return — no business/auth", { businessId });
-    return;
+    return serverStatuses;
   }
   const onlineForRest = isOnlineForRest();
   syncLogger.debug("SyncJobs", "pullRemoteOrders entry", { businessId, onlineForRest, hasToken: isAuthenticated() });
     if (!onlineForRest) {
     syncLogger.debug("SyncJobs", "pullRemoteOrders early-return gate", { businessId, onlineForRest, hasToken: isAuthenticated(), connectivity: getConnectivityState() });
-    return;
+    return serverStatuses;
   }
   // Respect a global 429 cooldown for background pulls.
   if (isRateLimited()) {
     syncLogger.debug("SyncJobs", "pullRemoteOrders skipped — rate limited", { businessId });
-    return;
+    return serverStatuses;
   }
   try {
     const http = getHttpClient();
     if (!http) {
       syncLogger.debug("SyncJobs", "pullRemoteOrders no http client", { businessId });
-      return;
+      return serverStatuses;
     }
     // Gradual recent-first pull for single business — page 1 immediate, then background older pages (max 5 pages = 100 recent)
     let page = 1;
@@ -649,7 +652,12 @@ export async function pullRemoteOrders(businessId: string): Promise<void> {
       if ((data as unknown[]).length) {
         const db = await openSyncDatabase();
         for (const o of data as unknown as import("../types/api/seller.api").SellerOrder[]) {
-          try { await insertOrder(db, o as unknown as import("../types/api/seller.api").SellerOrder & { hlc?: string }); } catch (e) { syncLogger.debug("SyncJobs", "pullRemoteOrders insertOrder fail", { err: String(e) }); }
+          try {
+            // Server truth — but a pending local command keeps its intent
+            // (see order-merge). Never let a pull revert queued work.
+            await mergeOrderFromServer(db, businessId, o as import("../types/api/seller.api").SellerOrder);
+            if (o?.id && o?.status) serverStatuses.set(o.id, o.status);
+          } catch (e) { syncLogger.debug("SyncJobs", "pullRemoteOrders merge fail", { err: String(e) }); }
         }
         // persist page 1 to snapshot for offline fallback
         if (page === 1) {
@@ -672,6 +680,52 @@ export async function pullRemoteOrders(businessId: string): Promise<void> {
       syncLogger.debug("SyncJobs", "pullRemoteDeliveries result", { businessId, dataLen: (d as unknown[]).length });
     }
   } catch (e) { syncLogger.debug("SyncJobs", "pullRemoteDeliveries error", { err: String(e) }); }
+  return serverStatuses;
+}
+
+/**
+ * Fetch exactly ONE order from the server and merge it into the local
+ * read model.
+ *
+ * Used when a realtime `order.created` event arrives for an order this
+ * device has never seen: the event carries only a summary, so the order has
+ * to be fetched — but fetching the whole list (100 orders, several pages,
+ * heavy serialization) for one new order is pure waste on the backend.
+ *
+ * Uses the existing business-scoped list endpoint with an `order_number`
+ * filter, so no backend change is required.
+ */
+export async function fetchRemoteOrderByNumber(
+  businessId: string,
+  orderNumber: string,
+): Promise<boolean> {
+  if (!businessId || !orderNumber) return false;
+  if (!canBusinessSync(businessId)) return false;
+  if (!isOnlineForRest()) return false;
+  if (isRateLimited()) return false;
+  try {
+    const http = getHttpClient();
+    if (!http) return false;
+    await paceSync();
+    const res = await http.get<{ data?: unknown[] }>(
+      `/businesses/${businessId}/orders`,
+      { params: { order_number: orderNumber, page_size: 1 } } as unknown as Record<string, unknown>,
+    );
+    const payload = res.data as { data?: unknown[] } | undefined;
+    const rows = payload?.data ?? [];
+    const first = rows[0] as import("../types/api/seller.api").SellerOrder | undefined;
+    if (!first?.id) {
+      syncLogger.debug("SyncJobs", "fetchRemoteOrderByNumber — no row returned", { businessId, orderNumber });
+      return false;
+    }
+    const db = await openSyncDatabase();
+    await mergeOrderFromServer(db, businessId, first);
+    syncLogger.info("SyncJobs", "Fetched single remote order", { businessId, orderNumber, id: first.id });
+    return true;
+  } catch (e) {
+    syncLogger.debug("SyncJobs", "fetchRemoteOrderByNumber failed", { businessId, orderNumber, err: String(e) });
+    return false;
+  }
 }
 
 export async function drainPending(businessId: string): Promise<void> {
@@ -687,7 +741,7 @@ export async function drainPending(businessId: string): Promise<void> {
     return;
   }
   const db = await openSyncDatabase();
-  const rows = await db.getAllAsync<{ entity_id: string }>(`SELECT entity_id FROM sync_jobs WHERE business_id=? AND status='pending' ORDER BY created_at LIMIT 20;`, businessId);
+  const rows = await db.getAllAsync<{ entity_id: string }>(`SELECT entity_id FROM sync_jobs WHERE business_id=? AND status='pending' ORDER BY created_at ASC, rowid ASC LIMIT 20;`, businessId);
   syncLogger.debug("SyncJobs", "drainPending found rows", { businessId, count: rows.length, rows });
   for (const r of rows) {
     await drainOne(businessId, r.entity_id);

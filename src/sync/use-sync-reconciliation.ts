@@ -12,6 +12,7 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { syncEngine } from "./engine";
 import { getActiveBusiness } from "../adapters/business";
+import { useGlobalRealtimeBridge } from "../realtime/realtime-bridge";
 import {
   applyPendingOrderEvent,
   applyOrderStateChangeEvent,
@@ -51,6 +52,11 @@ const RECONCILE_DEBOUNCE_MS = 400;
 
 export function useSyncReconciliation(): void {
   const queryClient = useQueryClient();
+
+  // Single app-wide Phoenix subscription. Mounting it here means one root
+  // `useSyncReconciliation` is enough for the whole app — screens no longer
+  // need their own realtime subscription.
+  useGlobalRealtimeBridge();
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -133,13 +139,18 @@ export function useSyncReconciliation(): void {
         localNodeService.getClient()?.publishEvent?.(event);
       }
 
+      // Where the event came from: a Phoenix push is "cloud", a LAN relay is
+      // "lan", everything produced on this device is "local". The journal
+      // stores it so a cloud event is never re-hydrated as pending local work.
+      const origin = event.origin ?? "local";
+
       // Reference data changed (locally or echoed from the cloud): re-sync the
       // affected keys and refresh caches on this device.
-      await applyReferenceChangeEvent(event, "local");
+      await applyReferenceChangeEvent(event, origin);
 
       // Order/delivery state changed: refresh order caches so this terminal
       // shows the same order states as the device that made the change.
-      await applyOrderStateChangeEvent(event, "local");
+      await applyOrderStateChangeEvent(event, origin);
       // Any order/delivery event should refresh dashboard recent orders immediately (fresh on transition)
       if (event.event_type.startsWith("order.") || event.event_type.startsWith("delivery.")) {
         schedule("pending");
@@ -151,7 +162,7 @@ export function useSyncReconciliation(): void {
         event.event_type === "order.create_queued" ||
         event.event_type === "order.created"
       ) {
-        await applyPendingOrderEvent(event, "local");
+        await applyPendingOrderEvent(event, origin);
       }
 
       if (event.event_type === "order.created" && isLocalOrderEvent(event)) {

@@ -12,6 +12,13 @@ export interface Business {
   is_open: boolean;
   /** Seller-facing open/close toggle (present when backend serializes it). */
   manually_closed?: boolean;
+  /**
+   * Fulfilment flow for orders taken on a terminal / in the business app.
+   * "staged" (default) = accept → preparing → ready → completed;
+   * "direct" = completed the moment the sale is rung up.
+   * Buyer-placed online orders always keep the staged pipeline.
+   */
+  pos_order_flow?: "staged" | "direct";
   owner_id: string;
   business_number: string;
   latitude: number;

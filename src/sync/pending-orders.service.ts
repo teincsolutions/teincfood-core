@@ -173,7 +173,7 @@ export async function hydratePendingOrders(): Promise<void> {
  */
 export async function applyOrderStateChangeEvent(
   event: DomainEvent,
-  origin: "local" | "lan" = "local",
+  origin: "local" | "lan" | "cloud" = "local",
 ): Promise<void> {
   try {
     const isQueued = QUEUED_STATUS_EVENT_TYPES.has(event.event_type);
@@ -256,7 +256,7 @@ function patchPendingPaid(event: DomainEvent): void {
 
 export async function applyPendingOrderEvent(
   event: DomainEvent,
-  origin: "local" | "lan" = "local",
+  origin: "local" | "lan" | "cloud" = "local",
 ): Promise<void> {
   try {
     if (event.event_type === PENDING_EVENT_TYPE) {

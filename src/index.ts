@@ -72,6 +72,7 @@ export { createAppQueryClient, createQueryPersister } from "./providers/query-cl
 export { useSellerAnalyticsQuery } from "./hooks/analytics.hooks";
 export { useSellerDashboardQuery } from "./hooks/dashboard.hooks";
 export { useRealtimeInvalidation, useOrderRealtimeUpdates } from "./hooks/realtime-stubs";
+export { useGlobalRealtimeBridge, subscribeGlobalRealtime } from "./realtime/realtime-bridge";
 export {
   useAcceptFleetInvitationMutation,
   useAcceptBusinessInvitationMutation,
@@ -230,6 +231,7 @@ export * from "./hooks/business-hours.hooks";
 
 // ── Domain (offline-first primary DB) ──
 export * from "./domain/orders/service";
+export * from "./domain/orders/order-flow";
 export * from "./domain/orders/snapshots";
 
 // ── Realtime (single source — PHX WebSocket + business:{id}) ──

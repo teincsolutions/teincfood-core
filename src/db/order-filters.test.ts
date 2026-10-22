@@ -64,6 +64,21 @@ describe("listOrders filters (order_type / is_paid / date range)", () => {
     expect(await ids({ is_paid: "unpaid" })).toEqual(["o2", "o3"]);
   });
 
+  it("counts a paid_at-only order (cash at the till) as paid", async () => {
+    // Backend POS cash sales have paid_at on the order and no payment
+    // transaction, so the blob alone reads unpaid.
+    const db = await openSyncDatabase();
+    await insertOrder(
+      db,
+      {
+        ...order({ id: "o4", order_type: "takeout", is_paid: false, inserted_at: "2026-03-01T10:00:00.000Z" }),
+        paid_at: "2026-03-01T10:00:00.000Z",
+      } as never,
+    );
+    expect(await ids({ is_paid: "paid" })).toEqual(["o1", "o4"]);
+    expect(await ids({ is_paid: "unpaid" })).toEqual(["o2", "o3"]);
+  });
+
   it("filters by date range", async () => {
     expect(await ids({ date_from: "2026-01-10", date_to: "2026-01-31" })).toEqual(["o2"]);
   });

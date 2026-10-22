@@ -56,12 +56,20 @@ const DEFAULT_SYNC_KEYS: ReferenceDataKey[] = [
 ];
 
 class ReferenceSyncService {
-  private isSyncing = false;
+  /** Single-flight per business (a global flag made a business switch skip its sync). */
+  private inflight = new Map<string, Promise<ReferenceSyncResult>>();
+  /**
+   * Keys requested while a pass was already running for that business.
+   * They used to be dropped, which meant a menu edit could land while
+   * another reference sync was in flight and never be fetched.
+   */
+  private queued = new Map<string, Set<ReferenceDataKey | "*">>();
 
   async sync(options: ReferenceSyncOptions): Promise<ReferenceSyncResult> {
-    if (!canBusinessSync(options.businessId)) {
+    const businessId = options.businessId;
+    if (!canBusinessSync(businessId)) {
       syncLogger.debug("ReferenceSync", "Skipping sync — no business/auth", {
-        businessId: options.businessId,
+        businessId,
       });
       return {
         synced: [],
@@ -70,19 +78,73 @@ class ReferenceSyncService {
         errors: {} as Record<ReferenceDataKey, string>,
       };
     }
-    if (this.isSyncing) {
-      return {
-        synced: [],
-        skipped: [],
-        failed: [],
-        errors: {} as Record<ReferenceDataKey, string>,
-      };
+
+    const running = this.inflight.get(businessId);
+    if (running) {
+      // Remember the request so it is not lost, then wait for the pass that
+      // is already running.
+      this.rememberRequest(businessId, options.keys);
+      try {
+        return await running;
+      } catch {
+        return { synced: [], skipped: [], failed: [], errors: {} as Record<ReferenceDataKey, string> };
+      }
     }
 
+    const pass = (async () => {
+      try {
+        return await this.runSync(options);
+      } finally {
+        this.inflight.delete(businessId);
+      }
+    })();
+    this.inflight.set(businessId, pass);
+
+    let result: ReferenceSyncResult;
+    try {
+      result = await pass;
+    } catch (error) {
+      syncLogger.warn("ReferenceSync", "Sync pass failed", { businessId, error: String(error) });
+      result = { synced: [], skipped: [], failed: [], errors: {} as Record<ReferenceDataKey, string> };
+    }
+
+    // Requests that arrived during the pass are served by one follow-up
+    // pass — never silently dropped.
+    const queued = this.queued.get(businessId);
+    if (queued && queued.size > 0) {
+      this.queued.delete(businessId);
+      const wantsAll = queued.has("*");
+      const keys = Array.from(queued).filter((k): k is ReferenceDataKey => k !== "*");
+      const followUp: ReferenceSyncOptions = wantsAll
+        ? { businessId }
+        : { businessId, keys, incremental: true };
+      syncLogger.info("ReferenceSync", "Running follow-up pass for queued keys", {
+        businessId,
+        all: wantsAll,
+        keys,
+      });
+      await this.sync(followUp).catch(() => undefined);
+    }
+
+    return result;
+  }
+
+  private rememberRequest(businessId: string, keys?: ReferenceDataKey[]): void {
+    const set = this.queued.get(businessId) ?? new Set<ReferenceDataKey | "*">();
+    if (!keys || keys.length === 0) {
+      set.add("*");
+    } else {
+      for (const key of keys) set.add(key);
+    }
+    this.queued.set(businessId, set);
+  }
+
+  private async runSync(options: ReferenceSyncOptions): Promise<ReferenceSyncResult> {
+    const businessId = options.businessId;
     const { isOnline, isCloudReachable } = getConnectivityState();
     if (!isOnline || isCloudReachable === "unreachable") {
       syncLogger.debug("ReferenceSync", "Skipping sync — cloud not reachable", {
-        businessId: options.businessId,
+        businessId,
         isOnline,
         isCloudReachable,
       });
@@ -94,9 +156,8 @@ class ReferenceSyncService {
       };
     }
 
-    this.isSyncing = true;
     syncLogger.info("ReferenceSync", "Starting reference data sync", {
-      businessId: options.businessId,
+      businessId,
       keys: options.keys,
     });
 
@@ -174,14 +235,13 @@ class ReferenceSyncService {
         );
       }
     } finally {
-      this.isSyncing = false;
+      syncLogger.info("ReferenceSync", "Reference data sync complete", {
+        businessId,
+        synced: result.synced,
+        skipped: result.skipped,
+        failed: result.failed,
+      });
     }
-
-    syncLogger.info("ReferenceSync", "Reference data sync complete", {
-      synced: result.synced,
-      skipped: result.skipped,
-      failed: result.failed,
-    });
 
     return result;
   }

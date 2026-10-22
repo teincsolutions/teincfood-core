@@ -668,33 +668,22 @@ class CommandQueueService {
   }
 
   /**
-   * Already-applied absorb: pull server truth, and if the order is already
-   * at this command's target status, delete the command as success. The
-   * absorb ONLY fires when the pull actually touched the row (hlc change) —
-   * otherwise a stale local optimistic write could mask a genuine race and
-   * delete work the server never applied.
+   * Already-applied absorb: the server already moved the order to this
+   * command's target status, so the queued command is redundant and can be
+   * dropped.
+   *
+   * The comparison uses the SERVER status reported by the pull — the local
+   * row may show this device's own queued intent and would absorb itself.
    */
   private async absorbIfApplied(command: PersistedCommand): Promise<boolean> {
     const target = QUEUED_STATUS_BY_COMMAND[command.command_type];
     if (!target || !command.entity_id) return false;
     try {
-      const db = getSyncDatabase();
-      const before = await db.getFirstAsync<{ hlc: string | null }>(
-        `SELECT hlc FROM orders WHERE business_id = ? AND id = ?;`,
-        command.business_id,
-        command.entity_id,
-      );
       const { pullRemoteOrders } = await import("./sync-jobs.service");
-      await pullRemoteOrders(command.business_id);
-      const afterHlc = await db.getFirstAsync<{ hlc: string | null }>(
-        `SELECT hlc FROM orders WHERE business_id = ? AND id = ?;`,
-        command.business_id,
-        command.entity_id,
-      );
-      if (!afterHlc || afterHlc.hlc === before?.hlc) return false;
-      const { getOrderById } = await import("../db/operations");
-      const order = await getOrderById(db, command.business_id, command.entity_id);
-      if (order && order.status === target) {
+      const serverStatuses = await pullRemoteOrders(command.business_id);
+      const serverStatus = serverStatuses.get(command.entity_id);
+      if (serverStatus === target) {
+        const db = getSyncDatabase();
         await deleteCommand(db, command.command_id);
         retryNotBefore.delete(command.command_id);
         syncLogger.info("CommandQueueService", "Transition already applied on server, absorbing", {

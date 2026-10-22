@@ -21,6 +21,7 @@ import {
   getEntitySnapshot,
   getEntitySnapshotsByType,
   pruneEntitySnapshots,
+  updateOrderPayment,
 } from "../db/operations";
 import { syncLogger } from "../utils/sync-logger";
 import type { DomainEvent } from "./types";
@@ -148,6 +149,24 @@ class OrderSnapshotsService {
       const db = await openSyncDatabase();
       await insertEvent(db, { event, origin });
       const businessId = (payload?.business_id as string | undefined) ?? (payload?.businessId as string | undefined) ?? null;
+      // Dual-write the canonical orders row: POS/Orders screens read payment
+      // from there, not from the snapshot. Without this a mobile-money sale
+      // stayed UNPAID (and kept offering "Collect cash") after its payment
+      // completed, because only the snapshot list was patched.
+      if (businessId) {
+        await updateOrderPayment(db, businessId, orderId, { is_paid: true, paid_at: paidAt });
+      } else {
+        try {
+          const row = await db.getFirstAsync<{ business_id: string }>(
+            `SELECT business_id FROM orders WHERE id = ? OR order_number = ? LIMIT 1;`,
+            orderId,
+            (payload?.order_number as string | undefined) ?? orderId,
+          );
+          if (row?.business_id) {
+            await updateOrderPayment(db, row.business_id, orderId, { is_paid: true, paid_at: paidAt });
+          }
+        } catch {}
+      }
       const lists = businessId
         ? await getEntitySnapshotsByType<SellerOrderListSnapshot>(db, "seller_orders", businessId)
         : await getEntitySnapshotsByType<SellerOrderListSnapshot>(db, "seller_orders");

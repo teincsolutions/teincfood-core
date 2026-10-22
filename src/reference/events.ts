@@ -93,7 +93,7 @@ export function emitReferenceChanged(
  */
 export async function applyReferenceChangeEvent(
   event: DomainEvent,
-  origin: "local" | "lan" = "local",
+  origin: "local" | "lan" | "cloud" = "local",
 ): Promise<void> {
   try {
     if (event.event_type !== REFERENCE_CHANGED_EVENT_TYPE) return;

@@ -17,7 +17,7 @@ export function createMemoryDriver(): SqliteDriver {
     orders: [],
     sync_jobs: [],
   };
-  let autoId = { commands: 1, events: 1, migrations: 1 };
+  let autoId = { commands: 1, events: 1, migrations: 1, sync_jobs: 1 };
 
   const driver: SqliteDriver = {
     async execAsync(_sql: string) {
@@ -194,15 +194,18 @@ export function createMemoryDriver(): SqliteDriver {
 
       // orders insert (primary DB)
       if (s.includes("INSERT INTO orders")) {
-        const [id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, hlc] = args as any[];
+        const [id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, updated_at, hlc] = args as any[];
         const existing = tables.orders.find((r) => r.id === id);
-        // LWW check via hlc (if existing and incoming older, skip)
+        // LWW check via hlc (if existing and incoming older, skip) — only for
+        // the local/LAN write path. The server write path (`upsertServerOrder`)
+        // has no hlc guard: the server copy always wins.
+        const lwwGuarded = s.includes("excluded.hlc >= orders.hlc");
         if (existing) {
-          if (hlc && existing.hlc && hlc < existing.hlc) return { lastInsertRowId: 0, changes: 0 };
-          Object.assign(existing, { business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, hlc });
+          if (lwwGuarded && hlc && existing.hlc && hlc < existing.hlc) return { lastInsertRowId: 0, changes: 0 };
+          Object.assign(existing, { business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at: paid_at ?? existing.paid_at ?? null, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, updated_at, hlc });
           return { lastInsertRowId: 0, changes: 1 };
         }
-        tables.orders.push({ id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, hlc, deleted_at: null });
+        tables.orders.push({ id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at: paid_at ?? null, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, updated_at, hlc, deleted_at: null });
         return { lastInsertRowId: 1, changes: 1 };
       }
 
@@ -210,7 +213,7 @@ export function createMemoryDriver(): SqliteDriver {
       if (s.includes("INSERT OR IGNORE INTO sync_jobs")) {
         const [id, business_id, command_type, entity_id, payload, created_at, updated_at] = args as any[];
         if (tables.sync_jobs.find((r) => r.id === id)) return { lastInsertRowId: 0, changes: 0 };
-        tables.sync_jobs.push({ id, business_id, command_type, entity_id, payload, status: "pending", attempts: 0, created_at, updated_at });
+        tables.sync_jobs.push({ rowid: autoId.sync_jobs++, id, business_id, command_type, entity_id, payload, status: "pending", attempts: 0, created_at, updated_at });
         return { lastInsertRowId: 1, changes: 1 };
       }
 
@@ -249,9 +252,9 @@ export function createMemoryDriver(): SqliteDriver {
         return { lastInsertRowId: 0, changes: 1 };
       }
       if (s.includes("UPDATE orders SET payment = ?")) {
-        const [payment, hlc, business_id, id1, id2] = args as any[];
+        const [payment, paid_at, hlc, business_id, id1, id2] = args as any[];
         const row = tables.orders.find((r) => r.business_id === business_id && (r.id === id1 || r.order_number === id2));
-        if (row) { row.payment = payment; row.hlc = hlc; }
+        if (row) { row.payment = payment; row.paid_at = row.paid_at ?? paid_at ?? null; row.hlc = hlc; }
         return { lastInsertRowId: 0, changes: 1 };
       }
       if (s.includes("UPDATE orders SET order_number=")) {
@@ -346,6 +349,13 @@ export function createMemoryDriver(): SqliteDriver {
         return (row as unknown as T) ?? null;
       }
 
+      // orders business lookup by id/number (payment event with no business_id)
+      if (s.includes("SELECT business_id FROM orders WHERE id = ? OR order_number = ?")) {
+        const [id1, id2] = args as string[];
+        const row = tables.orders.find((r) => r.id === id1 || r.order_number === id2);
+        return (row ? { business_id: row.business_id } as unknown as T : null);
+      }
+
       // orders hlc probe (absorb-if-applied touch detection)
       if (s.includes("SELECT hlc FROM orders WHERE business_id = ? AND id = ?")) {
         const [business_id, id] = args as string[];
@@ -357,6 +367,19 @@ export function createMemoryDriver(): SqliteDriver {
       if (s.includes("SELECT * FROM sync_jobs WHERE business_id = ? AND entity_id = ? AND status='pending'")) {
         const [business_id, entity_id] = args as string[];
         const row = tables.sync_jobs.find((r) => r.business_id === business_id && r.entity_id === entity_id && r.status === "pending");
+        return (row as unknown as T) ?? null;
+      }
+
+      // sync_jobs duplicate-command probe (transition coalescing)
+      if (s.includes("SELECT id FROM sync_jobs WHERE business_id = ? AND entity_id = ? AND command_type = ?")) {
+        const [business_id, entity_id, command_type] = args as string[];
+        const row = tables.sync_jobs.find(
+          (r) =>
+            r.business_id === business_id &&
+            r.entity_id === entity_id &&
+            r.command_type === command_type &&
+            r.status === "pending",
+        );
         return (row as unknown as T) ?? null;
       }
 
@@ -433,11 +456,11 @@ export function createMemoryDriver(): SqliteDriver {
         }
         if (s.includes("json_extract(payment, '$.is_paid') = 1")) {
           rows = rows.filter((r) => {
-            try { return JSON.parse(r.payment ?? "{}").is_paid === true; } catch { return false; }
+            try { return JSON.parse(r.payment ?? "{}").is_paid === true || r.paid_at != null; } catch { return r.paid_at != null; }
           });
-        } else if (s.includes("json_extract(payment, '$.is_paid') IS NULL")) {
+        } else if (s.includes("json_extract(payment, '$.is_paid'), 0) = 0")) {
           rows = rows.filter((r) => {
-            try { return JSON.parse(r.payment ?? "{}").is_paid !== true; } catch { return true; }
+            try { return JSON.parse(r.payment ?? "{}").is_paid !== true && r.paid_at == null; } catch { return r.paid_at == null; }
           });
         }
         if (s.includes("order_number LIKE ?")) {
@@ -471,8 +494,18 @@ export function createMemoryDriver(): SqliteDriver {
         const [business_id] = args as string[];
         const m = s.match(/LIMIT\s+(\d+)/);
         const lim = m ? parseInt(m[1],10) : 20;
-        let rows = tables.sync_jobs.filter((r) => r.business_id === business_id && r.status === "pending").sort((a,b) => (a.created_at < b.created_at ? -1 : 1)).map((r) => ({ entity_id: r.entity_id }));
+        let rows = tables.sync_jobs.filter((r) => r.business_id === business_id && r.status === "pending").sort((a,b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.rowid - b.rowid)).map((r) => ({ entity_id: r.entity_id }));
         rows = rows.slice(0, lim);
+        return rows as unknown as T[];
+      }
+
+      // sync_jobs command list for a single entity (pending intent)
+      if (s.includes("FROM sync_jobs WHERE business_id = ? AND entity_id = ?")) {
+        const [business_id, entity_id] = args as string[];
+        const rows = tables.sync_jobs
+          .filter((r) => r.business_id === business_id && r.entity_id === entity_id && r.status === "pending")
+          .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.rowid - b.rowid))
+          .map((r) => ({ command_type: r.command_type, payload: r.payload }));
         return rows as unknown as T[];
       }
 

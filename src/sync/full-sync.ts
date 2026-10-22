@@ -19,14 +19,18 @@ import { referenceSyncService } from "../reference/service";
 import { pullRemoteOrders, drainPending } from "./sync-jobs.service";
 import { canBusinessSync } from "./sync-guard";
 
-let inFlight: Promise<void> | null = null;
+const inFlight = new Map<string, Promise<void>>();
 
 export async function performFullSync(businessId?: string): Promise<void> {
   const bid = businessId ?? getActiveBusiness()?.id;
   if (!bid || !canBusinessSync(bid)) return;
   const s = getConnectivityState();
   if (!s.isOnline || s.isCloudReachable === "unreachable") return;
-  if (inFlight) { try { await inFlight; } catch {} return; }
+  // Single-flight PER BUSINESS. A global in-flight promise meant that
+  // switching business while business A was syncing made business B join
+  // A's promise and return without syncing at all.
+  const running = inFlight.get(bid);
+  if (running) { try { await running; } catch {} return; }
   const p = (async () => {
     try {
       syncLogger.info("FullSync", "Starting reference→push→pull→push", { businessId: bid });
@@ -44,6 +48,6 @@ export async function performFullSync(businessId?: string): Promise<void> {
       syncLogger.warn("FullSync", "Failed", { err: String(e) });
     }
   })();
-  inFlight = p;
-  try { await p; } finally { inFlight = null; }
+  inFlight.set(bid, p);
+  try { await p; } finally { inFlight.delete(bid); }
 }

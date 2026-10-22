@@ -7,11 +7,28 @@ class EventsService {
   private refCount = 0;
   private topic: string | null = null;
   private joined = false;
+  /**
+   * Last event sequence per business. The backend sequence is global, but the
+   * watermark is kept per business so switching business (or account) never
+   * inherits — and therefore never skips — the other scope's events.
+   */
+  private sequences = new Map<string, number>();
   private lastSequence = 0;
   private activeBusinessId: string | null = null;
+  private activeUserId: string | null = null;
   private listeners: Map<string, Set<EventCallback>> = new Map();
   private wildcardListeners: Set<EventCallback> = new Set();
   private frameHandlerUnsub: (() => void) | null = null;
+
+  private currentSequence(): number {
+    if (this.activeBusinessId) return this.sequences.get(this.activeBusinessId) ?? 0;
+    return this.lastSequence;
+  }
+
+  private setCurrentSequence(sequence: number): void {
+    if (this.activeBusinessId) this.sequences.set(this.activeBusinessId, sequence);
+    else this.lastSequence = sequence;
+  }
 
   connect(userId: string, businessId?: string | null): () => void {
     this.refCount++;
@@ -20,14 +37,22 @@ class EventsService {
 
     if (this.refCount === 1 && !this.frameHandlerUnsub) {
       this.topic = topic;
+      // A different account has a different authorization scope: sequences
+      // from the previous account are not comparable, so start clean.
+      if (this.activeUserId !== userId) {
+        this.activeUserId = userId;
+        this.sequences.clear();
+        this.lastSequence = 0;
+      }
       this.frameHandlerUnsub = phoenixSocket.onFrame(topic, ([_joinRef, _ref, _topic, event, payload]) => {
         const data = payload as Record<string, unknown>;
         const payloadBid = data?.business_id as string | undefined;
         if (this.activeBusinessId && payloadBid && payloadBid !== this.activeBusinessId) return;
         const sequence = data?._sequence;
-        if (typeof sequence === "number" && sequence <= this.lastSequence) return;
-        if (typeof sequence === "number" && sequence > this.lastSequence) this.lastSequence = sequence;
-        else if (typeof data?._sequence === "number") this.lastSequence = data._sequence as number;
+        const last = this.currentSequence();
+        if (typeof sequence === "number" && sequence <= last) return;
+        if (typeof sequence === "number") this.setCurrentSequence(sequence);
+        else if (typeof data?._sequence === "number") this.setCurrentSequence(data._sequence as number);
         // Business-state frames are LOUD (info): when live updates stall,
         // these lines prove whether the backend pushed anything at all.
         if (
@@ -51,7 +76,8 @@ class EventsService {
       });
 
       const joinPayload: Record<string, unknown> = {};
-      if (this.lastSequence > 0) joinPayload.last_sequence = this.lastSequence;
+      const joinSequence = this.currentSequence();
+      if (joinSequence > 0) joinPayload.last_sequence = joinSequence;
       if (this.activeBusinessId) joinPayload.business_id = this.activeBusinessId;
 
       phoenixSocket
@@ -104,7 +130,10 @@ class EventsService {
 
   isConnected(): boolean { return this.joined && phoenixSocket.isConnected(); }
 
-  resetSequence(): void { this.lastSequence = 0; }
+  resetSequence(): void {
+    this.lastSequence = 0;
+    this.sequences.clear();
+  }
 }
 
 export const eventsService = new EventsService();

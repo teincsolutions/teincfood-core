@@ -3,6 +3,7 @@ import { createMemoryDriver } from "../test-helpers/memory-driver";
 import { setSqliteDriver } from "../adapters/sqlite";
 import { openSyncDatabase, closeSyncDatabase } from "../db/connection";
 import { orderSnapshotsService } from "./order-snapshots.service";
+import { insertOrder, getOrderById } from "../db/operations";
 import { removeItemSync } from "../adapters/kv";
 import { generateEventId } from "../utils/uuid";
 import type { SellerOrder } from "../types/api/seller.api";
@@ -60,5 +61,49 @@ describe("orderSnapshots business isolation", () => {
     const b = await orderSnapshotsService.getSellerList("biz-B", "biz-B");
     expect((a![0] as any).is_paid).toBe(true);
     expect((b![0] as any).is_paid).not.toBe(true);
+  });
+
+  it("applyPaymentEvent patches the canonical orders row too", async () => {
+    // A mobile-money POS sale is created unpaid; when its payment completes
+    // the orders row must flip to paid or the till keeps offering "Collect
+    // cash" (only the snapshot list used to be patched).
+    const db = await openSyncDatabase();
+    await insertOrder(db, {
+      id: "o3",
+      business_id: "biz-A",
+      order_number: "01-100-003",
+      status: "awaiting_payment",
+      order_type: "takeout",
+      is_pos: true,
+      items: [],
+      subtotal_minor: 1000,
+      total_minor: 1000,
+      tax_minor: 0,
+      tax_lines: [],
+      payment: { is_paid: false, paid_at: null },
+      paid_at: null,
+      inserted_at: "2026-01-01T09:00:00.000Z",
+      updated_at: "2026-01-01T09:00:00.000Z",
+    } as never);
+    expect((await getOrderById(db, "biz-A", "o3"))?.is_paid).toBe(false);
+
+    const paidAt = "2026-01-01T10:00:00.000Z";
+    await orderSnapshotsService.applyPaymentEvent(
+      {
+        event_id: generateEventId(),
+        event_type: "payment.completed",
+        event_version: "1.0",
+        entity_id: "o3",
+        user_id: "u1",
+        device_id: "d1",
+        payload: { order_id: "o3", business_id: "biz-A", paid_at: paidAt },
+        timestamp: paidAt,
+      } as any,
+      "local",
+    );
+
+    const after = await getOrderById(db, "biz-A", "o3");
+    expect(after?.is_paid).toBe(true);
+    expect(after?.paid_at).toBe(paidAt);
   });
 });

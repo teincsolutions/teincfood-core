@@ -410,4 +410,28 @@ export const MIGRATIONS: Migration[] = [
         `);
     },
   },
+  {
+    version: 12,
+    up: async (db) => {
+      // Payment timestamp at the top level of the order.
+      //
+      // The server returns `paid_at` on the order and (for cash sales taken at
+      // the till) no payment transaction at all. Keeping the timestamp only
+      // inside the `payment` JSON blob meant every pull overwrote a locally
+      // paid cash order with the server's `{is_paid:false, paid_at:null}`,
+      // so the row read back as UNPAID. One column, backfilled from the blob,
+      // is the single local source of truth.
+      await db.execAsync(`
+          ALTER TABLE orders ADD COLUMN paid_at TEXT;
+        `);
+      try {
+        await db.execAsync(`
+            UPDATE orders
+               SET paid_at = json_extract(payment, '$.paid_at')
+             WHERE paid_at IS NULL
+               AND json_extract(payment, '$.paid_at') IS NOT NULL;
+          `);
+      } catch {}
+    },
+  },
 ];

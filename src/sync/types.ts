@@ -29,6 +29,13 @@ export interface EventMetadata {
 
 export interface DomainEvent<T = unknown> extends EventMetadata {
   payload: T;
+  /**
+   * Where the event came from. Optional for backwards compatibility, but the
+   * journal stores it: "local" (this device), "cloud" (Phoenix push) or
+   * "lan" (mesh peer). A cloud event must not be re-hydrated as a pending
+   * local command after a restart.
+   */
+  origin?: "local" | "lan" | "cloud";
 }
 
 export interface CommandMetadata {
