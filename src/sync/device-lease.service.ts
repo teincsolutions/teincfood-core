@@ -37,7 +37,9 @@ export async function ensureLease(businessId: string): Promise<string | null> {
       try {
         const leasedAt = getSync<string>(`${LEASE_KEY(businessId)}:leased_at`);
         const needsRefresh = !leasedAt || Date.now() - new Date(leasedAt).getTime() > LEASE_TTL_MS - 24 * 60 * 60 * 1000;
-        if (needsRefresh) await refreshLease(businessId);
+        // Never make readiness wait on the refresh — a slow network must not
+        // hold POS startup when a valid cached lease already exists.
+        if (needsRefresh) void refreshLease(businessId).catch(() => {});
       } catch {
         // keep existing on any refresh failure
       }

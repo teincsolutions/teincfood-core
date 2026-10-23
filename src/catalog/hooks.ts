@@ -81,9 +81,16 @@ export function useMenuItemsQuery(filters?: { search?: string; category_ids?: st
 
   const data = isOnline && networkData !== undefined ? networkData : enabled ? filtered : undefined;
 
+  // A local snapshot (even an empty list) means the POS has something to
+  // render: never gate the whole screen on the in-flight network refresh.
+  const hasLocalSnapshot = cachedQuery.data != null;
+  const pending =
+    cachedQuery.isPending || (!hasLocalSnapshot && networkQuery.isFetching);
+
   return {
     data,
-    isPending: cachedQuery.isPending && !networkData,
+    isPending: pending,
+    isLoading: pending,
     isFetching: networkQuery.isFetching,
     isError: cachedQuery.isError || networkQuery.isError,
     error: (cachedQuery.error ?? networkQuery.error) as unknown,
@@ -123,10 +130,14 @@ export function useMenuCategoriesQuery() {
   const usingNetwork = isOnline && (networkQuery.data as unknown);
   const data = usingNetwork ? networkQuery.data : cachedQuery.data;
   const hasCache = cachedQuery.data != null;
+  // Only report "loading" when there is nothing local to show; the network
+  // refresh must never hide an already-cached category list.
+  const pending = cachedQuery.isPending || (!hasCache && networkQuery.isFetching);
   return {
     ...networkQuery,
     data,
-    isPending: cachedQuery.isPending && !networkQuery.data,
+    isPending: pending,
+    isLoading: pending,
     isError: hasCache ? false : networkQuery.isError,
     error: hasCache ? null : networkQuery.error,
   } as unknown as ReturnType<typeof useQuery>;

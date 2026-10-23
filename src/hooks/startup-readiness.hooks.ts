@@ -59,17 +59,34 @@ export function useStartupReadiness(
   const [checking, setChecking] = useState(false);
 
   const runRef = useRef(false);
+  // Identifies the latest readiness run so a slow catch-up for a previous
+  // business can never overwrite the verdict for the active one.
+  const tokenRef = useRef(0);
+  const businessRef = useRef<string | undefined>(businessId);
+
+  // Switching business invalidates the previous verdict — its cached reference
+  // keys and lease belong to the old business.
+  useEffect(() => {
+    if (businessRef.current === businessId) return;
+    businessRef.current = businessId;
+    tokenRef.current += 1;
+    runRef.current = false;
+    setReadiness(null);
+    setChecking(false);
+  }, [businessId]);
+
   const check = useCallback(async () => {
     if (!businessId) return;
     if (runRef.current) return;
     runRef.current = true;
+    const token = ++tokenRef.current;
     setChecking(true);
     try {
       const result = await ensureStartupReady(businessId, { timeoutMs });
-      setReadiness(result);
+      if (tokenRef.current === token) setReadiness(result);
     } finally {
       runRef.current = false;
-      setChecking(false);
+      if (tokenRef.current === token) setChecking(false);
     }
   }, [businessId, timeoutMs]);
 

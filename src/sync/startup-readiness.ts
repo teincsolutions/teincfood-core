@@ -103,22 +103,36 @@ export async function ensureStartupReady(
 ): Promise<StartupReadiness> {
   const timeoutMs = opts?.timeoutMs ?? 15_000;
   const { isOnline, isCloudReachable } = getConnectivityState();
-  if (isOnline && isCloudReachable !== "unreachable") {
-    const catchUp = (async () => {
-      try {
-        await referenceSyncService.sync({ businessId, keys: [...REQUIRED_ORDER_KEYS] });
-      } catch (e) {
-        syncLogger.warn("StartupReadiness", "reference catch-up failed", { err: String(e) });
-      }
-      try {
-        await ensureLease(businessId);
-      } catch (e) {
-        syncLogger.warn("StartupReadiness", "lease catch-up failed", { err: String(e) });
-      }
-    })();
-    await raceWithTimeout(catchUp, timeoutMs);
+  const canUseNetwork = isOnline && isCloudReachable !== "unreachable";
+
+  // Evaluate the device first. If everything the POS needs is already cached,
+  // the terminal must open immediately — a slow network must never hold the
+  // seller on "Preparing offline data…". The catch-up then runs in the
+  // background and silently updates the cache.
+  const local = await getStartupReadiness(businessId);
+  if (local.ready) {
+    if (canUseNetwork) void runCatchUp(businessId);
+    return local;
   }
+
+  // Incomplete cache: one bounded network attempt may complete it. This is the
+  // only case where waiting is useful (e.g. first launch on a new device).
+  if (canUseNetwork) await raceWithTimeout(runCatchUp(businessId), timeoutMs);
   return getStartupReadiness(businessId);
+}
+
+/** Best-effort catch-up: reference data + device lease. Never throws. */
+async function runCatchUp(businessId: string): Promise<void> {
+  try {
+    await referenceSyncService.sync({ businessId, keys: [...REQUIRED_ORDER_KEYS] });
+  } catch (e) {
+    syncLogger.warn("StartupReadiness", "reference catch-up failed", { err: String(e) });
+  }
+  try {
+    await ensureLease(businessId);
+  } catch (e) {
+    syncLogger.warn("StartupReadiness", "lease catch-up failed", { err: String(e) });
+  }
 }
 
 /** Resolve after either the promise settles or the timeout elapses. */
