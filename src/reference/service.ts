@@ -12,7 +12,13 @@ import { openSyncDatabase } from "../db/connection";
 import { syncLogger } from "../utils/sync-logger";
 import { generateUUID } from "../utils/uuid";
 import { menuService, businessService, rolesService } from "../adapters/services";
-import { cacheImageBatch, pruneImageCache } from "../adapters/image-cache";
+import {
+  cacheImageBatch,
+  pruneImageCache,
+  hasCachedImage,
+  cacheImageFromBase64,
+} from "../adapters/image-cache";
+import { requestReferenceFromPeer, requestAssetFromPeer } from "../local-node/peer-bus";
 import { getConnectivityState } from "../adapters/connectivity";
 import { canBusinessSync } from "../sync/sync-guard";
 import { getAuthToken } from "../adapters/auth";
@@ -143,17 +149,43 @@ class ReferenceSyncService {
     const businessId = options.businessId;
     const { isOnline, isCloudReachable } = getConnectivityState();
     if (!isOnline || isCloudReachable === "unreachable") {
-      syncLogger.debug("ReferenceSync", "Skipping sync — cloud not reachable", {
-        businessId,
-        isOnline,
-        isCloudReachable,
-      });
-      return {
+      // Dark LAN: a peer may still have the freshest reference rows and image
+      // bytes. Compare against the mesh before declaring the pass empty.
+      const keys = options.keys ?? DEFAULT_SYNC_KEYS;
+      const lanResult: ReferenceSyncResult = {
         synced: [],
-        skipped: options.keys ?? DEFAULT_SYNC_KEYS,
+        skipped: keys,
         failed: [],
         errors: {} as Record<ReferenceDataKey, string>,
       };
+      try {
+        const db = await openSyncDatabase();
+        const peer = await requestReferenceFromPeer(businessId, keys);
+        if (peer?.data) {
+          for (const key of keys) {
+            const record = peer.data[key];
+            if (!record) continue;
+            const written = await writeServerReferenceData(
+              db,
+              businessId,
+              key,
+              record.payload,
+              record.version,
+            );
+            if (written) lanResult.synced.push(key);
+            else lanResult.skipped.push(key);
+          }
+          if (lanResult.synced.length > 0) {
+            await this.cacheReferenceImages(db, businessId, lanResult.synced);
+          }
+        }
+      } catch (error) {
+        syncLogger.debug("ReferenceSync", "LAN reference catch-up unavailable", {
+          businessId,
+          error: String(error),
+        });
+      }
+      return lanResult;
     }
 
     syncLogger.info("ReferenceSync", "Starting reference data sync", {
@@ -517,6 +549,20 @@ class ReferenceSyncService {
         keys,
         count: cachedImages.length,
       });
+
+      // Fully dark LAN: the cloud download cannot run, but a peer may already
+      // have the bytes in its durable image cache. Fetch only missing keys.
+      const peerConnectivity = getConnectivityState();
+      if (!peerConnectivity.isOnline || peerConnectivity.isCloudReachable === "unreachable") {
+        for (const url of urls) {
+          if (!url || !url.startsWith("http")) continue;
+          if (await hasCachedImage(url)) continue;
+          const asset = await requestAssetFromPeer(businessId, url);
+          if (asset?.base64) {
+            await cacheImageFromBase64(url, asset.base64);
+          }
+        }
+      }
 
       await pruneImageCache(urls);
     } catch (error) {

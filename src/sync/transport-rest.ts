@@ -7,7 +7,7 @@
  */
 
 import type { Command, DomainEvent, Transport } from "./types";
-import { sellerService, kioskService, menuService } from "../adapters/services";
+import { sellerService, kioskService, menuService, businessService } from "../adapters/services";
 import { syncLogger } from "../utils/sync-logger";
 import { generateEventId } from "../utils/uuid";
 import type { POSOrderCreateRequest } from "../types/pos.types";
@@ -159,6 +159,44 @@ export class RestTransport implements Transport {
 
       case "payment:confirm_cash": {
         return this.executeOrderTransition(command, "confirm_cash", timestamp, () => sellerService.confirmCashPayment(entity_id!), "payment.completed");
+      }
+
+      case "member:invite": {
+        const response = (await businessService.inviteBusinessMember(
+          business_id,
+          (payload ?? {}) as Record<string, unknown>,
+        )) as { data?: Record<string, unknown> };
+        const data = (response?.data ?? {}) as Record<string, unknown>;
+        return this.wrapResponse(
+          "member.invited",
+          data,
+          (data.id as string) ?? command.command_id,
+          timestamp,
+          command,
+        );
+      }
+
+      case "member:update": {
+        if (!entity_id) throw new Error("member:update requires entity_id");
+        const response = (await businessService.updateBusinessMember(
+          business_id,
+          entity_id,
+          (payload ?? {}) as Record<string, unknown>,
+        )) as { data?: Record<string, unknown> };
+        const data = (response?.data ?? {}) as Record<string, unknown>;
+        return this.wrapResponse("member.updated", data, entity_id, timestamp, command);
+      }
+
+      case "member:remove": {
+        if (!entity_id) throw new Error("member:remove requires entity_id");
+        await businessService.removeBusinessMember(business_id, entity_id);
+        return this.wrapResponse(
+          "member.removed",
+          { user_id: entity_id, status: "removed" },
+          entity_id,
+          timestamp,
+          command,
+        );
       }
 
       default:

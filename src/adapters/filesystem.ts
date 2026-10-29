@@ -11,6 +11,7 @@ export interface FileSystemAdapter {
   getDocumentDirectory(): string;
   readAsStringAsync?(path: string, opts?: { encoding?: string }): Promise<string>;
   readAsBase64Async?(path: string): Promise<string>;
+  writeAsBase64Async?(path: string, base64: string): Promise<void>;
 }
 
 let fsAdapter: FileSystemAdapter | null = null;

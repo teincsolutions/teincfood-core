@@ -109,8 +109,9 @@ describe("offline license", () => {
 
 describe("offline member PIN", () => {
   it("enrolls and verifies a member without storing the raw PIN", async () => {
-    await removeOfflineMember("member-1").catch(() => undefined);
+    await removeOfflineMember("member-1", "biz-1").catch(() => undefined);
     const member = await createOfflineMemberCredential({
+      businessId: "biz-1",
       userId: "member-1",
       fullName: "Ama",
       role: "manager",
@@ -119,9 +120,10 @@ describe("offline member PIN", () => {
     });
 
     expect(member.pin_hash).not.toContain("123456");
-    await expect(verifyOfflineMemberPin("member-1", "123456")).resolves.toBe(true);
-    await expect(verifyOfflineMemberPin("member-1", "654321")).resolves.toBe(false);
-    await expect(listOfflineMembers()).resolves.toHaveLength(1);
-    await removeOfflineMember("member-1");
+    await expect(verifyOfflineMemberPin("member-1", "123456", "biz-1")).resolves.toBe(true);
+    await expect(verifyOfflineMemberPin("member-1", "654321", "biz-1")).resolves.toBe(false);
+    await expect(verifyOfflineMemberPin("member-1", "123456", "other-biz")).resolves.toBe(false);
+    await expect(listOfflineMembers("biz-1")).resolves.toHaveLength(1);
+    await removeOfflineMember("member-1", "biz-1");
   });
 });

@@ -128,11 +128,12 @@ export async function activateOfflineDevice(args: {
   if (!verified) throw new Error("Activation returned an invalid offline license");
 
   await saveDevicePrivateKey(base64UrlEncode(keypair.privateKey));
-  await saveStoredLicense(data.license);
-  await saveStoredLicensePublicKey(data.public_key);
-  await saveStoredLicenseKeyId(data.key_id);
+  await saveStoredLicense(args.businessId, data.license);
+  await saveStoredLicensePublicKey(args.businessId, data.public_key);
+  await saveStoredLicenseKeyId(args.businessId, data.key_id);
 
   await createOfflineMemberCredential({
+    businessId: args.businessId,
     userId: args.member.userId,
     fullName: args.member.fullName,
     email: args.member.email,
@@ -169,9 +170,9 @@ export async function refreshOfflineLicense(businessId: string): Promise<Offline
   const verified = await verifyOfflineLicense(data.license, data.public_key, businessId);
   if (!verified) throw new Error("License refresh returned an invalid license");
 
-  await saveStoredLicense(data.license);
-  await saveStoredLicensePublicKey(data.public_key);
-  await saveStoredLicenseKeyId(data.key_id);
+  await saveStoredLicense(businessId, data.license);
+  await saveStoredLicensePublicKey(businessId, data.public_key);
+  await saveStoredLicenseKeyId(businessId, data.key_id);
   return { ...data, payload: verified };
 }
 
@@ -185,8 +186,8 @@ export async function exchangeOfflineSession(args: {
   memberId: string;
   deviceId?: string;
 }): Promise<OfflineExchangeResult> {
-  const token = await getStoredLicense();
-  const publicKey = await getStoredLicensePublicKey();
+  const token = await getStoredLicense(args.businessId);
+  const publicKey = await getStoredLicensePublicKey(args.businessId);
   const privateKey = await getPrivateKeyBytes();
   if (!token || !publicKey || !privateKey) {
     throw new Error("This device has no offline license");
@@ -231,10 +232,10 @@ export async function exchangeOfflineSession(args: {
   );
   if (!refreshed) throw new Error("Offline exchange returned an invalid license");
 
-  await saveStoredLicense(data.license);
-  await saveStoredLicensePublicKey(data.public_key);
-  await saveStoredLicenseKeyId(data.key_id);
-  await markOfflineMemberLogin(args.memberId);
+  await saveStoredLicense(args.businessId, data.license);
+  await saveStoredLicensePublicKey(args.businessId, data.public_key);
+  await saveStoredLicenseKeyId(args.businessId, data.key_id);
+  await markOfflineMemberLogin(args.memberId, args.businessId);
 
   return { ...data, license_payload: refreshed };
 }
@@ -244,10 +245,10 @@ export async function getOfflineSessionState(
   businessId?: string,
 ): Promise<OfflineSessionState> {
   const [token, publicKey, keyId, members] = await Promise.all([
-    getStoredLicense(),
-    getStoredLicensePublicKey(),
-    getStoredLicenseKeyId(),
-    listOfflineMembers(),
+    getStoredLicense(businessId),
+    getStoredLicensePublicKey(businessId),
+    getStoredLicenseKeyId(businessId),
+    listOfflineMembers(businessId),
   ]);
 
   const { payload, evaluation } = await loadAndVerifyOfflineLicense({
@@ -266,12 +267,16 @@ export async function getOfflineSessionState(
   };
 }
 
-export async function verifyOfflineLogin(userId: string, pin: string): Promise<OfflineMemberCredential | null> {
-  const member = await getOfflineMember(userId);
+export async function verifyOfflineLogin(
+  userId: string,
+  pin: string,
+  businessId?: string,
+): Promise<OfflineMemberCredential | null> {
+  const member = await getOfflineMember(userId, businessId);
   if (!member) return null;
-  const ok = await verifyOfflineMemberPin(userId, pin);
+  const ok = await verifyOfflineMemberPin(userId, pin, businessId);
   if (!ok) return null;
-  await markOfflineMemberLogin(userId);
+  await markOfflineMemberLogin(userId, businessId);
   return member;
 }
 
@@ -295,7 +300,7 @@ export async function revokeMemberOnDevice(args: {
   await getHttpClient().delete(
     `/businesses/${args.businessId}/devices/${encodeURIComponent(deviceId)}/members/${encodeURIComponent(args.userId)}`,
   );
-  await removeOfflineMember(args.userId);
+  await removeOfflineMember(args.userId, args.businessId);
 }
 
 /** Owner action: revoke the terminal and wipe all local offline credentials. */
@@ -311,11 +316,13 @@ export async function removeOfflineDevice(businessId: string, reason?: string): 
       error: String(error),
     });
   }
-  await clearOfflineDevice();
+  await clearOfflineDevice(businessId);
 }
 
-export async function getStoredOfflineLicensePayload(): Promise<OfflineLicensePayload | null> {
-  const token = await getStoredLicense();
+export async function getStoredOfflineLicensePayload(
+  businessId?: string,
+): Promise<OfflineLicensePayload | null> {
+  const token = await getStoredLicense(businessId);
   return token ? decodeLicensePayload(token) : null;
 }
 

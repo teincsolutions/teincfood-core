@@ -21,7 +21,8 @@ import { deriveLanSecret as deriveSecretCore } from "./security";
 import type { Command, DomainEvent } from "../sync/types";
 import type { LocalNodeInfo } from "./types";
 import type { LocalNodeDeps, LocalNodeServer, LocalNodeClient } from "./adapters";
-import type { ReferenceDataKey } from "../reference/types";
+import type { ReferenceDataKey, ReferenceDataRecord } from "../reference/types";
+import { registerLocalNodePeerBus, type LanAssetResult } from "./peer-bus";
 
 const KEEP_AWAKE_TAG = "TeincLocalNode";
 const RECONNECT_BASE = 1_000;
@@ -54,7 +55,43 @@ class LocalNodeServiceCore {
   /** Whether discovery scanning was successfully started. */
   private discovering = false;
 
-  init(deps: LocalNodeDeps): void { this.deps = deps; }
+  init(deps: LocalNodeDeps): void {
+    this.deps = deps;
+    registerLocalNodePeerBus({
+      requestReference: (businessId, keys) => this.requestReferenceFromPeers(businessId, keys),
+      requestAsset: (businessId, url) => this.requestAssetFromPeers(businessId, url),
+    });
+  }
+
+  private async requestReferenceFromPeers(
+    businessId: string,
+    keys: ReferenceDataKey[],
+  ): Promise<{ data: Partial<Record<ReferenceDataKey, ReferenceDataRecord | null>> }> {
+    let lastError: unknown = null;
+    for (const peer of this.peers.values()) {
+      if (!peer.isConnected()) continue;
+      try {
+        return await peer.requestReferenceData(businessId, keys);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("No LAN peer served reference data");
+  }
+
+  private async requestAssetFromPeers(
+    businessId: string,
+    url: string,
+  ): Promise<LanAssetResult | null> {
+    for (const peer of this.peers.values()) {
+      if (!peer.isConnected() || !peer.requestAsset) continue;
+      try {
+        const result = await peer.requestAsset(businessId, url);
+        if (result?.base64) return result;
+      } catch {}
+    }
+    return null;
+  }
   private getDeps(): LocalNodeDeps {
     if (!this.deps) throw new Error("LocalNodeService not initialised: call initLocalNodeService(deps) first");
     return this.deps;

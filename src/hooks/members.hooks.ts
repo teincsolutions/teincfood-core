@@ -10,6 +10,7 @@ import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
 import { getAuthToken, subscribeAuth } from "../adapters/auth";
 import { businessService, rolesService, fleetService } from "../adapters/services";
 import { assertOnlineFor } from "../sync/online-gates";
+import { runOfflineCapableMutation } from "../sync/offline-capable";
 import { validateInviteInput } from "../validation/offline";
 import { notifySuccess, notifyError } from "../adapters/notify";
 import { extractApiErrorMessage } from "../utils/error";
@@ -28,6 +29,10 @@ function useIsAuthenticated(): boolean {
 }
 
 const OFFLINE_FIRST = { retry: false, networkMode: "offlineFirst" } as const;
+
+function isQueued(result: unknown): boolean {
+  return Boolean(result && typeof result === "object" && (result as { status?: unknown }).status === "pending");
+}
 
 // ─── Keys ───
 
@@ -78,12 +83,25 @@ export function useInviteMemberMutation() {
 
   return useMutation({
     mutationFn: (data: { email?: string; phone?: string; role?: string }) => {
-      assertOnlineFor("member:invite");
+      if (!businessId) throw new Error("No active business");
       validateInviteInput({ email: data.email, phone: data.phone });
-      return (businessService as unknown as { inviteBusinessMember: (b: string, d: unknown) => Promise<unknown> }).inviteBusinessMember(businessId!, data);
+      return runOfflineCapableMutation<unknown, Record<string, unknown>>({
+        run: () =>
+          (businessService as unknown as { inviteBusinessMember: (b: string, d: unknown) => Promise<unknown> }).inviteBusinessMember(
+            businessId,
+            data,
+          ),
+        commandType: "member:invite",
+        businessId,
+        payload: data as Record<string, unknown>,
+      });
     },
-    onSuccess: () => {
-      notifySuccess("Invitation sent!");
+    onSuccess: (result) => {
+      notifySuccess(
+        isQueued(result)
+          ? "Invitation queued — it will send when this device reconnects."
+          : "Invitation sent!",
+      );
       queryClient.invalidateQueries({ queryKey: MEMBER_KEYS.list(businessId ?? "") });
       if (businessId) emitReferenceChanged(businessId, ["members"]);
     },
@@ -99,11 +117,53 @@ export function useRemoveMemberMutation() {
 
   return useMutation({
     mutationFn: (userId: string) => {
-      assertOnlineFor("member:manage");
-      return (businessService as unknown as { removeBusinessMember: (b: string, u: string) => Promise<unknown> }).removeBusinessMember(businessId!, userId);
+      if (!businessId) throw new Error("No active business");
+      return runOfflineCapableMutation<unknown, Record<string, unknown>>({
+        run: () =>
+          (businessService as unknown as { removeBusinessMember: (b: string, u: string) => Promise<unknown> }).removeBusinessMember(
+            businessId,
+            userId,
+          ),
+        commandType: "member:remove",
+        businessId,
+        entityId: userId,
+        payload: { user_id: userId },
+      });
     },
-    onSuccess: () => {
-      notifySuccess("Member removed");
+    onSuccess: (result) => {
+      notifySuccess(isQueued(result) ? "Member removal queued" : "Member removed");
+      queryClient.invalidateQueries({ queryKey: MEMBER_KEYS.list(businessId ?? "") });
+      if (businessId) emitReferenceChanged(businessId, ["members"]);
+    },
+    onError: (error) => {
+      notifyError(extractApiErrorMessage(error));
+    },
+  });
+}
+
+export function useUpdateMemberRoleMutation() {
+  const queryClient = useQueryClient();
+  const businessId = useBusinessId();
+
+  return useMutation({
+    mutationFn: ({ userId, role, status }: { userId: string; role?: string; status?: string }) => {
+      if (!businessId) throw new Error("No active business");
+      const payload = { ...(role ? { role } : {}), ...(status ? { status } : {}) };
+      return runOfflineCapableMutation<unknown, Record<string, unknown>>({
+        run: () =>
+          (businessService as unknown as { updateBusinessMember: (b: string, u: string, d: unknown) => Promise<unknown> }).updateBusinessMember(
+            businessId,
+            userId,
+            payload,
+          ),
+        commandType: "member:update",
+        businessId,
+        entityId: userId,
+        payload,
+      });
+    },
+    onSuccess: (result) => {
+      notifySuccess(isQueued(result) ? "Role change queued" : "Member role updated");
       queryClient.invalidateQueries({ queryKey: MEMBER_KEYS.list(businessId ?? "") });
       if (businessId) emitReferenceChanged(businessId, ["members"]);
     },

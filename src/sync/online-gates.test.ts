@@ -14,7 +14,8 @@ describe("online-gates", () => {
   it("throws for allowlisted types when offline", () => {
     setConnectivityState({ isOnline: false, isCloudReachable: "unreachable" });
     expect(() => assertOnlineFor("order:assign_rider")).toThrow("Assign rider requires online");
-    expect(() => assertOnlineFor("member:invite")).toThrow();
+    expect(() => assertOnlineFor("member:invite")).not.toThrow();
+    expect(() => assertOnlineFor("member:remove")).not.toThrow();
     expect(() => assertOnlineFor("chat:send")).toThrow();
   });
 
@@ -27,7 +28,7 @@ describe("online-gates", () => {
   });
 
   it("allowlist covers the agreed online-only surface", () => {
-    for (const k of ["order:assign_rider", "order:confirm_handover", "chat:send", "member:invite", "kyc:submit", "wallet:withdraw"]) {
+    for (const k of ["order:assign_rider", "order:confirm_handover", "chat:send", "kyc:submit", "wallet:withdraw"]) {
       expect(ONLINE_REQUIRED[k]).toBeTruthy();
     }
     void vi;

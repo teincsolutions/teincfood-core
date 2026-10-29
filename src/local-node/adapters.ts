@@ -41,6 +41,11 @@ export interface LocalNodeClient {
     businessId: string,
     keys: ReferenceDataKey[],
   ): Promise<{ data: Partial<Record<ReferenceDataKey, ReferenceDataRecord | null>> }>;
+  /** Fetch cached image bytes from a peer on a dark LAN. */
+  requestAsset?(
+    businessId: string,
+    url: string,
+  ): Promise<{ url: string; base64: string | null; contentType?: string | null; error?: string | null }>;
   publishEvent?(event: DomainEvent): Promise<void> | void;
 }
 

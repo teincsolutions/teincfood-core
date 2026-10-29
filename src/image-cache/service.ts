@@ -119,6 +119,41 @@ export async function cacheRemoteImage(url: string | null | undefined, opts: { s
   if (opts.removeOnFailure) await fs.deleteAsync(localPath, { idempotent: true }).catch(() => {});
   return { remoteUrl: url, localUri: null, etag: null, lastModified: null, cachedAt: null };
 }
+/** True when the durable cache already has bytes for this exact URL key. */
+export async function hasCachedImage(url: string | null | undefined): Promise<boolean> {
+  if (!url) return false;
+  const fs = getFileSystemAdapter();
+  if (!fs) return false;
+  try {
+    const info = await fs.getInfoAsync(getCachedImagePath(url));
+    return info.exists && !info.isDirectory;
+  } catch {
+    return false;
+  }
+}
+
+/** Persist image bytes received from a LAN peer into the durable cache. */
+export async function cacheImageFromBase64(
+  url: string | null | undefined,
+  base64: string | null | undefined,
+): Promise<boolean> {
+  if (!url || !base64) return false;
+  const fs = getFileSystemAdapter();
+  if (!fs?.writeAsBase64Async) return false;
+  try {
+    await ensureImageCacheDir();
+    const localPath = getCachedImagePath(url);
+    await fs.writeAsBase64Async(localPath, base64);
+    return true;
+  } catch (error) {
+    syncLogger.warn("ImageCache", "Failed to store LAN image", {
+      url,
+      error: String(error),
+    });
+    return false;
+  }
+}
+
 export async function cacheImageBatch(urls: (string | null | undefined)[], opts: { skipIfCached?: boolean; removeOnFailure?: boolean } = {}): Promise<ImageCacheEntry[]> {
   const results = await Promise.all(urls.map((u) => cacheRemoteImage(u, opts)));
   return results.filter((r): r is ImageCacheEntry => r !== null);

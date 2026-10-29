@@ -19,8 +19,6 @@ export const ONLINE_REQUIRED: Record<string, string> = {
   "order:confirm_handover": "Handover confirmation requires online",
   "chat:send": "Chat requires online",
   "notification:register": "Notifications require online",
-  "member:invite": "Member invites require online",
-  "member:manage": "Member management requires online",
   "fleet:manage": "Fleet changes require online",
   "settings:manage": "Settings changes require online",
   "kyc:submit": "KYC submission requires online",
