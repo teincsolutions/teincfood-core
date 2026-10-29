@@ -6,9 +6,10 @@
  * the network to exchange the device challenge for fresh session tokens.
  */
 
-import { getAppInstanceIdAsync } from "../adapters/devices";
+import { getAppInstanceIdAsync, getDeviceMetadata } from "../adapters/devices";
 import { getHttpClient } from "../adapters/http";
 import { getAuthToken } from "../adapters/auth";
+import { getConnectivityState } from "../adapters/connectivity";
 import { syncLogger } from "../utils/sync-logger";
 import { offlineRandomBytes } from "./random";
 import {
@@ -105,10 +106,14 @@ export async function activateOfflineDevice(args: {
   pin: string;
   appInstanceId?: string;
   platform?: string;
+  deviceName?: string;
+  osVersion?: string;
+  appVersion?: string;
 }): Promise<OfflineActivationResult> {
   if (!getAuthToken()) throw new Error("Sign in online before activating this device");
 
   const deviceId = args.appInstanceId ?? (await getAppInstanceIdAsync());
+  const metadata = await getDeviceMetadata();
   const keypair = await generateOfflineDeviceKeypair(randomBytes);
 
   const response = await getHttpClient().post<{
@@ -116,7 +121,10 @@ export async function activateOfflineDevice(args: {
   }>(`/businesses/${args.businessId}/devices/${encodeURIComponent(deviceId)}/activate`, {
     device_public_key: keypair.publicKeyB64,
     app_instance_id: deviceId,
-    platform: args.platform ?? "unknown",
+    platform: args.platform ?? metadata.platform ?? "unknown",
+    device_name: args.deviceName ?? metadata.deviceName ?? undefined,
+    os_version: args.osVersion ?? metadata.osVersion ?? undefined,
+    app_version: args.appVersion ?? metadata.appVersion ?? undefined,
   });
 
   const data = response.data.data;
@@ -317,6 +325,35 @@ export async function removeOfflineDevice(businessId: string, reason?: string): 
     });
   }
   await clearOfflineDevice(businessId);
+}
+
+/**
+ * Best-effort presence heartbeat. Updates the admin dashboard's last-seen and
+ * online state; never throws into app startup or sync loops.
+ */
+export async function sendOfflineDeviceHeartbeat(
+  businessId: string,
+  overrides: { deviceName?: string; platform?: string; osVersion?: string; appVersion?: string } = {},
+): Promise<void> {
+  if (!getAuthToken()) return;
+  const connectivity = getConnectivityState();
+  if (!connectivity.isOnline || connectivity.isCloudReachable === "unreachable") return;
+
+  try {
+    const deviceId = await getAppInstanceIdAsync();
+    const metadata = await getDeviceMetadata();
+    await getHttpClient().patch(
+      `/businesses/${businessId}/devices/${encodeURIComponent(deviceId)}/heartbeat`,
+      {
+        device_name: overrides.deviceName ?? metadata.deviceName ?? undefined,
+        platform: overrides.platform ?? metadata.platform ?? undefined,
+        os_version: overrides.osVersion ?? metadata.osVersion ?? undefined,
+        app_version: overrides.appVersion ?? metadata.appVersion ?? undefined,
+      },
+    );
+  } catch (error) {
+    syncLogger.debug("OfflineAuth", "Device heartbeat failed", { error: String(error) });
+  }
 }
 
 export async function getStoredOfflineLicensePayload(

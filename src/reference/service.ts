@@ -554,14 +554,26 @@ class ReferenceSyncService {
       // have the bytes in its durable image cache. Fetch only missing keys.
       const peerConnectivity = getConnectivityState();
       if (!peerConnectivity.isOnline || peerConnectivity.isCloudReachable === "unreachable") {
+        const missing: string[] = [];
         for (const url of urls) {
           if (!url || !url.startsWith("http")) continue;
           if (await hasCachedImage(url)) continue;
-          const asset = await requestAssetFromPeer(businessId, url);
-          if (asset?.base64) {
-            await cacheImageFromBase64(url, asset.base64);
-          }
+          missing.push(url);
         }
+        // A menu can reference dozens of images. Keep peer transfers bounded so
+        // a dark-LAN catch-up does not serialize 15s timeouts.
+        const queue = [...missing];
+        const worker = async () => {
+          for (;;) {
+            const url = queue.shift();
+            if (!url) return;
+            const asset = await requestAssetFromPeer(businessId, url);
+            if (asset?.base64) {
+              await cacheImageFromBase64(url, asset.base64);
+            }
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(3, queue.length) }, worker));
       }
 
       await pruneImageCache(urls);

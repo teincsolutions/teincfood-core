@@ -11,8 +11,12 @@ import {
 } from "./license";
 import {
   createOfflineMemberCredential,
+  getOfflineMember,
+  getOfflinePinLockState,
   listOfflineMembers,
   removeOfflineMember,
+  saveOfflineMember,
+  updateOfflineMemberRole,
   verifyOfflineMemberPin,
 } from "./store";
 
@@ -125,5 +129,57 @@ describe("offline member PIN", () => {
     await expect(verifyOfflineMemberPin("member-1", "123456", "other-biz")).resolves.toBe(false);
     await expect(listOfflineMembers("biz-1")).resolves.toHaveLength(1);
     await removeOfflineMember("member-1", "biz-1");
+  });
+
+  it("locks a PIN after repeated failures and unlocks after the cooldown", async () => {
+    await removeOfflineMember("member-lock", "biz-1").catch(() => undefined);
+    await createOfflineMemberCredential({
+      businessId: "biz-1",
+      userId: "member-lock",
+      fullName: "Kwame",
+      role: "sales",
+      capabilities: [],
+      pin: "123456",
+    });
+
+    for (let i = 0; i < 5; i += 1) {
+      await expect(verifyOfflineMemberPin("member-lock", "000000", "biz-1")).resolves.toBe(false);
+    }
+
+    const locked = await getOfflinePinLockState("member-lock", "biz-1");
+    expect(locked.locked).toBe(true);
+    expect(locked.remainingAttempts).toBe(0);
+    await expect(verifyOfflineMemberPin("member-lock", "123456", "biz-1")).resolves.toBe(false);
+
+    const member = await getOfflineMember("member-lock", "biz-1");
+    await saveOfflineMember({
+      ...member!,
+      locked_until: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    await expect(verifyOfflineMemberPin("member-lock", "123456", "biz-1")).resolves.toBe(true);
+    await expect(getOfflinePinLockState("member-lock", "biz-1")).resolves.toMatchObject({
+      failedAttempts: 0,
+      locked: false,
+    });
+    await removeOfflineMember("member-lock", "biz-1");
+  });
+
+  it("applies offline role changes to the local credential", async () => {
+    await removeOfflineMember("member-role", "biz-1").catch(() => undefined);
+    await createOfflineMemberCredential({
+      businessId: "biz-1",
+      userId: "member-role",
+      fullName: "Esi",
+      role: "sales",
+      capabilities: [],
+      pin: "123456",
+    });
+
+    await updateOfflineMemberRole("member-role", "biz-1", "manager");
+    await expect(getOfflineMember("member-role", "biz-1")).resolves.toMatchObject({
+      role: "manager",
+    });
+    await removeOfflineMember("member-role", "biz-1");
   });
 });

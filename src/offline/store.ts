@@ -160,6 +160,8 @@ export interface OfflineMemberCredential {
   pin_hash: string;
   enrolled_at: string;
   last_login_at?: string | null;
+  failed_attempts?: number;
+  locked_until?: string | null;
 }
 
 function memberMatchesBusiness(member: OfflineMemberCredential, businessId?: string): boolean {
@@ -276,19 +278,105 @@ export async function createOfflineMemberCredential(args: {
   return member;
 }
 
+export const OFFLINE_PIN_MAX_ATTEMPTS = 5;
+
+export interface OfflinePinLockState {
+  failedAttempts: number;
+  lockedUntil: string | null;
+  locked: boolean;
+  remainingAttempts: number;
+}
+
+export async function getOfflinePinLockState(
+  userId: string,
+  businessId?: string,
+): Promise<OfflinePinLockState> {
+  const member = await getOfflineMember(userId, businessId);
+  const lockExpired = Boolean(
+    member?.locked_until && new Date(member.locked_until).getTime() <= Date.now(),
+  );
+  const failedAttempts = lockExpired ? 0 : member?.failed_attempts ?? 0;
+  const lockedUntil = lockExpired ? null : member?.locked_until ?? null;
+  const locked = Boolean(lockedUntil && new Date(lockedUntil).getTime() > Date.now());
+  return {
+    failedAttempts,
+    lockedUntil,
+    locked,
+    remainingAttempts: Math.max(OFFLINE_PIN_MAX_ATTEMPTS - failedAttempts, 0),
+  };
+}
+
 export async function verifyOfflineMemberPin(
   userId: string,
   pin: string,
   businessId?: string,
 ): Promise<boolean> {
-  const member = await getOfflineMember(userId, businessId);
-  if (!member) return false;
-  if (!/^\d{6}$/.test(pin)) return false;
+  const stored = await getOfflineMember(userId, businessId);
+  if (!stored) return false;
+
+  if (stored.locked_until && new Date(stored.locked_until).getTime() > Date.now()) {
+    return false;
+  }
+
+  // An expired cooldown grants a fresh set of attempts.
+  const member =
+    stored.locked_until && new Date(stored.locked_until).getTime() <= Date.now()
+      ? { ...stored, failed_attempts: 0, locked_until: null }
+      : stored;
+
+  if (!/^\d{6}$/.test(pin)) {
+    await recordFailedPinAttempt(member);
+    return false;
+  }
+
   const candidate = await hashPin(pin, member.pin_salt);
-  if (candidate.length !== member.pin_hash.length) return false;
+  if (candidate.length !== member.pin_hash.length) {
+    await recordFailedPinAttempt(member);
+    return false;
+  }
+
   let diff = 0;
   for (let i = 0; i < candidate.length; i++) {
     diff |= candidate.charCodeAt(i) ^ member.pin_hash.charCodeAt(i);
   }
-  return diff === 0;
+
+  if (diff === 0) {
+    if ((member.failed_attempts ?? 0) > 0 || member.locked_until) {
+      await saveOfflineMember({ ...member, failed_attempts: 0, locked_until: null });
+    }
+    return true;
+  }
+
+  await recordFailedPinAttempt(member);
+  return false;
+}
+
+async function recordFailedPinAttempt(member: OfflineMemberCredential): Promise<void> {
+  const attempts = (member.failed_attempts ?? 0) + 1;
+  const now = Date.now();
+  const lockMs =
+    attempts >= OFFLINE_PIN_MAX_ATTEMPTS
+      ? Math.min(15 * 60_000, 60_000 * 2 ** (attempts - OFFLINE_PIN_MAX_ATTEMPTS))
+      : 0;
+  await saveOfflineMember({
+    ...member,
+    failed_attempts: attempts,
+    locked_until: lockMs > 0 ? new Date(now + lockMs).toISOString() : null,
+  });
+}
+
+/** Apply an offline role change to the local credential immediately. */
+export async function updateOfflineMemberRole(
+  userId: string,
+  businessId: string,
+  role: string,
+  capabilities?: string[],
+): Promise<void> {
+  const member = await getOfflineMember(userId, businessId);
+  if (!member) return;
+  await saveOfflineMember({
+    ...member,
+    role,
+    ...(capabilities ? { capabilities } : {}),
+  });
 }

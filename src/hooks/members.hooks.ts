@@ -11,6 +11,7 @@ import { getAuthToken, subscribeAuth } from "../adapters/auth";
 import { businessService, rolesService, fleetService } from "../adapters/services";
 import { assertOnlineFor } from "../sync/online-gates";
 import { runOfflineCapableMutation } from "../sync/offline-capable";
+import { removeOfflineMember, updateOfflineMemberRole } from "../offline/store";
 import { validateInviteInput } from "../validation/offline";
 import { notifySuccess, notifyError } from "../adapters/notify";
 import { extractApiErrorMessage } from "../utils/error";
@@ -130,7 +131,12 @@ export function useRemoveMemberMutation() {
         payload: { user_id: userId },
       });
     },
-    onSuccess: (result) => {
+    onSuccess: async (result, userId) => {
+      // Revoke local offline access immediately, even when the server command
+      // is queued. Otherwise a removed member can still unlock this terminal.
+      if (businessId) {
+        await removeOfflineMember(userId, businessId).catch(() => undefined);
+      }
       notifySuccess(isQueued(result) ? "Member removal queued" : "Member removed");
       queryClient.invalidateQueries({ queryKey: MEMBER_KEYS.list(businessId ?? "") });
       if (businessId) emitReferenceChanged(businessId, ["members"]);
@@ -162,7 +168,12 @@ export function useUpdateMemberRoleMutation() {
         payload,
       });
     },
-    onSuccess: (result) => {
+    onSuccess: async (result, variables) => {
+      if (businessId && variables.role) {
+        await updateOfflineMemberRole(variables.userId, businessId, variables.role).catch(
+          () => undefined,
+        );
+      }
       notifySuccess(isQueued(result) ? "Role change queued" : "Member role updated");
       queryClient.invalidateQueries({ queryKey: MEMBER_KEYS.list(businessId ?? "") });
       if (businessId) emitReferenceChanged(businessId, ["members"]);

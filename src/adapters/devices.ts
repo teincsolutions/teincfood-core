@@ -9,6 +9,31 @@ import { generateUUID } from "../utils/uuid";
 let appInstanceId: string | null = null;
 const APP_ID_KEY = "teinc_app_instance_id";
 
+export interface DeviceMetadata {
+  deviceName?: string | null;
+  platform?: string | null;
+  osVersion?: string | null;
+  appVersion?: string | null;
+}
+
+let deviceMetadataProvider: (() => Promise<DeviceMetadata> | DeviceMetadata) | null = null;
+
+/** Host apps inject OS/device details so licenses and admin dashboards can identify terminals. */
+export function setDeviceMetadataProvider(
+  provider: (() => Promise<DeviceMetadata> | DeviceMetadata) | null,
+): void {
+  deviceMetadataProvider = provider;
+}
+
+export async function getDeviceMetadata(): Promise<DeviceMetadata> {
+  if (!deviceMetadataProvider) return {};
+  try {
+    return await deviceMetadataProvider();
+  } catch {
+    return {};
+  }
+}
+
 // For Tauri desktop, try to restore from localStorage synchronously at import to avoid async race generating a new UUID on every cargo tauri dev restart
 try {
   if (typeof localStorage !== "undefined") {
