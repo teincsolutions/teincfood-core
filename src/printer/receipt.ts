@@ -5,7 +5,11 @@
  * (visual twin) from a SellerOrder snapshot. Works fully offline.
  */
 
-import type { SellerOrder, OrderItem, OrderItemAddon } from "../types/api/seller.api";
+import type {
+  SellerOrder,
+  OrderItem,
+  OrderItemAddon,
+} from "../types/api/seller.api";
 import { getCompanyInfo } from "./company";
 import { openSyncDatabase } from "../db/connection";
 import { getReferenceData } from "../reference/operations";
@@ -74,14 +78,19 @@ export function wrapText(text: string, width: number): string[] {
   const words: string[] = [];
   for (const word of text.split(" ").filter(Boolean)) {
     if (word.length <= width) words.push(word);
-    else for (let i = 0; i < word.length; i += width) words.push(word.slice(i, i + width));
+    else
+      for (let i = 0; i < word.length; i += width)
+        words.push(word.slice(i, i + width));
   }
   const lines: string[] = [];
   let cur = "";
   for (const word of words) {
     if (!cur) cur = word;
     else if (cur.length + 1 + word.length <= width) cur += " " + word;
-    else { lines.push(cur); cur = word; }
+    else {
+      lines.push(cur);
+      cur = word;
+    }
   }
   if (cur) lines.push(cur);
   return lines;
@@ -96,7 +105,11 @@ function nameBlockEscpos(name: string): string[] {
   const text = escposText(name);
   if (text.length <= 16) return [GS_SIZE_DOUBLE_W, text, LF, GS_SIZE_NORMAL];
   if (text.length <= 64) {
-    return [ESC_BOLD_ON, ...wrapText(text, 32).flatMap((l) => [escposText(l), LF]), ESC_BOLD_OFF];
+    return [
+      ESC_BOLD_ON,
+      ...wrapText(text, 32).flatMap((l) => [escposText(l), LF]),
+      ESC_BOLD_OFF,
+    ];
   }
   return wrapText(text, 32).flatMap((l) => [escposText(l), LF]);
 }
@@ -110,15 +123,23 @@ function nameSizeClass(name: string | null | undefined): string {
 
 function currencySymbol(currency?: string | null): string {
   switch (currency) {
-    case "GHS": return "₵";
-    case "USD": return "$";
-    case "EUR": return "€";
-    case "GBP": return "£";
-    default: return currency ? currency + " " : "";
+    case "GHS":
+      return "₵";
+    case "USD":
+      return "$";
+    case "EUR":
+      return "€";
+    case "GBP":
+      return "£";
+    default:
+      return currency ? currency + " " : "";
   }
 }
 
-function formatMoney(amountMinor: number | null | undefined, order: SellerOrder): string {
+function formatMoney(
+  amountMinor: number | null | undefined,
+  order: SellerOrder,
+): string {
   if (amountMinor == null) return "---";
   const sym = currencySymbol(order.currency_code || order.currency);
   return `${sym}${(amountMinor / 100).toFixed(2)}`;
@@ -130,19 +151,36 @@ function formatDatetime(iso?: string | null): string {
     const d = new Date(iso);
     // Backend: Calendar.strftime(dt, "%d %b %Y %H:%M") e.g. "03 Sep 2026 14:05"
     const day = String(d.getDate()).padStart(2, "0");
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const months = [
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
+    ];
     const mon = months[d.getMonth()];
     const year = d.getFullYear();
     const hh = String(d.getHours()).padStart(2, "0");
     const mm = String(d.getMinutes()).padStart(2, "0");
     return `${day} ${mon} ${year} ${hh}:${mm}`;
-  } catch { return iso; }
+  } catch {
+    return iso;
+  }
 }
 
 export function calloutNumber(order: SellerOrder): string {
   // The backend assigns a real callout_number — always prefer it.
-  const direct = (order as unknown as { callout_number?: unknown }).callout_number;
-  if (typeof direct === "number" && Number.isFinite(direct)) return String(Math.abs(direct));
+  const direct = (order as unknown as { callout_number?: unknown })
+    .callout_number;
+  if (typeof direct === "number" && Number.isFinite(direct))
+    return String(Math.abs(direct));
   const num = order.order_number || "";
   if (!num) return "----";
   // Strip non-digits first: local DD-RRR-CCC numbers end in "-CCC" and
@@ -188,20 +226,32 @@ function orderTypeText(order: SellerOrder): string {
 function paymentLineText(order: SellerOrder): string {
   const m = order.pos_payment_method as string | null;
   if (m) return `Payment: ${m.charAt(0).toUpperCase() + m.slice(1)}`;
-  if (order.payment_mode === "pay_on_delivery") return "Payment: Cash / Pay on Delivery";
+  if (order.payment_mode === "pay_on_delivery")
+    return "Payment: Cash / Pay on Delivery";
   if (order.payment_mode === "prepaid") return "Payment: Prepaid (Online)";
   return "Payment: Walk-in";
 }
 
 function escHtml(s: string | null | undefined): string {
   if (!s) return "";
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function businessAddress(business: SellerOrder["business"]): string | null {
   const b = business as unknown as {
     location?: { address?: string };
-    address?: string | { fullAddress?: string; full_address?: string; street?: string; city?: string };
+    address?:
+      | string
+      | {
+          fullAddress?: string;
+          full_address?: string;
+          street?: string;
+          city?: string;
+        };
   } | null;
   if (!b) return null;
   if (b.location?.address) return b.location.address;
@@ -218,9 +268,14 @@ function businessAddress(business: SellerOrder["business"]): string | null {
 }
 
 function businessLogoUrl(order: SellerOrder): string | null {
-  const b = order.business as unknown as { logo_url?: string | null; logoUrl?: string | null } | null;
+  const b = order.business as unknown as {
+    logo_url?: string | null;
+    logoUrl?: string | null;
+  } | null;
   if (!b) return null;
-  return (b.logo_url ?? (b as unknown as { logoUrl?: string | null }).logoUrl ?? null) as string | null;
+  return (b.logo_url ??
+    (b as unknown as { logoUrl?: string | null }).logoUrl ??
+    null) as string | null;
 }
 
 /** Fetch remote URL (or tfimg://) and return data URI, or null on failure. Uses Web fetch; works for http(s) and for cached tfimg via Rust protocol. */
@@ -236,14 +291,17 @@ async function fetchAsDataUri(url: string): Promise<string | null> {
       fr.readAsDataURL(blob);
     });
     return reader;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 /** Decode base64 raster bytes (from `business:profile` reference) to a byte string. */
 function binaryFromBase64(b64: string): string {
   const clean = b64.replace(/\s/g, "");
   if (typeof atob === "function") return atob(clean);
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   let out = "";
   let buf = 0;
   let bits = 0;
@@ -267,46 +325,83 @@ function binaryFromBase64(b64: string): string {
  * `order.business.logo_escpos`, falls back to the synced `business:profile`
  * reference. Null when none — fully offline, no network.
  */
-export async function resolveLogoRaster(order: SellerOrder): Promise<string | null> {
-  const direct = (order.business as unknown as { logo_escpos?: unknown } | null)?.logo_escpos;
+export async function resolveLogoRaster(
+  order: SellerOrder,
+): Promise<string | null> {
+  const direct = (order.business as unknown as { logo_escpos?: unknown } | null)
+    ?.logo_escpos;
   if (typeof direct === "string" && direct.length > 0) return direct;
   try {
     const bId = order.business_id;
     if (!bId) return null;
     const db = await openSyncDatabase();
     const ref = await getReferenceData<{ data?: { logo_escpos?: unknown } }>(
-      db, bId, "business:profile" as unknown as import("../reference/types").ReferenceDataKey,
+      db,
+      bId,
+      "business:profile" as unknown as import("../reference/types").ReferenceDataKey,
     );
-    const raster = (ref?.payload as unknown as { data?: { logo_escpos?: unknown } })?.data?.logo_escpos;
+    const raster = (
+      ref?.payload as unknown as { data?: { logo_escpos?: unknown } }
+    )?.data?.logo_escpos;
     return typeof raster === "string" && raster.length > 0 ? raster : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 // ── ESC/POS ────────────────────────────────────────────────────────────
 
-function doubleLineEscpos(): string { return "═".repeat(LINE_WIDTH) + LF; }
-function singleLineEscpos(): string { return "─".repeat(LINE_WIDTH); }
+function doubleLineEscpos(): string {
+  return "═".repeat(LINE_WIDTH) + LF;
+}
+function singleLineEscpos(): string {
+  return "─".repeat(LINE_WIDTH);
+}
 
 function customerLineEscpos(order: SellerOrder): string | null {
   if (order.customer_name) return `Customer: ${order.customer_name}${LF}`;
   if (order.customer_phone) return `Phone: ${order.customer_phone}${LF}`;
-  if (order.user?.full_name) return `Customer: ${order.user.full_name}${LF}`;
+  // POS orders link the teller, not a customer account. Never print staff as
+  // the customer; non-POS orders may fall back to the ordering user.
+  if (!order.is_pos && order.user?.full_name)
+    return `Customer: ${order.user.full_name}${LF}`;
   return null;
 }
 
-function orderTypeEscpos(order: SellerOrder): string { return orderTypeText(order); }
-function paymentLineEscpos(order: SellerOrder): string { return paymentLineText(order); }
+function tellerLineEscpos(order: SellerOrder): string | null {
+  const teller =
+    order.teller?.full_name ?? (order.is_pos ? order.user?.full_name : null);
+  return order.is_pos && teller ? `Served by: ${teller}${LF}` : null;
+}
 
-export function generateEscpos(order: SellerOrder, logoRasterB64?: string | null): string {
+function orderTypeEscpos(order: SellerOrder): string {
+  return orderTypeText(order);
+}
+function paymentLineEscpos(order: SellerOrder): string {
+  return paymentLineText(order);
+}
+
+export function generateEscpos(
+  order: SellerOrder,
+  logoRasterB64?: string | null,
+): string {
   const business = order.business;
   const items = order.items || [];
-  const taxLines = ((order as unknown as { order_tax_lines?: SellerOrder["tax_lines"] }).order_tax_lines ?? order.tax_lines ?? []) as SellerOrder["tax_lines"];
+  const taxLines = ((
+    order as unknown as { order_tax_lines?: SellerOrder["tax_lines"] }
+  ).order_tax_lines ??
+    order.tax_lines ??
+    []) as SellerOrder["tax_lines"];
   const parts: (string | null)[] = [];
 
-  const push = (s: string | null | undefined) => { if (s != null) parts.push(s); };
+  const push = (s: string | null | undefined) => {
+    if (s != null) parts.push(s);
+  };
   // Sanitized text push: every human-readable segment goes through escposText
   // (control codes and barcode data use raw push).
-  const pushT = (s: string | null | undefined) => { if (s != null) parts.push(escposText(s)); };
+  const pushT = (s: string | null | undefined) => {
+    if (s != null) parts.push(escposText(s));
+  };
 
   // Header — implements docs/receipt-template.md §1
   // NOTE: no logo in ESC/POS text mode — a logo URL cannot be rendered without
@@ -315,10 +410,13 @@ export function generateEscpos(order: SellerOrder, logoRasterB64?: string | null
   if (logoRasterB64) {
     try {
       push(binaryFromBase64(logoRasterB64));
-    } catch { /* logo is decorative — never fail the receipt */ }
+    } catch {
+      /* logo is decorative — never fail the receipt */
+    }
   }
   push(ESC_ALIGN_CENTER);
-  for (const part of nameBlockEscpos(business?.name || "Teinc Food")) push(part);
+  for (const part of nameBlockEscpos(business?.name || "Teinc Food"))
+    push(part);
   const addr = businessAddress(business);
   if (addr) pushT(addr + LF);
   const bPhone = (business as unknown as { phone?: string } | null)?.phone;
@@ -340,6 +438,8 @@ export function generateEscpos(order: SellerOrder, logoRasterB64?: string | null
   pushT(`Type: ${orderTypeEscpos(order)}${LF}`);
   const custLine = customerLineEscpos(order);
   if (custLine) pushT(custLine);
+  const tellerLine = tellerLineEscpos(order);
+  if (tellerLine) pushT(tellerLine);
   push(LF);
   // Barcode — CODE128 GS k 73, sized down (default height is huge).
   push(ESC_ALIGN_CENTER);
@@ -364,7 +464,8 @@ export function generateEscpos(order: SellerOrder, logoRasterB64?: string | null
     for (const cont of rest) pushT(`${padR(cont, 17)}${LF}`);
     const vName = variantName(item);
     if (vName) {
-      for (const vl of wrapText(escposText(`Size: ${vName}`), 30)) pushT(`  ${vl}${LF}`);
+      for (const vl of wrapText(escposText(`Size: ${vName}`), 30))
+        pushT(`  ${vl}${LF}`);
     }
     const addons = item.order_item_addons ?? item.addons ?? [];
     for (const addon of addons) {
@@ -373,27 +474,40 @@ export function generateEscpos(order: SellerOrder, logoRasterB64?: string | null
       const aLines = wrapText(escposText(addonName(addon)), 17);
       if (!aLines.length) continue;
       pushT(`  + ${padR(aLines[0], 17)} ${padL(addonPrice, 10)}${LF}`);
-      for (const aCont of aLines.slice(1, 2)) pushT(`      ${padR(aCont, 17)}${LF}`);
+      for (const aCont of aLines.slice(1, 2))
+        pushT(`      ${padR(aCont, 17)}${LF}`);
     }
   }
   pushT(singleLineEscpos());
   push(LF);
   // Subtotal section — template §3: label 20 + amount 11 (right)
-  pushT(`${padR("Subtotal:", 20)} ${padL(escposText(formatMoney(order.subtotal_minor, order)), 11)}${LF}`);
+  pushT(
+    `${padR("Subtotal:", 20)} ${padL(escposText(formatMoney(order.subtotal_minor, order)), 11)}${LF}`,
+  );
   if (order.delivery_fee_minor && order.delivery_fee_minor > 0) {
-    pushT(`${padR("Delivery Fee:", 20)} ${padL(escposText(formatMoney(order.delivery_fee_minor, order)), 11)}${LF}`);
+    pushT(
+      `${padR("Delivery Fee:", 20)} ${padL(escposText(formatMoney(order.delivery_fee_minor, order)), 11)}${LF}`,
+    );
   }
   for (const tax of taxLines as SellerOrder["tax_lines"]) {
-    const rateStr = tax.rate_basis_points ? `(${Math.floor(tax.rate_basis_points / 100)}%)` : "";
+    const rateStr = tax.rate_basis_points
+      ? `(${Math.floor(tax.rate_basis_points / 100)}%)`
+      : "";
     const label = `${tax.name || ""} ${rateStr}`.trim().slice(0, 19);
-    pushT(`${padR(label, 20)} ${padL(escposText(formatMoney((tax as { tax_amount_minor?: number }).tax_amount_minor as number, order)), 11)}${LF}`);
+    pushT(
+      `${padR(label, 20)} ${padL(escposText(formatMoney((tax as { tax_amount_minor?: number }).tax_amount_minor as number, order)), 11)}${LF}`,
+    );
   }
   if (order.discount_minor && order.discount_minor > 0) {
-    pushT(`${padR("Discount:", 20)} ${padL("-" + escposText(formatMoney(order.discount_minor, order)), 11)}${LF}`);
+    pushT(
+      `${padR("Discount:", 20)} ${padL("-" + escposText(formatMoney(order.discount_minor, order)), 11)}${LF}`,
+    );
   }
   push(LF);
   push(ESC_BOLD_ON);
-  pushT(`${padR("TOTAL:", 20)} ${padL(escposText(formatMoney(order.total_minor, order)), 11)}${LF}`);
+  pushT(
+    `${padR("TOTAL:", 20)} ${padL(escposText(formatMoney(order.total_minor, order)), 11)}${LF}`,
+  );
   push(ESC_BOLD_OFF);
   push(LF);
   // Footer — template §4 company block (centered, never truncated)
@@ -419,7 +533,10 @@ export function generateEscpos(order: SellerOrder, logoRasterB64?: string | null
 
 // ── HTML ───────────────────────────────────────────────────────────────
 
-export async function generateHtmlAsync(order: SellerOrder, opts?: { logoDataUri?: string | null; useCache?: boolean }): Promise<string> {
+export async function generateHtmlAsync(
+  order: SellerOrder,
+  opts?: { logoDataUri?: string | null; useCache?: boolean },
+): Promise<string> {
   const explicit = opts?.logoDataUri;
   if (explicit) return generateHtml(order, explicit);
   const logoUrl = businessLogoUrl(order);
@@ -428,8 +545,16 @@ export async function generateHtmlAsync(order: SellerOrder, opts?: { logoDataUri
       const bId = order.business_id;
       if (bId) {
         const db = await openSyncDatabase();
-        const ref = await getReferenceData<{ data?: { logo_url?: string | null } }>(db, bId, "business:profile" as unknown as import("../reference/types").ReferenceDataKey);
-        const refLogo = (ref?.payload as unknown as { data?: { logo_url?: string | null } })?.data?.logo_url;
+        const ref = await getReferenceData<{
+          data?: { logo_url?: string | null };
+        }>(
+          db,
+          bId,
+          "business:profile" as unknown as import("../reference/types").ReferenceDataKey,
+        );
+        const refLogo = (
+          ref?.payload as unknown as { data?: { logo_url?: string | null } }
+        )?.data?.logo_url;
         if (refLogo) {
           const dataUri = await fetchAsDataUri(refLogo);
           if (dataUri) return generateHtml(order, dataUri);
@@ -458,40 +583,58 @@ export async function generateHtmlAsync(order: SellerOrder, opts?: { logoDataUri
   return generateHtml(order, logoUrl);
 }
 
-export function generateHtml(order: SellerOrder, logoDataUri?: string | null): string {
+export function generateHtml(
+  order: SellerOrder,
+  logoDataUri?: string | null,
+): string {
   const business = order.business;
   const items = order.items || [];
-  const taxLines = (((order as unknown as { order_tax_lines?: SellerOrder["tax_lines"] }).order_tax_lines) ?? order.tax_lines ?? []) as SellerOrder["tax_lines"];
+  const taxLines = ((
+    order as unknown as { order_tax_lines?: SellerOrder["tax_lines"] }
+  ).order_tax_lines ??
+    order.tax_lines ??
+    []) as SellerOrder["tax_lines"];
   const callout = calloutNumber(order);
-  const logoSrc = logoDataUri || (business as unknown as { logo_url?: string } | null)?.logo_url || "";
+  const logoSrc =
+    logoDataUri ||
+    (business as unknown as { logo_url?: string } | null)?.logo_url ||
+    "";
   const hasLogo = !!logoSrc;
   const businessName = escHtml(business?.name || "Teinc Food");
   const company = getCompanyInfo();
   const addr = businessAddress(business);
   const bPhone = (business as unknown as { phone?: string } | null)?.phone;
 
-  const itemRows = items.map((item) => {
-    const qty = item.quantity || 1;
-    // unit_price is already minor? backend format_money expects minor
-    const price = formatMoney((item.unit_price ?? 0) * qty, order);
-    const main = `<tr><td class="item-name">${escHtml(itemName(item))}</td><td class="item-qty">${qty}</td><td class="item-price">${price}</td></tr>`;
-    const vName = variantName(item);
-    const variantRow = vName
-      ? `<tr class="variant-row"><td class="item-name" colspan="2">Size: ${escHtml(vName)}</td><td class="item-price"></td></tr>`
-      : "";
-    const addons = item.order_item_addons ?? item.addons ?? [];
-    const addonRows = addons.map((addon) => {
-      const aName = escHtml(addonName(addon));
-      const aPriceMinor = addon.price_minor ?? addon.price ?? 0;
-      return `<tr class="addon-row"><td class="item-name">+ ${aName}</td><td class="item-qty"></td><td class="addon-price">${formatMoney(aPriceMinor, order)}</td></tr>`;
-    }).join("\n");
-    return [main, variantRow, addonRows].filter(Boolean).join("\n");
-  }).join("\n");
+  const itemRows = items
+    .map((item) => {
+      const qty = item.quantity || 1;
+      // unit_price is already minor? backend format_money expects minor
+      const price = formatMoney((item.unit_price ?? 0) * qty, order);
+      const main = `<tr><td class="item-name">${escHtml(itemName(item))}</td><td class="item-qty">${qty}</td><td class="item-price">${price}</td></tr>`;
+      const vName = variantName(item);
+      const variantRow = vName
+        ? `<tr class="variant-row"><td class="item-name" colspan="2">Size: ${escHtml(vName)}</td><td class="item-price"></td></tr>`
+        : "";
+      const addons = item.order_item_addons ?? item.addons ?? [];
+      const addonRows = addons
+        .map((addon) => {
+          const aName = escHtml(addonName(addon));
+          const aPriceMinor = addon.price_minor ?? addon.price ?? 0;
+          return `<tr class="addon-row"><td class="item-name">+ ${aName}</td><td class="item-qty"></td><td class="addon-price">${formatMoney(aPriceMinor, order)}</td></tr>`;
+        })
+        .join("\n");
+      return [main, variantRow, addonRows].filter(Boolean).join("\n");
+    })
+    .join("\n");
 
-  const taxRowsHtml = (taxLines as SellerOrder["tax_lines"]).map((tax) => {
-    const rateStr = tax.rate_basis_points ? `(${Math.floor(tax.rate_basis_points / 100)}%)` : "";
-    return `<tr><td class="label">${escHtml(tax.name || "")} ${escHtml(rateStr)}</td><td class="amount">${formatMoney((tax as { tax_amount_minor?: number }).tax_amount_minor as number, order)}</td></tr>`;
-  }).join("\n");
+  const taxRowsHtml = (taxLines as SellerOrder["tax_lines"])
+    .map((tax) => {
+      const rateStr = tax.rate_basis_points
+        ? `(${Math.floor(tax.rate_basis_points / 100)}%)`
+        : "";
+      return `<tr><td class="label">${escHtml(tax.name || "")} ${escHtml(rateStr)}</td><td class="amount">${formatMoney((tax as { tax_amount_minor?: number }).tax_amount_minor as number, order)}</td></tr>`;
+    })
+    .join("\n");
 
   // Exact style from receipt.ex to_html/2
   return `<!DOCTYPE html>
@@ -537,7 +680,18 @@ export function generateHtml(order: SellerOrder, logoDataUri?: string | null): s
   <strong>Order:</strong> ${escHtml(order.order_number)}<br>
   <strong>Date:</strong> ${escHtml(formatDatetime(order.inserted_at))}<br>
   <strong>Type:</strong> ${escHtml(orderTypeText(order))}<br>
-  ${order.customer_name ? `<strong>Customer:</strong> ${escHtml(order.customer_name)}<br>` : order.user?.full_name ? `<strong>Customer:</strong> ${escHtml(order.user.full_name)}<br>` : ""}
+  ${
+    order.customer_name
+      ? `<strong>Customer:</strong> ${escHtml(order.customer_name)}<br>`
+      : !order.is_pos && order.user?.full_name
+        ? `<strong>Customer:</strong> ${escHtml(order.user.full_name)}<br>`
+        : ""
+  }
+  ${
+    order.is_pos && (order.teller?.full_name || order.user?.full_name)
+      ? `<strong>Served by:</strong> ${escHtml(order.teller?.full_name || order.user!.full_name)}<br>`
+      : ""
+  }
 </div>
 <div class="callout">
   <div class="number">${escHtml(callout)}</div>

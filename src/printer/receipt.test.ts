@@ -73,6 +73,33 @@ describe("generateEscpos", () => {
   });
 });
 
+describe("customer vs teller", () => {
+  it("prints a typed POS customer and the teller separately", () => {
+    const out = generateEscpos(
+      order({
+        is_pos: true,
+        customer_name: "Ama",
+        user: { full_name: "Kojo Teller" },
+      }),
+    );
+    expect(out).toContain("Customer: Ama");
+    expect(out).toContain("Served by: Kojo Teller");
+    expect(out).not.toContain("Customer: Kojo Teller");
+  });
+
+  it("never labels a POS teller as the customer when no customer was typed", () => {
+    const out = generateEscpos(
+      order({
+        is_pos: true,
+        customer_name: null,
+        user: { full_name: "Kojo Teller" },
+      }),
+    );
+    expect(out).not.toContain("Customer: Kojo Teller");
+    expect(out).toContain("Served by: Kojo Teller");
+  });
+});
+
 describe("snapshot-only history lines (menu rows gone)", () => {
   it("renders sale-time names with no menu cache", () => {
     const out = generateEscpos(
@@ -158,13 +185,17 @@ describe("golden 80mm receipt (docs/receipt-template.md)", () => {
         },
       ],
       tax_lines: [],
-      order_tax_lines: [{ name: "VAT", rate_basis_points: 300, tax_amount_minor: 537 }],
+      order_tax_lines: [
+        { name: "VAT", rate_basis_points: 300, tax_amount_minor: 537 },
+      ],
     }) as unknown as SellerOrder;
 
   function printableLines(out: string, orderNumber: string): string[] {
-    const withoutBarcode = out.split(
-      String.fromCharCode(0x1d, 0x6b, 0x49, orderNumber.length) + orderNumber,
-    ).join("");
+    const withoutBarcode = out
+      .split(
+        String.fromCharCode(0x1d, 0x6b, 0x49, orderNumber.length) + orderNumber,
+      )
+      .join("");
     // Normalize the Date line: backend renders UTC, JS renders local TZ.
     const normalized = withoutBarcode.replace(
       /^Date: .*$/m,

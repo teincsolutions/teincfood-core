@@ -1,4 +1,4 @@
-import type { PaginatedResponse } from './pagination';
+import type { PaginatedResponse } from "./pagination";
 
 // ─── Order User ───
 
@@ -8,6 +8,21 @@ export interface OrderUser {
   email: string;
   phone: string;
   avatar_url: string | null;
+}
+
+/** Explicit customer identity. POS customers are typed names only, not users. */
+export interface OrderCustomer {
+  user_id: string | null;
+  name: string | null;
+  phone: string | null;
+  avatar_url: string | null;
+}
+
+/** Business member who rang up a POS order. Distinct from the customer. */
+export interface OrderTeller {
+  id: string;
+  full_name: string;
+  email?: string | null;
 }
 
 // ─── Payment Summary ───
@@ -151,6 +166,9 @@ export interface SellerOrder {
   delivery_lat: number | null;
   delivery_lng: number | null;
   user: OrderUser | null;
+  /** Explicit customer vs staff split; older payloads may omit this. */
+  customer?: OrderCustomer | null;
+  teller?: OrderTeller | null;
   items: OrderItem[];
   inserted_at: string;
   updated_at?: string;

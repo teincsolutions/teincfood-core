@@ -15,6 +15,12 @@ export type CustomerDisplay = {
 
 type OrderLike = Pick<SellerOrder, "customer_name"> & {
   user?: { full_name?: string; avatar_url?: string; phone?: string } | null;
+  customer?: {
+    name?: string | null;
+    phone?: string | null;
+    avatar_url?: string | null;
+  } | null;
+  teller?: { full_name?: string | null } | null;
   customer_phone?: string | null;
   is_pos?: boolean;
 };
@@ -28,30 +34,44 @@ type OrderLike = Pick<SellerOrder, "customer_name"> & {
  */
 export function getCustomerDisplay(order: OrderLike): CustomerDisplay {
   if (order.is_pos) {
-    const walkName = order.customer_name?.trim() ? order.customer_name.trim() : "Walk-in";
+    const typedName =
+      order.customer?.name?.trim() || order.customer_name?.trim();
     return {
-      name: walkName,
+      name: typedName || "Walk-in",
       avatarUrl: null,
-      phone: order.customer_phone ?? null,
+      phone: order.customer?.phone ?? order.customer_phone ?? null,
       isWalkIn: true,
-      tellerName: order.user?.full_name?.trim() ?? null,
+      tellerName:
+        order.teller?.full_name?.trim() ??
+        order.user?.full_name?.trim() ??
+        null,
     };
   }
-  const rawName = order.customer_name?.trim()
-    ? order.customer_name.trim()
-    : order.user?.full_name?.trim() ?? "";
+  const rawName =
+    order.customer?.name?.trim() ||
+    order.customer_name?.trim() ||
+    order.user?.full_name?.trim() ||
+    "";
   if (rawName) {
     return {
       name: rawName,
-      avatarUrl: order.user?.avatar_url ?? null,
-      phone: order.customer_phone ?? order.user?.phone ?? null,
+      avatarUrl: order.customer?.avatar_url ?? order.user?.avatar_url ?? null,
+      phone:
+        order.customer?.phone ??
+        order.customer_phone ??
+        order.user?.phone ??
+        null,
       isWalkIn: false,
     };
   }
   return {
     name: "Customer",
-    avatarUrl: order.user?.avatar_url ?? null,
-    phone: order.customer_phone ?? order.user?.phone ?? null,
+    avatarUrl: order.customer?.avatar_url ?? order.user?.avatar_url ?? null,
+    phone:
+      order.customer?.phone ??
+      order.customer_phone ??
+      order.user?.phone ??
+      null,
     isWalkIn: false,
   };
 }
@@ -66,8 +86,12 @@ export function getCustomerSearchKeys(order: OrderLike): string[] {
   ];
 }
 
-export function matchesCustomerSearch(order: OrderLike, qLower: string): boolean {
+export function matchesCustomerSearch(
+  order: OrderLike,
+  qLower: string,
+): boolean {
   if (!qLower) return true;
-  const hay = `${order.customer_name ?? ""} ${order.user?.full_name ?? ""} ${order.customer_phone ?? ""} ${order.user?.phone ?? ""}`.toLowerCase();
+  const hay =
+    `${order.customer_name ?? ""} ${order.user?.full_name ?? ""} ${order.customer_phone ?? ""} ${order.user?.phone ?? ""}`.toLowerCase();
   return hay.includes(qLower);
 }
