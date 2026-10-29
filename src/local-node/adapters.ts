@@ -76,7 +76,7 @@ export interface LocalNodeDeps {
   // Lib-central contract: apps provide ONLY the business id. Owner fields are
   // deliberately absent — the mesh secret is business-only (see security.ts).
   getBusiness: () => { id: string } | null;
-  getAuth: () => { user: unknown | null; accessToken: string | null };
+  getAuth: () => { user: unknown | null; accessToken: string | null; localSession?: boolean };
   discovery: DiscoveryAdapter;
   transport: TransportAdapter;
   keepAlive?: KeepAliveAdapter;

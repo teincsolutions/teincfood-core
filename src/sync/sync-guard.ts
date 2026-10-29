@@ -8,7 +8,7 @@
  * (invitations, fleet) gate on auth only.
  */
 
-import { getAuthToken } from "../adapters/auth";
+import { hasSession } from "../adapters/auth";
 import { getActiveBusiness } from "../adapters/business";
 
 // Offline machinery (reference sync, drains, pulls, leases) runs for the
@@ -26,7 +26,7 @@ export function isOfflineSyncEnabled(): boolean {
 }
 
 export function isAuthenticated(): boolean {
-  return !!getAuthToken();
+  return hasSession();
 }
 
 export function hasActiveBusiness(): boolean {
@@ -42,5 +42,5 @@ export function hasActiveBusiness(): boolean {
 export function canBusinessSync(businessId?: string | null): boolean {
   if (!offlineSyncEnabled) return false;
   const bid = businessId ?? getActiveBusiness()?.id;
-  return !!bid && !!getAuthToken();
+  return !!bid && hasSession();
 }

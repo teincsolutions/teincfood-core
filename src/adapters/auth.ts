@@ -22,6 +22,20 @@ let getRefresh: (() => string | null) | null = null;
 let setTokens: ((at: string, rt: string) => void) | null = null;
 let clearFn: (() => void) | null = null;
 
+// Offline member sessions have no cloud access token but are still valid local
+// sessions. Cloud HTTP calls must still require a real token; local commands,
+// LAN mesh startup and the outbox use `hasSession()`.
+let localSessionActive = false;
+
+export function setLocalSessionActive(active: boolean): void {
+  localSessionActive = active;
+  notifyAuth();
+}
+
+export function isLocalSessionActive(): boolean {
+  return localSessionActive;
+}
+
 const authListeners = new Set<() => void>();
 export function subscribeAuth(listener: () => void): () => void {
   authListeners.add(listener);
@@ -55,12 +69,19 @@ export function getRefreshToken(): string | null {
   return getRefresh ? getRefresh() : null;
 }
 
+/** True when either a cloud token or an offline member session exists. */
+export function hasSession(): boolean {
+  return localSessionActive || !!getAuthToken();
+}
+
 export function setAuthTokens(at: string, rt: string): void {
+  localSessionActive = false;
   if (setTokens) setTokens(at, rt);
   notifyAuth();
 }
 
 export function clearAuth(): void {
+  localSessionActive = false;
   if (clearFn) clearFn();
   notifyAuth();
 }

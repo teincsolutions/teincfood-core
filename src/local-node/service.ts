@@ -11,6 +11,7 @@ import { applyPendingOrderEvent, applyOrderStateChangeEvent, notifyPendingOrders
 import { applyMenuCommandLocal } from "../reference/menu-apply";
 import { REFERENCE_CHANGED_EVENT_TYPE } from "../reference/events";
 import { applyReferenceChangeEvent } from "../reference/events";
+import { referenceSyncService } from "../reference/service";
 import { openSyncDatabase } from "../db/connection";
 import { insertOrder } from "../db/operations";
 import { createLocalOrder, transitionLocalOrder } from "../domain/orders/service";
@@ -74,7 +75,7 @@ class LocalNodeServiceCore {
     if (this.starting) return;
     const auth = deps.getAuth();
     const business = deps.getBusiness();
-    if (!auth.user || !auth.accessToken || !business) {
+    if (!auth.user || (!auth.accessToken && !auth.localSession) || !business) {
       if (this.mode !== "idle") await this.runShutdown();
       syncLogger.info("LocalNodeService", "Local Node idle (no active business)", {});
       this.setupStoreSubscriptions();
@@ -479,6 +480,18 @@ class LocalNodeServiceCore {
         syncLogger.info("LocalNodeService", "Connected to peer", { deviceId: node.deviceId });
         this.peerInfos.set(node.deviceId, { deviceId: node.deviceId, host: node.host, port: node.port });
         localNodeStore.getState().addConnectedClient({ deviceId: node.deviceId, deviceName: node.deviceName, host: node.host, connectedAt: new Date().toISOString() });
+        // A terminal may have missed `reference_data.changed` while it was
+        // disconnected. Compare versions with the peer on reconnect so menu,
+        // members, hours and tax changes converge even on a dark LAN.
+        const connectivity = getConnectivityState();
+        if (
+          this.businessId &&
+          (!connectivity.isOnline || connectivity.isCloudReachable === "unreachable")
+        ) {
+          void referenceSyncService
+            .sync({ businessId: this.businessId })
+            .catch((e) => syncLogger.warn("LocalNodeService", "LAN reference catch-up failed", { error: String(e) }));
+        }
       },
       onDisconnected: () => {
         this.settleDial(node.deviceId);

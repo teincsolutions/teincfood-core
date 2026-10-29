@@ -194,7 +194,19 @@ export * from "./local-node/service";
 export { setLocalNodeState } from "./adapters/local-node";
 export * from "./adapters/services";
 export * from "./adapters/devices";
-export { setAuthProvider, getAuthToken, setAuthRefreshProvider, getRefreshToken, setAuthTokensProvider, setAuthTokens, setAuthClearProvider, clearAuth } from "./adapters/auth";
+export {
+  setAuthProvider,
+  getAuthToken,
+  setAuthRefreshProvider,
+  getRefreshToken,
+  setAuthTokensProvider,
+  setAuthTokens,
+  setAuthClearProvider,
+  clearAuth,
+  hasSession,
+  setLocalSessionActive,
+  isLocalSessionActive,
+} from "./adapters/auth";
 export { imageCacheService } from "./adapters/image-cache";
 export * from "./adapters/business";
 export * from "./adapters/pending-orders";
@@ -257,7 +269,14 @@ export {
   hasAuthRetrySkip,
   refreshSession,
   withAuthRetry,
+  setOfflineSessionRecoveryProvider,
 } from "./auth/session";
+
+// ── Offline device license + member unlock ──
+export * from "./offline/license";
+export * from "./offline/random";
+export * from "./offline/store";
+export * from "./offline/service";
 export type { AuthFailure, SessionTokens } from "./auth/session";
 
 // ── Image cache (durable) ──

@@ -20,6 +20,7 @@
 import {
   clearAuth,
   getRefreshToken,
+  isLocalSessionActive,
   setAuthTokens,
 } from "../adapters/auth";
 import { getHttpClient } from "../adapters/http";
@@ -140,6 +141,28 @@ export function hasAuthRetrySkip(config: unknown): boolean {
 
 let inflight: Promise<SessionTokens | null> | null = null;
 
+let offlineRecovery: (() => Promise<SessionTokens | null>) | null = null;
+
+/**
+ * Host apps register a device-license exchange here. It lets an offline
+ * terminal recover from an expired/rotated refresh token without asking the
+ * member to sign in again.
+ */
+export function setOfflineSessionRecoveryProvider(
+  provider: (() => Promise<SessionTokens | null>) | null,
+): void {
+  offlineRecovery = provider;
+}
+
+async function tryOfflineRecovery(): Promise<SessionTokens | null> {
+  if (!offlineRecovery) return null;
+  try {
+    return await offlineRecovery();
+  } catch {
+    return null;
+  }
+}
+
 interface RefreshResponseBody {
   access_token?: string;
   refresh_token?: string;
@@ -156,7 +179,9 @@ async function doRefresh(): Promise<SessionTokens | null> {
   try {
     const rt = getRefreshToken();
     if (!rt) {
-      clearAuth();
+      const recovered = await tryOfflineRecovery();
+      if (recovered) return recovered;
+      if (!isLocalSessionActive()) clearAuth();
       return null;
     }
     const http = getHttpClient();
@@ -179,6 +204,8 @@ async function doRefresh(): Promise<SessionTokens | null> {
   } catch (e) {
     const failure = extractAuthFailure(e);
     if (isSessionDead(failure)) {
+      const recovered = await tryOfflineRecovery();
+      if (recovered) return recovered;
       syncLogger.warn("Session", "Refresh token expired — logging out", {
         code: failure.code,
       });
