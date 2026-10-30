@@ -31,6 +31,12 @@ import { generateEventId } from "../utils/uuid";
 import { buildItemSnapshots, snapshotsToOrderLines } from "../domain/orders/snapshots";
 import type { SnapshotCartLine } from "../domain/orders/snapshots";
 import {
+  DEFAULT_ORDER_FLOW_MODE,
+  getBusinessOrderFlowMode,
+  initialPosOrderStatus,
+  type OrderFlowMode,
+} from "../domain/orders/order-flow";
+import {
   generateLocalCalloutNumber,
   generateOrderNumberForBusiness,
   generateOrderNumber,
@@ -84,7 +90,10 @@ export function getQueuedStatus(commandType: string): string | null {
   return QUEUED_STATUS_BY_COMMAND[commandType] ?? null;
 }
 
-function buildOptimisticEvent(command: Command): DomainEvent {
+function buildOptimisticEvent(
+  command: Command,
+  flowMode: OrderFlowMode = DEFAULT_ORDER_FLOW_MODE,
+): DomainEvent {
   const payload = command.payload as Record<string, unknown>;
   if (command.command_type === "order:create") {
     return {
@@ -94,7 +103,7 @@ function buildOptimisticEvent(command: Command): DomainEvent {
       entity_id: command.entity_id ?? command.command_id,
       user_id: command.user_id,
       device_id: command.device_id,
-      payload: buildOptimisticOrder(command, payload),
+      payload: buildOptimisticOrder(command, payload, flowMode),
       timestamp: new Date().toISOString(),
     };
   }
@@ -108,6 +117,7 @@ function buildOptimisticEvent(command: Command): DomainEvent {
       device_id: command.device_id,
       payload: {
         ...payload,
+        business_id: command.business_id,
         command_id: command.command_id,
         is_paid: true,
         paid_at: new Date().toISOString(),
@@ -126,6 +136,9 @@ function buildOptimisticEvent(command: Command): DomainEvent {
     device_id: command.device_id,
     payload: {
       ...payload,
+      // Required by the offline read-model patch so queued transitions update
+      // the canonical orders table (not just seller_orders snapshots).
+      business_id: command.business_id,
       command_id: command.command_id,
       status: "pending",
       // Used by offline read-model patching so the list reflects the queued transition.
@@ -141,6 +154,7 @@ function buildOptimisticEvent(command: Command): DomainEvent {
 function buildOptimisticOrder(
   command: Command,
   payload: Record<string, unknown>,
+  flowMode: OrderFlowMode,
 ): SellerOrder {
   const snapshots = buildItemSnapshots(
     ((payload.item_snapshots ?? payload.items ?? []) as SnapshotCartLine[]),
@@ -151,6 +165,8 @@ function buildOptimisticOrder(
   const taxLines = (payload.tax_lines as unknown[]) ?? [];
   const currencyCode = (payload.currency_code as string) ?? "GHS";
   const now = new Date().toISOString();
+  const method = (payload.pos_payment_method as string) ?? "cash";
+  const isCash = method === "cash";
 
   const orderNumber =
     (payload.order_number as string) ?? generateOrderNumberForBusiness(command.business_id);
@@ -163,20 +179,23 @@ function buildOptimisticOrder(
     is_pos: true,
     customer_name: (payload.customer_name as string) ?? null,
     customer_phone: (payload.customer_phone as string) ?? null,
-    pos_payment_method: (payload.pos_payment_method as string) ?? "cash",
-    paid_at: null,
-    status: "accepted",
+    pos_payment_method: method,
+    paid_at: isCash ? now : null,
+    // Must match createLocalOrder: direct-flow cash sales are born delivered,
+    // even when the command is parked in the offline outbox. Hardcoding
+    // "accepted" made a completed sale show up on the preparing board.
+    status: initialPosOrderStatus(method, flowMode),
     delivery_id: null,
     delivery_status: null,
-    is_paid: (payload.pos_payment_method as string) === "cash",
+    is_paid: isCash,
     payment: {
-      is_paid: (payload.pos_payment_method as string) === "cash",
+      is_paid: isCash,
       reference: null,
       amount_minor: totalMinor,
       currency: currencyCode,
-      paid_at: (payload.pos_payment_method as string) === "cash" ? now : null,
+      paid_at: isCash ? now : null,
     },
-    payment_mode: "pos_cash",
+    payment_mode: isCash ? "pos_cash" : "prepaid",
     total_minor: totalMinor,
     subtotal_minor: subtotalMinor,
     delivery_fee_minor: (payload.delivery_fee_minor as number) ?? 0,
@@ -308,7 +327,14 @@ class CommandQueueService {
       order_number: (preparedCommand.payload as Record<string, unknown>).order_number ?? null,
       outbox_size: pending.length,
     });
-    const event = buildOptimisticEvent(preparedCommand);
+    // Direct-flow cash sales are complete on creation. The optimistic order
+    // must use the same cached business setting as createLocalOrder, otherwise
+    // an offline direct sale appears as "accepted" and offers kitchen steps.
+    const flowMode =
+      preparedCommand.command_type === "order:create"
+        ? await getBusinessOrderFlowMode(preparedCommand.business_id)
+        : DEFAULT_ORDER_FLOW_MODE;
+    const event = buildOptimisticEvent(preparedCommand, flowMode);
     syncLogger.info("CommandQueueService", "Optimistic event built", {
       event_type: event.event_type,
       entity_id: event.entity_id,

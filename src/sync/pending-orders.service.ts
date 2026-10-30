@@ -228,7 +228,7 @@ function patchPendingStatus(event: DomainEvent): void {
     const target = store.orders.find((o) => o.id === orderId || o.order_number === orderId);
     if (!target) return;
     const patched = { ...target, status: toStatus as SellerOrder["status"] };
-    store.addOrder(patched);
+    store.updateOrder(patched);
   } catch {}
 }
 
@@ -250,7 +250,7 @@ function patchPendingPaid(event: DomainEvent): void {
       paid_at: paidAt,
       payment: { ...(t.payment as SellerOrder["payment"]), is_paid: true, paid_at: paidAt },
     };
-    store.addOrder(patched);
+    store.updateOrder(patched);
   } catch {}
 }
 
@@ -287,7 +287,7 @@ export async function applyPendingOrderEvent(
         if (toStatus && orderId) {
           const store = usePendingOrdersStore.getState();
           const target = store.orders.find((o) => o.id === orderId || o.order_number === orderId);
-          if (target) store.addOrder({ ...target, status: toStatus as SellerOrder["status"] });
+          if (target) store.updateOrder({ ...target, status: toStatus as SellerOrder["status"] });
         }
       } catch {}
       const db = await openSyncDatabase();

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { createMemoryDriver } from "../test-helpers/memory-driver";
 import { setSqliteDriver } from "../adapters/sqlite";
 import { openSyncDatabase, closeSyncDatabase } from "../db/connection";
-import { setReferenceData } from "../reference/operations";
+import { mergeReferenceData, setReferenceData } from "../reference/operations";
 import { getPendingCommands } from "../db/operations";
 import { setItemSync } from "../adapters/kv";
 import { commandQueueService } from "./command-queue.service";
@@ -99,5 +99,33 @@ describe("command-queue enqueue hours gate", () => {
     expect(event.event_type).toBeDefined();
     const db = await openSyncDatabase();
     expect(await getPendingCommands(db, 100)).toHaveLength(1);
+  });
+
+  it("optimistic order honours direct flow (born delivered) while queued", async () => {
+    await seedState();
+    const db = await openSyncDatabase();
+    await mergeReferenceData(
+      db,
+      BID,
+      "business:profile",
+      { data: { pos_order_flow: "direct" } },
+      "hlc-direct",
+      "evt-direct",
+    );
+    setItemSync(`teinc_device_number:${BID}`, "07");
+
+    const event = await commandQueueService.enqueue(orderCommand());
+    const pending = event.payload as { status?: string; is_paid?: boolean };
+
+    expect(pending.status).toBe("delivered");
+    expect(pending.is_paid).toBe(true);
+  });
+
+  it("optimistic order stays accepted in staged flow", async () => {
+    await seedState();
+    setItemSync(`teinc_device_number:${BID}`, "07");
+
+    const event = await commandQueueService.enqueue(orderCommand());
+    expect((event.payload as { status?: string }).status).toBe("accepted");
   });
 });

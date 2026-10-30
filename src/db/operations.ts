@@ -757,6 +757,28 @@ export async function upsertServerOrder(
   notifyDbChange(order.business_id, "orders");
 }
 
+/**
+ * Recent orders plus their local HLC, for LAN catch-up.
+ *
+ * The HLC must travel with the row: `insertOrder` is HLC-guarded, so a peer
+ * replaying an older snapshot can never overwrite a newer local status.
+ */
+export async function listOrdersWithHlc(
+  db: SQLiteDatabase,
+  businessId: string,
+  limit = 200,
+): Promise<Array<import("../types/api/seller.api").SellerOrder & { hlc?: string }>> {
+  const rows = await db.getAllAsync<OrderRow>(
+    `SELECT * FROM orders WHERE business_id = ? AND deleted_at IS NULL ORDER BY inserted_at DESC LIMIT ?;`,
+    businessId,
+    limit,
+  );
+  return rows.map((row) => ({
+    ...orderRowToSellerOrder(row),
+    hlc: row.hlc ?? row.updated_at ?? row.inserted_at,
+  }));
+}
+
 export async function listOrders(db: SQLiteDatabase, businessId: string, filters?: { status?: string; q?: string; is_pos?: string; order_type?: string; date_from?: string; date_to?: string; is_paid?: string }, page = 1, pageSize = 20): Promise<{ data: import("../types/api/seller.api").SellerOrder[]; total: number }> {
   const where: string[] = ["business_id = ?"];
   const args: unknown[] = [businessId];

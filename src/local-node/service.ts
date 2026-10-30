@@ -13,7 +13,9 @@ import { REFERENCE_CHANGED_EVENT_TYPE } from "../reference/events";
 import { applyReferenceChangeEvent } from "../reference/events";
 import { referenceSyncService } from "../reference/service";
 import { openSyncDatabase } from "../db/connection";
-import { insertOrder } from "../db/operations";
+import { getUnsyncedEvents, insertOrder, listOrdersWithHlc } from "../db/operations";
+import { getPendingOrdersSnapshot } from "../adapters/pending-orders";
+import { generateEventId } from "../utils/uuid";
 import { createLocalOrder, transitionLocalOrder } from "../domain/orders/service";
 import type { SellerOrder } from "../types/api/seller.api";
 import { getConnectivityState } from "../adapters/connectivity";
@@ -91,6 +93,80 @@ class LocalNodeServiceCore {
       } catch {}
     }
     return null;
+  }
+
+  /**
+   * Catch a newly connected peer up on orders created while the mesh was not
+   * connected (e.g. a sale rung up before Local Node was enabled).
+   *
+   * Live order events only cover changes that happen *after* the socket is
+   * up. Without this handshake a pre-existing offline sale stayed invisible
+   * on the other terminal forever. Both sides call this on connect; the
+   * cooldown dedupes the inbound/outbound callbacks for the same peer.
+   */
+  private orderCatchupAt = new Map<string, number>();
+  private static readonly ORDER_CATCHUP_COOLDOWN_MS = 10_000;
+
+  private async publishOrderCatchup(peerDeviceId: string): Promise<void> {
+    if (!this.businessId) return;
+    const now = Date.now();
+    const last = this.orderCatchupAt.get(peerDeviceId) ?? 0;
+    if (now - last < LocalNodeServiceCore.ORDER_CATCHUP_COOLDOWN_MS) return;
+    this.orderCatchupAt.set(peerDeviceId, now);
+
+    try {
+      const db = await openSyncDatabase();
+      const rows = await listOrdersWithHlc(db, this.businessId, 200);
+      const byId = new Map<string, SellerOrder & { hlc?: string }>();
+      for (const order of rows) byId.set(order.id, order);
+      // Queued offline creations have no `orders` row yet; they live in the
+      // pending overlay and the durable event journal. Include both so a
+      // pre-linkup sale is shared even after an app restart.
+      for (const origin of ["local", "lan"] as const) {
+        const events = await getUnsyncedEvents(db, origin, Number.MAX_SAFE_INTEGER);
+        for (const event of events) {
+          if (event.event_type !== "order.create_queued") continue;
+          const order = event.payload as unknown as SellerOrder;
+          if (order?.id && order.order_number) byId.set(order.id, order);
+        }
+      }
+      for (const order of getPendingOrdersSnapshot().orders) {
+        if (order.business_id === this.businessId) byId.set(order.id, order);
+      }
+
+      const peer = this.peers.get(peerDeviceId);
+      const canTarget = !!peer?.isConnected() && typeof peer.publishEvent === "function";
+      for (const order of byId.values()) {
+        if (!order?.id || !order.order_number) continue;
+        const event: DomainEvent = {
+          event_id: generateEventId(),
+          event_type: "order:sync" as DomainEvent["event_type"],
+          event_version: "1",
+          entity_id: order.id,
+          user_id: "",
+          device_id: this.cachedDeviceId ?? "",
+          payload: order as unknown as Record<string, unknown>,
+          timestamp: order.updated_at ?? order.inserted_at ?? new Date().toISOString(),
+        };
+        if (canTarget) {
+          await peer!.publishEvent!(event);
+        } else {
+          this.server?.broadcast(event);
+        }
+      }
+      syncLogger.info("LocalNodeService", "Order catch-up published", {
+        peer: peerDeviceId,
+        orders: byId.size,
+        targeted: canTarget,
+      });
+    } catch (error) {
+      syncLogger.warn("LocalNodeService", "Order catch-up failed", {
+        peer: peerDeviceId,
+        error: String(error),
+      });
+      // Allow a later reconnect to retry after a transient DB/socket failure.
+      this.orderCatchupAt.delete(peerDeviceId);
+    }
   }
   private getDeps(): LocalNodeDeps {
     if (!this.deps) throw new Error("LocalNodeService not initialised: call initLocalNodeService(deps) first");
@@ -180,6 +256,7 @@ class LocalNodeServiceCore {
     for (const c of this.peers.values()) try { c.disconnect(); } catch {}
     this.peers.clear();
     this.peerInfos.clear();
+    this.orderCatchupAt.clear();
     if (this.server) {
       await withTimeout(this.server.stop(), LIFECYCLE_TIMEOUT_MS).catch((e) => syncLogger.warn("LocalNodeService", "Server stop timed out", { error: String(e) }));
       this.server = null;
@@ -311,6 +388,9 @@ class LocalNodeServiceCore {
       onClientConnected: (info) => {
         localNodeStore.getState().addConnectedClient({ deviceId: info.deviceId, deviceName: info.deviceName, host: info.host, connectedAt: new Date().toISOString() });
         syncLogger.info("LocalNodeService", "Client connected", { deviceId: info.deviceId, connected_clients: localNodeStore.getState().connectedClients.length });
+        // Inbound connect: push this node's pre-existing orders to the new
+        // peer (covers mDNS asymmetry where only one side dials).
+        void this.publishOrderCatchup(info.deviceId);
       },
       onClientDisconnected: (deviceId) => {
         localNodeStore.getState().removeConnectedClient(deviceId);
@@ -517,6 +597,8 @@ class LocalNodeServiceCore {
         syncLogger.info("LocalNodeService", "Connected to peer", { deviceId: node.deviceId });
         this.peerInfos.set(node.deviceId, { deviceId: node.deviceId, host: node.host, port: node.port });
         localNodeStore.getState().addConnectedClient({ deviceId: node.deviceId, deviceName: node.deviceName, host: node.host, connectedAt: new Date().toISOString() });
+        // Outbound connect: push orders created before this socket existed.
+        void this.publishOrderCatchup(node.deviceId);
         // A terminal may have missed `reference_data.changed` while it was
         // disconnected. Compare versions with the peer on reconnect so menu,
         // members, hours and tax changes converge even on a dark LAN.

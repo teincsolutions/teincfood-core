@@ -97,7 +97,11 @@ export function useSellerOrdersQuery(enabled=true, filters?: SellerOrderFilters)
   });
 }
 
-export function useSellerOrderQuery(orderId: string, enabled=true) {
+export function useSellerOrderQuery(
+  orderId: string,
+  enabled = true,
+  placeholder?: SellerOrder | null,
+) {
   const bid = useBusinessId();
   return useQuery({
     queryKey: SELLER_KEYS.order(orderId, bid),
@@ -108,7 +112,13 @@ export function useSellerOrderQuery(orderId: string, enabled=true) {
       return { data: order };
     },
     enabled: enabled && !!orderId && !!bid,
-    staleTime: 5*1000,
+    // The order list already has the full row. Seed the dialog with it so
+    // opening details is instant; the DB read still runs and replaces it.
+    placeholderData: placeholder ? { data: placeholder } : undefined,
+    // Local SQLite reads cannot recover from a transient network error; a
+    // missing row should surface immediately instead of retrying for seconds.
+    retry: false,
+    staleTime: 5 * 1000,
   });
 }
 

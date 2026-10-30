@@ -39,6 +39,28 @@ export const usePendingOrdersStore = {
         notify();
       }
     },
+    /**
+     * Replace an existing pending order in place. Used for queued
+     * transitions/payments so the optimistic overlay reflects the new state
+     * immediately. Unknown orders are ignored (a transition must never
+     * resurrect an order that was already reconciled).
+     */
+    updateOrder: (order: SellerOrder) => {
+      const index = orders.findIndex(
+        (o) => o.id === order.id || o.order_number === order.order_number,
+      );
+      if (index === -1) return;
+      const current = orders[index];
+      if (
+        current.status === order.status &&
+        current.is_paid === order.is_paid &&
+        current.paid_at === order.paid_at
+      ) {
+        return;
+      }
+      orders = orders.map((o, i) => (i === index ? order : o));
+      notify();
+    },
     removeByOrderNumber: (orderNumber: string) => {
       const next = orders.filter((o) => o.order_number !== orderNumber);
       if (next.length !== orders.length) {
