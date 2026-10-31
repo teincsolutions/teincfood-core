@@ -186,9 +186,25 @@ export async function transitionLocalOrder(businessId: string, orderId: string, 
     throw new TransitionError(TRANSITION_ERROR_CODES.INVALID_TRANSITION, `Cannot ${action} from ${order.status}`);
   }
   const map: Record<string, string> = { accept: "accepted", reject: "cancelled", start_preparing: "preparing", mark_ready: "ready", complete_pickup: "delivered", cancel: "cancelled", assign_rider: "assigned", confirm_handover: "delivered", confirm_cash: order.status, pay: order.status };
-  const toStatus = map[action] ?? order.status;
+  let toStatus = map[action] ?? order.status;
   if (action === "confirm_cash" || action === "pay") {
+    // A paid :awaiting_payment order must leave the payment queue locally too,
+    // using the same promotion the backend applies: buyer order → pending,
+    // POS staged → accepted, POS direct → delivered. Previously this local
+    // write only set payment fields, so the row stayed "awaiting payment"
+    // until a later pull even after the cash/payment was recorded.
+    if (order.status === "awaiting_payment") {
+      if (!order.is_pos) {
+        toStatus = "pending";
+      } else {
+        const flowMode = await getBusinessOrderFlowMode(businessId, db);
+        toStatus = flowMode === "direct" ? "delivered" : "accepted";
+      }
+    }
     await updateOrderPayment(db, businessId, orderId, { is_paid: true, paid_at: new Date().toISOString() });
+    if (toStatus !== order.status) {
+      await updateOrderStatus(db, businessId, orderId, toStatus);
+    }
   } else if (toStatus !== order.status) {
     await updateOrderStatus(db, businessId, orderId, toStatus);
   }

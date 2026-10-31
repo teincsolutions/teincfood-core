@@ -19,6 +19,10 @@ const ORDER_ENDPOINTS: Record<string, string> = {
   "order:cancel": "cancel",
   "order:confirm_cash": "confirm-cash-payment",
   "order:pay": "confirm-cash-payment",
+  // Repository/queue alias. The domain transition queues `order:confirm_cash`,
+  // but an offline repository command is enqueued as `payment:confirm_cash`;
+  // both must resolve to the same backend route.
+  "payment:confirm_cash": "confirm-cash-payment",
 };
 
 /** Command types fulfilled by the delivery endpoints (strictly online). */

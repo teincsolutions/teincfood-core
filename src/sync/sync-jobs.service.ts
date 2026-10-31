@@ -521,6 +521,23 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
     const isBusinessClosed = rest.code === "BUSINESS_CLOSED" || rest.code === "HOURS_NOT_SYNCED";
     const is4xx = !!rest.status && rest.status >= 400 && rest.status < 500;
 
+    // ALREADY_PAID is a settled payment, not a failed transition. The backend
+    // may have stamped paid_at before the status promotion (legacy cash flow)
+    // or another terminal may have collected the money. Pull the server row,
+    // apply it over the local intent, and complete the job so the terminal
+    // stops showing a Pay action and retrying forever.
+    if (rest.status === 409 && rest.code === "ALREADY_PAID" && isOrderTransition(row.command_type)) {
+      try {
+        await pullRemoteOrders(businessId);
+        await db.runAsync(`UPDATE sync_jobs SET status='completed', updated_at=? WHERE id=?;`, new Date().toISOString(), row.id);
+        syncLogger.info("SyncJobs", "ALREADY_PAID — reconciled server order and completed job", { businessId, entityId, command_type: row.command_type });
+        clearRetry(businessId);
+        return;
+      } catch (error) {
+        syncLogger.warn("SyncJobs", "ALREADY_PAID reconciliation failed", { businessId, entityId, error: String(error) });
+      }
+    }
+
     // Already-applied absorb for transitions: the server already moved the
     // order (duplicate tap, earlier drain won the race) — complete the job
     // instead of failing it. Server truth only (hlc-guarded pull), never the

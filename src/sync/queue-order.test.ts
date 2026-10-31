@@ -7,7 +7,7 @@ import { setActiveBusiness } from "../adapters/business";
 import { setHttpClient } from "../adapters/http";
 import { setConnectivityState } from "../adapters/connectivity";
 import { openSyncDatabase, closeSyncDatabase } from "../db/connection";
-import { insertOrder } from "../db/operations";
+import { insertOrder, getOrderById } from "../db/operations";
 import { drainPending } from "./sync-jobs.service";
 import { transitionLocalOrder } from "../domain/orders/service";
 import { phoenixSocket } from "../realtime/phoenix-socket";
@@ -110,6 +110,76 @@ describe("offline queue ordering", () => {
       `/orders/${ORDER_ID}/start-preparing`,
       `/orders/${ORDER_ID}/ready-for-delivery`,
     ]);
+  });
+
+  it("promotes a paid awaiting order out of the payment queue locally", async () => {
+    const db = await openSyncDatabase();
+    await insertOrder(db, localOrder("awaiting_payment") as never);
+
+    const updated = await transitionLocalOrder(BID, ORDER_ID, "confirm_cash");
+
+    expect(updated.status).toBe("accepted");
+    expect(updated.payment?.is_paid).toBe(true);
+  });
+
+  it("resolves payment:confirm_cash to the backend cash route", async () => {
+    const db = await openSyncDatabase();
+    await insertOrder(db, localOrder("awaiting_payment") as never);
+    const now = new Date().toISOString();
+    await db.runAsync(
+      `INSERT OR IGNORE INTO sync_jobs (id, business_id, command_type, entity_id, payload, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?);`,
+      "job-payment-confirm", BID, "payment:confirm_cash", ORDER_ID,
+      JSON.stringify({ orderId: ORDER_ID }), now, now,
+    );
+
+    await drainPending(BID);
+
+    expect(posted).toContain(`/orders/${ORDER_ID}/confirm-cash-payment`);
+  });
+
+  it("completes an ALREADY_PAID job and pulls the server status", async () => {
+    const db = await openSyncDatabase();
+    await insertOrder(db, localOrder("awaiting_payment") as never);
+    const now = new Date().toISOString();
+    await db.runAsync(
+      `INSERT OR IGNORE INTO sync_jobs (id, business_id, command_type, entity_id, payload, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?);`,
+      "job-already-paid", BID, "order:confirm_cash", ORDER_ID,
+      JSON.stringify({ action: "confirm_cash", orderId: ORDER_ID }), now, now,
+    );
+    setHttpClient({
+      get: vi.fn(async () => ({
+        data: {
+          data: [{
+            ...localOrder("accepted"),
+            is_paid: true,
+            paid_at: now,
+            payment: { is_paid: true, reference: "CASH-07-003-001", amount_minor: 3000, currency: "GHS", paid_at: now },
+            updated_at: now,
+          }],
+          pagination: { total_pages: 1 },
+        },
+      })) as never,
+      post: vi.fn(async () => {
+        throw Object.assign(new Error("Order is already paid"), {
+          status: 409,
+          response: { status: 409, data: { error: { code: "ALREADY_PAID", message: "Order is already paid" } } },
+        });
+      }) as never,
+      put: vi.fn(async () => ({ data: {} })) as never,
+      patch: vi.fn(async () => ({ data: {} })) as never,
+      delete: vi.fn(async () => ({ data: {} })) as never,
+    });
+
+    await drainPending(BID);
+
+    const allJobs = await db.getAllAsync<{ id: string; status: string }>(
+      `SELECT * FROM sync_jobs WHERE business_id = ?;`, BID,
+    );
+    const job = allJobs.find((row) => row.id === "job-already-paid");
+    const order = await getOrderById(db, BID, ORDER_ID);
+    expect(job?.status).toBe("completed");
+    expect(order?.status).toBe("accepted");
+    expect(order?.is_paid).toBe(true);
   });
 
   it("does not queue the same transition twice", async () => {
