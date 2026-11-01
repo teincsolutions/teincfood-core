@@ -53,24 +53,39 @@ interface AggregateOptions {
  * Field names mirror orders.ex get_seller_analytics / get_revenue_summary
  * exactly so screens render identically online and offline.
  */
-function filterByPeriod(orders: LocalOrderRow[], period: "today" | "this_week" | "this_month"): LocalOrderRow[] {
-  const now = new Date();
+/**
+ * Filter local rows to the same period boundaries as the backend
+ * (`period_start_datetime/1`):
+ *   - today      = current UTC day
+ *   - this_week  = Monday 00:00 UTC → now (backend uses ISO weekday)
+ *   - this_month = 1st of the current UTC month → now
+ *
+ * Exported so the period boundaries can be regression-tested with a fixed
+ * clock instead of depending on the day the suite runs.
+ */
+export function filterByPeriod(
+  orders: LocalOrderRow[],
+  period: "today" | "this_week" | "this_month",
+  now: Date = new Date(),
+): LocalOrderRow[] {
   const todayStr = now.toISOString().slice(0, 10);
+
   if (period === "today") {
     return orders.filter((o) => (o.inserted_at ?? "").slice(0, 10) === todayStr);
   }
+
+  let startStr: string;
   if (period === "this_week") {
-    const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday
-    const startStr = startOfWeek.toISOString().slice(0, 10);
-    return orders.filter((o) => {
-      const d = (o.inserted_at ?? "").slice(0, 10);
-      return d >= startStr && d <= todayStr;
-    });
+    // `getUTCDay()` is 0 for Sunday; shift so Monday is the first day.
+    const todayUtc = new Date(`${todayStr}T00:00:00.000Z`);
+    const daysSinceMonday = (todayUtc.getUTCDay() + 6) % 7;
+    const startOfWeek = new Date(todayUtc);
+    startOfWeek.setUTCDate(todayUtc.getUTCDate() - daysSinceMonday);
+    startStr = startOfWeek.toISOString().slice(0, 10);
+  } else {
+    startStr = `${todayStr.slice(0, 7)}-01`;
   }
-  // this_month
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const startStr = startOfMonth.toISOString().slice(0, 10);
+
   return orders.filter((o) => {
     const d = (o.inserted_at ?? "").slice(0, 10);
     return d >= startStr && d <= todayStr;
@@ -178,27 +193,19 @@ export function useSellerAnalyticsQuery(period: "today" | "this_week" | "this_mo
         }
       }
       try {
-        const backendRes = await analyticsService.fetchSellerAnalytics(businessId! as string, period) as { data?: { period?: string; revenue_by_day?: unknown[] } };
-        // Safety net: if backend doesn't filter by period (returns all days regardless), filter locally
-        const backendData = backendRes.data;
-        const byDay = backendData?.revenue_by_day as Array<{ date?: string }> | undefined;
-        const shouldFilterLocally = 
-          !byDay?.length ||
-          (period === "today" && byDay.length > 1) ||
-          (period === "this_week" && byDay.some(d => {
-            const day = new Date(d.date ?? "");
-            const now = new Date();
-            const startOfWeek = new Date(now);
-            startOfWeek.setDate(now.getDate() - now.getDay());
-            return day < startOfWeek || day > now;
-          }));
-        if (shouldFilterLocally) {
-          const localOrdersData = await localOrders(businessId!);
-          return { data: aggregateLocal(localOrdersData, period, { forRevenueSummary: false }) };
-        }
-        return backendRes;
+        // The backend applies the period filter itself. An empty
+        // `revenue_by_day` is a valid result (e.g. no orders today) and must
+        // not be replaced with local rows — doing that hid real backend data.
+        return await analyticsService.fetchSellerAnalytics(
+          businessId! as string,
+          period,
+        );
       } catch {
-        return { data: aggregateLocal(await localOrders(businessId!), period, { forRevenueSummary: false }) };
+        return {
+          data: aggregateLocal(await localOrders(businessId!), period, {
+            forRevenueSummary: false,
+          }),
+        };
       }
     },
     enabled: enabled && Boolean(businessId),
@@ -221,27 +228,18 @@ export function useRevenueSummaryQuery(period: "today" | "this_week" | "this_mon
         }
       }
       try {
-        const backendRes = await analyticsService.fetchRevenueSummary(businessId! as string, period) as { data?: { period?: string; by_day?: unknown[] } };
-        // Safety net: if backend doesn't filter by period (returns all days regardless), filter locally
-        const backendData = backendRes.data;
-        const byDay = backendData?.by_day as Array<{ date?: string }> | undefined;
-        const shouldFilterLocally = 
-          !byDay?.length ||
-          (period === "today" && byDay.length > 1) ||
-          (period === "this_week" && byDay.some(d => {
-            const day = new Date(d.date ?? "");
-            const now = new Date();
-            const startOfWeek = new Date(now);
-            startOfWeek.setDate(now.getDate() - now.getDay());
-            return day < startOfWeek || day > now;
-          }));
-        if (shouldFilterLocally) {
-          const localOrdersData = await localOrders(businessId!);
-          return { data: aggregateLocal(localOrdersData, period, { forRevenueSummary: true }) };
-        }
-        return backendRes;
+        // Same contract as analytics: trust the backend period filter and
+        // only fall back to SQLite when the request itself fails.
+        return await analyticsService.fetchRevenueSummary(
+          businessId! as string,
+          period,
+        );
       } catch {
-        return { data: aggregateLocal(await localOrders(businessId!), period, { forRevenueSummary: true }) };
+        return {
+          data: aggregateLocal(await localOrders(businessId!), period, {
+            forRevenueSummary: true,
+          }),
+        };
       }
     },
     enabled: enabled && Boolean(businessId),

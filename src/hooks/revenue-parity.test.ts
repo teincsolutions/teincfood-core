@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { computeDashboardMetrics } from "./dashboard.hooks";
-import { aggregateLocal } from "./analytics.hooks";
+import { aggregateLocal, filterByPeriod } from "./analytics.hooks";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
@@ -56,5 +56,34 @@ describe("revenue parity with backend (cancelled excluded)", () => {
     const a = aggregateLocal(only as never, "today", { forRevenueSummary: false }) as unknown as Record<string, unknown>;
     expect(a.total_revenue_minor).toBe(0);
     expect(a.total_orders).toBe(0);
+  });
+});
+
+describe("offline analytics period boundaries", () => {
+  // Sunday 1 Nov 2026. The backend week starts Monday 26 Oct.
+  const now = new Date("2026-11-01T12:00:00.000Z");
+  const rows = [
+    { inserted_at: "2026-10-23T10:00:00.000Z" }, // previous Friday
+    { inserted_at: "2026-10-29T10:00:00.000Z" }, // Thursday
+    { inserted_at: "2026-10-31T10:00:00.000Z" }, // Saturday
+    { inserted_at: "2026-11-01T10:00:00.000Z" }, // Sunday / today
+  ];
+
+  it("this week starts on Monday, matching the backend", () => {
+    expect(filterByPeriod(rows as never, "this_week", now)).toEqual([
+      rows[1],
+      rows[2],
+      rows[3],
+    ]);
+  });
+
+  it("this month starts on the 1st of the current month", () => {
+    expect(filterByPeriod(rows as never, "this_month", now)).toEqual([
+      rows[3],
+    ]);
+  });
+
+  it("today only includes the current UTC day", () => {
+    expect(filterByPeriod(rows as never, "today", now)).toEqual([rows[3]]);
   });
 });
