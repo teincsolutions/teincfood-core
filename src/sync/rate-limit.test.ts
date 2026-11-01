@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   noteRateLimited,
   isRateLimited,
@@ -12,6 +12,7 @@ import {
 
 describe("sync rate-limit gate", () => {
   beforeEach(() => resetRateLimitForTests());
+  afterEach(() => vi.useRealTimers());
 
   it("opens a cooldown and clears after the window", async () => {
     expect(isRateLimited()).toBe(false);
@@ -35,6 +36,25 @@ describe("sync rate-limit gate", () => {
     noteRateLimited(1000);
     noteRateLimited(1000);
     expect(shouldReportRateLimit()).toBe(false);
+  });
+
+  it("does not reopen the reporting window when a repeat 429 extends it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+
+    noteRateLimited(1_000);
+    expect(shouldReportRateLimit()).toBe(true);
+
+    // A later 429 extends the cooldown by a few milliseconds, but it is still
+    // the same throttle window and must stay silent.
+    vi.setSystemTime(1_100);
+    noteRateLimited(1_000);
+    expect(shouldReportRateLimit()).toBe(false);
+
+    // Once the window has actually expired, a fresh 429 may report again.
+    vi.setSystemTime(2_200);
+    noteRateLimited(1_000);
+    expect(shouldReportRateLimit()).toBe(true);
   });
 
   it("parses retry_after_seconds from backend body and headers", () => {

@@ -22,12 +22,21 @@ let rateLimitHitsInWindow = 0;
 export function noteRateLimited(retryAfterMs?: number): void {
   const delay =
     retryAfterMs && retryAfterMs > 0 ? retryAfterMs : DEFAULT_RETRY_AFTER_MS;
-  const until = Date.now() + delay;
+  const now = Date.now();
+  const until = now + delay;
   if (until > rateLimitedUntil) rateLimitedUntil = until;
-  if (until > reportedWindowUntil) {
+
+  // A new reporting window starts only after the previous one has expired.
+  // Extending an active window (another 429, a longer Retry-After, or a
+  // synthesized gate rejection) must not reset the counter, otherwise every
+  // request reports another toast.
+  if (now >= reportedWindowUntil) {
     reportedWindowUntil = until;
     rateLimitHitsInWindow = 0;
+  } else if (until > reportedWindowUntil) {
+    reportedWindowUntil = until;
   }
+
   rateLimitHitsInWindow += 1;
 }
 
