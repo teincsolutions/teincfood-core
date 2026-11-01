@@ -4,11 +4,13 @@
  * refreshes silently when online.
  */
 
-import { useQuery } from "@tanstack/react-query";
-import { useSyncExternalStore } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useSyncExternalStore } from "react";
 import { getActiveBusiness, subscribeBusiness } from "../adapters/business";
 import { analyticsService } from "../adapters/services";
 import { listLocalOrders } from "../domain/orders/service";
+import { pullRemoteOrders } from "../sync/sync-jobs.service";
+import { syncLogger } from "../utils/sync-logger";
 import { useIsEffectivelyOnline } from "./use-infinite-list";
 
 export type AnalyticsPeriod =
@@ -255,6 +257,113 @@ function hasCustomRange(period: AnalyticsPeriod, range?: AnalyticsRange) {
   );
 }
 
+const ORDER_PULL_COOLDOWN_MS = 15_000;
+const lastOrderPullAt = new Map<string, number>();
+
+/**
+ * Refresh the local order read model in the background. Analytics renders
+ * from SQLite immediately; this pull is what makes a freshly opened screen
+ * converge with the server without blocking the first paint.
+ */
+async function syncOrdersForAnalytics(
+  businessId: string,
+  queryClient: ReturnType<typeof useQueryClient>,
+) {
+  const now = Date.now();
+  const last = lastOrderPullAt.get(businessId) ?? 0;
+  if (now - last < ORDER_PULL_COOLDOWN_MS) return;
+  lastOrderPullAt.set(businessId, now);
+
+  try {
+    await pullRemoteOrders(businessId);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: SELLER_ANALYTICS_KEYS.all }),
+      queryClient.invalidateQueries({ queryKey: REVENUE_KEYS.all }),
+    ]);
+  } catch (error) {
+    syncLogger.debug("Analytics", "background order sync failed", {
+      businessId,
+      err: String(error),
+    });
+  }
+}
+
+interface AnalyticsPayload {
+  total_orders?: number;
+  [key: string]: unknown;
+}
+
+interface AnalyticsResponse {
+  data?: AnalyticsPayload;
+  [key: string]: unknown;
+}
+
+/**
+ * Keep local data when it knows about more orders than the server snapshot
+ * (e.g. an offline order still in the outbox). Otherwise the server snapshot
+ * wins because it may include older history the device has never pulled.
+ */
+function preferRemote(
+  current: AnalyticsResponse | undefined,
+  remote: AnalyticsResponse,
+): AnalyticsResponse {
+  const localOrders = current?.data?.total_orders ?? 0;
+  const remoteOrders = remote.data?.total_orders ?? 0;
+  return remoteOrders >= localOrders ? remote : (current ?? remote);
+}
+
+async function buildLocalAnalytics(
+  businessId: string,
+  period: AnalyticsPeriod,
+  range?: AnalyticsRange,
+): Promise<AnalyticsResponse> {
+  try {
+    return {
+      data: aggregateLocal(
+        await localOrders(businessId),
+        period,
+        { forRevenueSummary: false },
+        range,
+      ),
+    };
+  } catch {
+    return {
+      data: aggregateLocal(
+        [],
+        period,
+        { forRevenueSummary: false },
+        range,
+      ),
+    };
+  }
+}
+
+async function buildLocalRevenue(
+  businessId: string,
+  period: AnalyticsPeriod,
+  range?: AnalyticsRange,
+): Promise<AnalyticsResponse> {
+  try {
+    return {
+      data: aggregateLocal(
+        await localOrders(businessId),
+        period,
+        { forRevenueSummary: true },
+        range,
+      ),
+    };
+  } catch {
+    return {
+      data: aggregateLocal(
+        [],
+        period,
+        { forRevenueSummary: true },
+        range,
+      ),
+    };
+  }
+}
+
 export function useSellerAnalyticsQuery(
   period: AnalyticsPeriod = "today",
   enabled = true,
@@ -262,56 +371,56 @@ export function useSellerAnalyticsQuery(
 ) {
   const businessId = useBusinessId();
   const online = useIsEffectivelyOnline();
+  const queryClient = useQueryClient();
   const customReady = hasCustomRange(period, range);
+  const queryKey = SELLER_ANALYTICS_KEYS.analytics(
+    businessId ?? "",
+    period,
+    range,
+  );
+  const active = enabled && Boolean(businessId) && customReady;
+
+  // Local-first: read SQLite on every query run. The network is a background
+  // refresh only, so opening the screen never waits on the server.
+  useEffect(() => {
+    if (!active || !online || !businessId) return;
+    void syncOrdersForAnalytics(businessId, queryClient);
+  }, [active, online, businessId, queryClient]);
+
   return useQuery({
-    queryKey: SELLER_ANALYTICS_KEYS.analytics(
-      businessId ?? "",
-      period,
-      range,
-    ),
+    queryKey,
     queryFn: async () => {
-      if (!online) {
-        try {
-          return {
-            data: aggregateLocal(
-              await localOrders(businessId!),
-              period,
-              { forRevenueSummary: false },
-              range,
-            ),
-          };
-        } catch {
-          return {
-            data: aggregateLocal(
-              [],
-              period,
-              { forRevenueSummary: false },
-              range,
-            ),
-          };
-        }
+      const local = await buildLocalAnalytics(
+        businessId!,
+        period,
+        range,
+      );
+
+      if (online && businessId) {
+        // Do not await. Once the server snapshot arrives, merge it into the
+        // cache only when it is at least as complete as the local model.
+        void analyticsService
+          .fetchSellerAnalytics(businessId, period, range)
+          .then((remote) => {
+            const remoteResponse = remote as AnalyticsResponse;
+            const current =
+              queryClient.getQueryData<AnalyticsResponse>(queryKey);
+            queryClient.setQueryData(
+              queryKey,
+              preferRemote(current, remoteResponse),
+            );
+          })
+          .catch((error) => {
+            syncLogger.debug("Analytics", "background analytics refresh failed", {
+              businessId,
+              err: String(error),
+            });
+          });
       }
-      try {
-        // The backend applies the period filter itself. An empty
-        // `revenue_by_day` is a valid result (e.g. no orders today) and must
-        // not be replaced with local rows — doing that hid real backend data.
-        return await analyticsService.fetchSellerAnalytics(
-          businessId! as string,
-          period,
-          range,
-        );
-      } catch {
-        return {
-          data: aggregateLocal(
-            await localOrders(businessId!),
-            period,
-            { forRevenueSummary: false },
-            range,
-          ),
-        };
-      }
+
+      return local;
     },
-    enabled: enabled && Boolean(businessId) && customReady,
+    enabled: active,
     staleTime: 30000,
     ...OFFLINE_FIRST,
   });
@@ -324,51 +433,45 @@ export function useRevenueSummaryQuery(
 ) {
   const businessId = useBusinessId();
   const online = useIsEffectivelyOnline();
+  const queryClient = useQueryClient();
   const customReady = hasCustomRange(period, range);
+  const queryKey = REVENUE_KEYS.summary(businessId ?? "", period, range);
+  const active = enabled && Boolean(businessId) && customReady;
+
+  useEffect(() => {
+    if (!active || !online || !businessId) return;
+    void syncOrdersForAnalytics(businessId, queryClient);
+  }, [active, online, businessId, queryClient]);
+
   return useQuery({
-    queryKey: REVENUE_KEYS.summary(businessId ?? "", period, range),
+    queryKey,
     queryFn: async () => {
-      if (!online) {
-        try {
-          return {
-            data: aggregateLocal(
-              await localOrders(businessId!),
-              period,
-              { forRevenueSummary: true },
-              range,
-            ),
-          };
-        } catch {
-          return {
-            data: aggregateLocal(
-              [],
-              period,
-              { forRevenueSummary: true },
-              range,
-            ),
-          };
-        }
+      const local = await buildLocalRevenue(businessId!, period, range);
+
+      if (online && businessId) {
+        void analyticsService
+          .fetchRevenueSummary(businessId, period, range)
+          .then((remote) => {
+            const remoteResponse = remote as AnalyticsResponse;
+            const current =
+              queryClient.getQueryData<AnalyticsResponse>(queryKey);
+            queryClient.setQueryData(
+              queryKey,
+              preferRemote(current, remoteResponse),
+            );
+          })
+          .catch((error) => {
+            syncLogger.debug(
+              "Analytics",
+              "background revenue refresh failed",
+              { businessId, err: String(error) },
+            );
+          });
       }
-      try {
-        // Same contract as analytics: trust the backend period filter and
-        // only fall back to SQLite when the request itself fails.
-        return await analyticsService.fetchRevenueSummary(
-          businessId! as string,
-          period,
-          range,
-        );
-      } catch {
-        return {
-          data: aggregateLocal(
-            await localOrders(businessId!),
-            period,
-            { forRevenueSummary: true },
-            range,
-          ),
-        };
-      }
+
+      return local;
     },
-    enabled: enabled && Boolean(businessId) && customReady,
+    enabled: active,
     staleTime: 30000,
     ...OFFLINE_FIRST,
   });
