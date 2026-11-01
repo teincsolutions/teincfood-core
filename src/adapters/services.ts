@@ -190,10 +190,18 @@ export const dashboardService = {
 
 // analytics.service — seller analytics + revenue (hosts inject axios impls)
 export const analyticsService = {
-  fetchSellerAnalytics: async (_businessId: string, _period?: string): Promise<unknown> => {
+  fetchSellerAnalytics: async (
+    _businessId: string,
+    _period?: string,
+    _range?: { date_from?: string; date_to?: string },
+  ): Promise<unknown> => {
     notImpl("analyticsService.fetchSellerAnalytics");
   },
-  fetchRevenueSummary: async (_businessId: string, _period?: string): Promise<unknown> => {
+  fetchRevenueSummary: async (
+    _businessId: string,
+    _period?: string,
+    _range?: { date_from?: string; date_to?: string },
+  ): Promise<unknown> => {
     notImpl("analyticsService.fetchRevenueSummary");
   },
 };

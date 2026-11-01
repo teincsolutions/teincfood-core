@@ -63,6 +63,8 @@ describe("offline analytics period boundaries", () => {
   // Sunday 1 Nov 2026. The backend week starts Monday 26 Oct.
   const now = new Date("2026-11-01T12:00:00.000Z");
   const rows = [
+    { inserted_at: "2025-12-31T10:00:00.000Z" }, // previous year
+    { inserted_at: "2026-01-15T10:00:00.000Z" }, // this year
     { inserted_at: "2026-10-23T10:00:00.000Z" }, // previous Friday
     { inserted_at: "2026-10-29T10:00:00.000Z" }, // Thursday
     { inserted_at: "2026-10-31T10:00:00.000Z" }, // Saturday
@@ -71,19 +73,42 @@ describe("offline analytics period boundaries", () => {
 
   it("this week starts on Monday, matching the backend", () => {
     expect(filterByPeriod(rows as never, "this_week", now)).toEqual([
-      rows[1],
-      rows[2],
       rows[3],
+      rows[4],
+      rows[5],
     ]);
   });
 
   it("this month starts on the 1st of the current month", () => {
     expect(filterByPeriod(rows as never, "this_month", now)).toEqual([
-      rows[3],
+      rows[5],
     ]);
   });
 
+  it("this year starts on 1 January and excludes last year", () => {
+    expect(filterByPeriod(rows as never, "this_year", now)).toEqual([
+      rows[1],
+      rows[2],
+      rows[3],
+      rows[4],
+      rows[5],
+    ]);
+  });
+
+  it("custom range includes both boundary days", () => {
+    expect(
+      filterByPeriod(rows as never, "custom", now, {
+        date_from: "2026-10-23",
+        date_to: "2026-10-31",
+      }),
+    ).toEqual([rows[2], rows[3], rows[4]]);
+  });
+
+  it("custom range without both dates is empty", () => {
+    expect(filterByPeriod(rows as never, "custom", now)).toEqual([]);
+  });
+
   it("today only includes the current UTC day", () => {
-    expect(filterByPeriod(rows as never, "today", now)).toEqual([rows[3]]);
+    expect(filterByPeriod(rows as never, "today", now)).toEqual([rows[5]]);
   });
 });
