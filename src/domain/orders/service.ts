@@ -19,7 +19,7 @@ import { validateOrderCreateInput } from "../../validation/offline";
 import { buildItemSnapshots, snapshotsToOrderLines } from "./snapshots";
 import { getBusinessOrderFlowMode, initialPosOrderStatus } from "./order-flow";
 import { drainOne, pullRemoteOrders } from "../../sync/sync-jobs.service";
-import { getAuthToken } from "../../adapters/auth";
+import { getAuthToken, useAuthStore } from "../../adapters/auth";
 import { canBusinessSync } from "../../sync/sync-guard";
 import { syncLogger } from "../../utils/sync-logger";
 import { getItem } from "../../adapters/kv";
@@ -122,6 +122,16 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
   const taxMinor = (input as unknown as { tax_minor?: number }).tax_minor ?? 0;
   const taxLines = (input as unknown as { tax_lines?: unknown[] }).tax_lines ?? [];
   const currencyCode = (input as unknown as { currency_code?: string }).currency_code ?? "GHS";
+  const authUser = useAuthStore.getState().user;
+  const teller = authUser
+    ? {
+        id: authUser.id,
+        full_name: authUser.full_name ?? authUser.email ?? "Staff",
+        email: authUser.email ?? "",
+        phone: authUser.phone ?? "",
+        avatar_url: authUser.avatar_url ?? null,
+      }
+    : null;
 
   const order: SellerOrder = {
     id,
@@ -154,7 +164,8 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
     delivery_lng: null,
     delivery_id: null,
     delivery_status: null,
-    user: null,
+    user: teller,
+    teller,
     items: items as SellerOrder["items"],
     inserted_at: insertedAt,
   } as unknown as SellerOrder;

@@ -73,10 +73,13 @@ interface LocalOrderRow {
   status: string;
   total_minor: number;
   subtotal_minor?: number;
+  currency?: string;
   inserted_at: string;
+  is_pos?: boolean;
   payment_mode?: string;
   pos_payment_method?: string;
   order_type?: string;
+  user?: { id?: string; full_name?: string | null } | null;
   items?: Array<{
     quantity?: number;
     subtotal?: number;
@@ -166,24 +169,68 @@ export function aggregateLocal(
   const byMethod = new Map<string, { revenue_minor: number; count: number }>();
   const byType = new Map<string, { revenue_minor: number; count: number }>();
   const byDay = new Map<string, { revenue_minor: number; count: number }>();
+  const byChannel = new Map<string, { revenue_minor: number; count: number }>();
+  const byTeller = new Map<
+    string,
+    { name: string; revenue_minor: number; count: number }
+  >();
+  const byHour = new Map<string, { revenue_minor: number; count: number }>();
   const itemQty = new Map<string, number>();
   const itemRev = new Map<string, number>();
+
   for (const o of revenueOrders) {
-    const method = o.pos_payment_method ?? o.payment_mode ?? "cash";
+    // `is_pos` is the only online/local discriminator — same as backend.
+    const channel = o.is_pos ? "local" : "online";
+    const ch = byChannel.get(channel) ?? { revenue_minor: 0, count: 0 };
+    ch.revenue_minor += o.total_minor ?? 0;
+    ch.count += 1;
+    byChannel.set(channel, ch);
+
+    // POS uses the tendered method; online orders cannot truthfully be
+    // labelled card/MoMo from order data, so prepaid stays "online_prepaid".
+    const method = o.is_pos
+      ? (o.pos_payment_method ?? "cash")
+      : o.payment_mode === "pay_on_delivery"
+        ? "pay_on_delivery"
+        : "online_prepaid";
     const m = byMethod.get(method) ?? { revenue_minor: 0, count: 0 };
     m.revenue_minor += o.total_minor ?? 0;
     m.count += 1;
     byMethod.set(method, m);
+
     const t = o.order_type ?? "takeout";
     const ty = byType.get(t) ?? { revenue_minor: 0, count: 0 };
     ty.revenue_minor += o.total_minor ?? 0;
     ty.count += 1;
     byType.set(t, ty);
+
     const day = (o.inserted_at ?? "").slice(0, 10);
     const d = byDay.get(day) ?? { revenue_minor: 0, count: 0 };
     d.revenue_minor += o.total_minor ?? 0;
     d.count += 1;
     byDay.set(day, d);
+
+    if (o.is_pos) {
+      const key = o.user?.id ?? "unassigned";
+      const teller = byTeller.get(key) ?? {
+        name: o.user?.full_name ?? "Unassigned",
+        revenue_minor: 0,
+        count: 0,
+      };
+      teller.revenue_minor += o.total_minor ?? 0;
+      teller.count += 1;
+      byTeller.set(key, teller);
+    }
+
+    const hourDate = new Date(o.inserted_at ?? "");
+    if (!Number.isNaN(hourDate.getTime())) {
+      const hour = String(hourDate.getUTCHours());
+      const h = byHour.get(hour) ?? { revenue_minor: 0, count: 0 };
+      h.revenue_minor += o.total_minor ?? 0;
+      h.count += 1;
+      byHour.set(hour, h);
+    }
+
     for (const it of o.items ?? []) {
       const name = it.menu_item?.name ?? "Unknown";
       const qty = it.quantity ?? 0;
@@ -192,6 +239,7 @@ export function aggregateLocal(
       itemRev.set(name, (itemRev.get(name) ?? 0) + rev);
     }
   }
+
   const pct = (v: number) =>
     total_revenue_minor > 0
       ? Math.round((v / total_revenue_minor) * 1000) / 10
@@ -202,30 +250,67 @@ export function aggregateLocal(
     cancelled: filtered.filter((o) => o.status === "cancelled").length,
     pending: filtered.filter((o) => o.status === "pending").length,
   };
+  const by_channel = [...byChannel.entries()]
+    .map(([channel, v]) => ({
+      channel,
+      ...v,
+      percentage: pct(v.revenue_minor),
+    }))
+    .sort((a, b) => b.revenue_minor - a.revenue_minor);
+  const by_payment_method = [...byMethod.entries()]
+    .map(([method, v]) => ({
+      method,
+      ...v,
+      percentage: pct(v.revenue_minor),
+    }))
+    .sort((a, b) => b.revenue_minor - a.revenue_minor);
+  const by_order_type = [...byType.entries()]
+    .map(([type, v]) => ({ type, ...v }))
+    .sort(
+      (a, b) =>
+        b.revenue_minor - a.revenue_minor || a.type.localeCompare(b.type),
+    );
+  const by_teller = [...byTeller.entries()]
+    .map(([user_id, v]) => ({
+      user_id,
+      name: v.name,
+      revenue_minor: v.revenue_minor,
+      count: v.count,
+      average_order_value_minor: v.count
+        ? Math.floor(v.revenue_minor / v.count)
+        : 0,
+    }))
+    .sort((a, b) => b.revenue_minor - a.revenue_minor);
+  const by_hour = [...byHour.entries()]
+    .map(([hour, v]) => ({
+      hour: Number(hour),
+      revenue_minor: v.revenue_minor,
+      count: v.count,
+    }))
+    .sort((a, b) => a.hour - b.hour);
+  const currency = revenueOrders[0]?.currency ?? "GHS";
+
   if (opts.forRevenueSummary) {
     return {
       period,
+      currency,
       total_revenue_minor,
       total_orders,
       average_order_value_minor,
-      by_payment_method: [...byMethod.entries()]
-        .map(([method, v]) => ({
-          method,
-          ...v,
-          percentage: pct(v.revenue_minor),
-        }))
-        .sort((a, b) => b.revenue_minor - a.revenue_minor),
-      by_order_type: [...byType.entries()]
-        .map(([type, v]) => ({ type, ...v }))
-        .sort((a, b) => b.revenue_minor - a.revenue_minor),
+      by_payment_method,
+      by_order_type,
       by_day: [...byDay.entries()]
         .map(([date, v]) => ({ date, ...v }))
         .sort((a, b) => a.date.localeCompare(b.date)),
+      by_channel,
+      by_teller,
+      by_hour,
       offline: true,
     };
   }
   return {
     period,
+    currency,
     total_revenue_minor,
     total_orders,
     average_order_value_minor,
@@ -242,13 +327,27 @@ export function aggregateLocal(
     revenue_by_day: [...byDay.entries()]
       .map(([date, v]) => ({ date, revenue_minor: v.revenue_minor }))
       .sort((a, b) => a.date.localeCompare(b.date)),
+    by_channel,
+    by_payment_method,
+    by_order_type,
+    by_teller,
+    by_hour,
     offline: true,
   };
 }
 
 async function localOrders(businessId: string): Promise<LocalOrderRow[]> {
-  const { data } = await listLocalOrders(businessId, {}, 1, 500);
-  return (data as unknown as LocalOrderRow[]) ?? [];
+  const pageSize = 500;
+  const first = await listLocalOrders(businessId, {}, 1, pageSize);
+  const rows = [...((first.data as unknown as LocalOrderRow[]) ?? [])];
+  const total = first.total ?? rows.length;
+  for (let page = 2; rows.length < total; page += 1) {
+    const next = await listLocalOrders(businessId, {}, page, pageSize);
+    const batch = (next.data as unknown as LocalOrderRow[]) ?? [];
+    if (batch.length === 0) break;
+    rows.push(...batch);
+  }
+  return rows;
 }
 
 function hasCustomRange(period: AnalyticsPeriod, range?: AnalyticsRange) {

@@ -43,6 +43,7 @@ import {
 } from "./order-number";
 import type { SyncEngine } from "./engine";
 import { getConnectivityState, subscribeConnectivity } from "../adapters/connectivity";
+import { useAuthStore } from "../adapters/auth";
 import { canBusinessSync } from "./sync-guard";
 import { backoffDelayMs } from "./backoff";
 import { reportSyncFailure } from "../adapters/sync-failure";
@@ -167,6 +168,16 @@ function buildOptimisticOrder(
   const now = new Date().toISOString();
   const method = (payload.pos_payment_method as string) ?? "cash";
   const isCash = method === "cash";
+  const authUser = useAuthStore.getState().user;
+  const teller = authUser
+    ? {
+        id: authUser.id,
+        full_name: authUser.full_name ?? authUser.email ?? "Staff",
+        email: authUser.email ?? "",
+        phone: authUser.phone ?? "",
+        avatar_url: authUser.avatar_url ?? null,
+      }
+    : null;
 
   const orderNumber =
     (payload.order_number as string) ?? generateOrderNumberForBusiness(command.business_id);
@@ -211,7 +222,8 @@ function buildOptimisticOrder(
     delivery_address: null,
     delivery_lat: null,
     delivery_lng: null,
-    user: null,
+    user: teller,
+    teller,
     items: snapshotsToOrderLines(snapshots, command.command_id as string) as SellerOrder["items"],
     inserted_at: now,
   };

@@ -509,6 +509,7 @@ export interface OrderRow {
   customer_name: string | null;
   customer_phone: string | null;
   pos_payment_method: string | null;
+  payment_mode: string | null;
   delivery_id: string | null;
   business: string | null;
   user: string | null;
@@ -583,6 +584,7 @@ function orderRowToSellerOrder(row: OrderRow): import("../types/api/seller.api")
     customer_name: row.customer_name,
     customer_phone: row.customer_phone,
     pos_payment_method: row.pos_payment_method,
+    payment_mode: row.payment_mode ?? "prepaid",
     delivery_id: row.delivery_id,
     business: row.business ? JSON.parse(row.business) : null,
     delivery_address: null,
@@ -613,13 +615,14 @@ export async function insertOrder(db: SQLiteDatabase, order: import("../types/ap
     (order.payment as { paid_at?: string | null } | undefined)?.paid_at ??
     (isOrderPaid(order) ? updatedAt : null);
   await db.runAsync(
-    `INSERT INTO orders (id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, updated_at, hlc)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET business_id=excluded.business_id, order_number=excluded.order_number, callout_number=excluded.callout_number, status=excluded.status, order_type=excluded.order_type, is_pos=excluded.is_pos, items=excluded.items, subtotal_minor=excluded.subtotal_minor, total_minor=excluded.total_minor, tax_minor=excluded.tax_minor, tax_lines=excluded.tax_lines, payment=excluded.payment, paid_at=COALESCE(excluded.paid_at, orders.paid_at), customer_name=excluded.customer_name, customer_phone=excluded.customer_phone, pos_payment_method=excluded.pos_payment_method, delivery_id=excluded.delivery_id, business=excluded.business, user=excluded.user, updated_at=excluded.updated_at, hlc=excluded.hlc, sync_failed_at=NULL, sync_error=NULL
+    `INSERT INTO orders (id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at, customer_name, customer_phone, pos_payment_method, payment_mode, delivery_id, business, user, inserted_at, updated_at, hlc)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET business_id=excluded.business_id, order_number=excluded.order_number, callout_number=excluded.callout_number, status=excluded.status, order_type=excluded.order_type, is_pos=excluded.is_pos, items=excluded.items, subtotal_minor=excluded.subtotal_minor, total_minor=excluded.total_minor, tax_minor=excluded.tax_minor, tax_lines=excluded.tax_lines, payment=excluded.payment, paid_at=COALESCE(excluded.paid_at, orders.paid_at), customer_name=excluded.customer_name, customer_phone=excluded.customer_phone, pos_payment_method=excluded.pos_payment_method, payment_mode=excluded.payment_mode, delivery_id=excluded.delivery_id, business=excluded.business, user=excluded.user, updated_at=excluded.updated_at, hlc=excluded.hlc, sync_failed_at=NULL, sync_error=NULL
      WHERE excluded.hlc >= orders.hlc OR orders.hlc IS NULL;`,
     order.id, order.business_id, order.order_number, order.callout_number, order.status, order.order_type, order.is_pos ? 1 : 0,
     JSON.stringify(order.items), order.subtotal_minor, order.total_minor, order.tax_minor, JSON.stringify(order.tax_lines), JSON.stringify(order.payment), paidAt,
-    order.customer_name, order.customer_phone, order.pos_payment_method, order.delivery_id, order.business ? JSON.stringify(order.business) : null, order.user ? JSON.stringify(order.user) : null,
+    order.customer_name, order.customer_phone, order.pos_payment_method, order.payment_mode ?? null,
+    order.delivery_id, order.business ? JSON.stringify(order.business) : null, order.user ? JSON.stringify(order.user) : null,
     order.inserted_at, updatedAt, hlc
   );
   notifyDbChange(order.business_id, "orders");
@@ -744,13 +747,14 @@ export async function upsertServerOrder(
     new Date().toISOString();
   const updatedAt = order.updated_at ?? order.inserted_at;
   await db.runAsync(
-    `INSERT INTO orders (id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, updated_at, hlc)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET business_id=excluded.business_id, order_number=excluded.order_number, callout_number=excluded.callout_number, status=excluded.status, order_type=excluded.order_type, is_pos=excluded.is_pos, items=excluded.items, subtotal_minor=excluded.subtotal_minor, total_minor=excluded.total_minor, tax_minor=excluded.tax_minor, tax_lines=excluded.tax_lines, payment=excluded.payment, paid_at=COALESCE(excluded.paid_at, orders.paid_at), customer_name=excluded.customer_name, customer_phone=excluded.customer_phone, pos_payment_method=excluded.pos_payment_method, delivery_id=excluded.delivery_id, business=excluded.business, user=excluded.user, updated_at=excluded.updated_at, hlc=excluded.hlc, sync_failed_at=NULL, sync_error=NULL;`,
+    `INSERT INTO orders (id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at, customer_name, customer_phone, pos_payment_method, payment_mode, delivery_id, business, user, inserted_at, updated_at, hlc)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET business_id=excluded.business_id, order_number=excluded.order_number, callout_number=excluded.callout_number, status=excluded.status, order_type=excluded.order_type, is_pos=excluded.is_pos, items=excluded.items, subtotal_minor=excluded.subtotal_minor, total_minor=excluded.total_minor, tax_minor=excluded.tax_minor, tax_lines=excluded.tax_lines, payment=excluded.payment, paid_at=COALESCE(excluded.paid_at, orders.paid_at), customer_name=excluded.customer_name, customer_phone=excluded.customer_phone, pos_payment_method=excluded.pos_payment_method, payment_mode=excluded.payment_mode, delivery_id=excluded.delivery_id, business=excluded.business, user=excluded.user, updated_at=excluded.updated_at, hlc=excluded.hlc, sync_failed_at=NULL, sync_error=NULL;`,
     order.id, order.business_id, order.order_number, order.callout_number, status, order.order_type, order.is_pos ? 1 : 0,
     JSON.stringify(order.items ?? []), order.subtotal_minor ?? 0, order.total_minor ?? 0, order.tax_minor ?? 0,
     JSON.stringify(order.tax_lines ?? []), JSON.stringify(payment), paidAt,
-    order.customer_name, order.customer_phone, order.pos_payment_method, order.delivery_id,
+    order.customer_name, order.customer_phone, order.pos_payment_method,
+    order.payment_mode ?? (order.is_pos ? "prepaid" : "prepaid"), order.delivery_id,
     order.business ? JSON.stringify(order.business) : null, order.user ? JSON.stringify(order.user) : null,
     order.inserted_at, updatedAt, hlc,
   );

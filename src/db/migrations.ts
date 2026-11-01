@@ -434,4 +434,28 @@ export const MIGRATIONS: Migration[] = [
       } catch {}
     },
   },
+  {
+    version: 13,
+    up: async (db) => {
+      // Online orders need their prepaid/pay-on-delivery mode locally so the
+      // analytics payment breakdown mirrors the backend. POS orders keep
+      // `pos_payment_method` as the authoritative method.
+      await db.execAsync(`
+          ALTER TABLE orders ADD COLUMN payment_mode TEXT;
+        `);
+      // Best-effort backfill: POS rows are prepaid at the order level; online
+      // rows without a value are assumed prepaid until the next pull.
+      try {
+        await db.execAsync(`
+            UPDATE orders
+               SET payment_mode = CASE
+                 WHEN is_pos = 1 THEN 'prepaid'
+                 WHEN pos_payment_method IS NULL THEN 'prepaid'
+                 ELSE pos_payment_method
+               END
+             WHERE payment_mode IS NULL;
+          `);
+      } catch {}
+    },
+  },
 ];

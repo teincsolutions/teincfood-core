@@ -59,6 +59,103 @@ describe("revenue parity with backend (cancelled excluded)", () => {
   });
 });
 
+describe("analytics dimensions match backend", () => {
+  const orders = [
+    row("delivered", 1000, {
+      is_pos: true,
+      order_type: "takeout",
+      pos_payment_method: "cash",
+      user: { id: "t1", full_name: "Teller One" },
+      inserted_at: `${TODAY}T10:00:00.000Z`,
+    }),
+    row("delivered", 2000, {
+      is_pos: true,
+      order_type: "dine_in",
+      pos_payment_method: "mobile_money",
+      user: { id: "t2", full_name: "Teller Two" },
+      inserted_at: `${TODAY}T11:00:00.000Z`,
+    }),
+    row("delivered", 3000, {
+      is_pos: false,
+      order_type: "takeout",
+      payment_mode: "prepaid",
+      user: { id: "buyer", full_name: "Buyer" },
+      inserted_at: `${TODAY}T12:00:00.000Z`,
+    }),
+    row("delivered", 4000, {
+      is_pos: false,
+      order_type: "delivery",
+      payment_mode: "pay_on_delivery",
+      inserted_at: `${TODAY}T13:00:00.000Z`,
+    }),
+    row("cancelled", 9000, {
+      is_pos: true,
+      order_type: "takeout",
+      pos_payment_method: "cash",
+      user: { id: "t1", full_name: "Teller One" },
+      inserted_at: `${TODAY}T10:00:00.000Z`,
+    }),
+  ];
+
+  it("splits online/local by is_pos and only attributes POS orders to tellers", () => {
+    const data = aggregateLocal(orders as never, "today", {
+      forRevenueSummary: false,
+    }) as unknown as Record<string, any>;
+
+    expect(data.by_channel).toEqual([
+      { channel: "online", revenue_minor: 7000, count: 2, percentage: 70 },
+      { channel: "local", revenue_minor: 3000, count: 2, percentage: 30 },
+    ]);
+    expect(data.by_teller).toEqual([
+      {
+        user_id: "t2",
+        name: "Teller Two",
+        revenue_minor: 2000,
+        count: 1,
+        average_order_value_minor: 2000,
+      },
+      {
+        user_id: "t1",
+        name: "Teller One",
+        revenue_minor: 1000,
+        count: 1,
+        average_order_value_minor: 1000,
+      },
+    ]);
+  });
+
+  it("labels online prepaid separately and keeps order-type/hour breakdowns", () => {
+    const data = aggregateLocal(orders as never, "today", {
+      forRevenueSummary: true,
+    }) as unknown as Record<string, any>;
+
+    expect(
+      Object.fromEntries(
+        data.by_payment_method.map((row: any) => [
+          row.method,
+          { revenue_minor: row.revenue_minor, count: row.count },
+        ]),
+      ),
+    ).toEqual({
+      cash: { revenue_minor: 1000, count: 1 },
+      mobile_money: { revenue_minor: 2000, count: 1 },
+      online_prepaid: { revenue_minor: 3000, count: 1 },
+      pay_on_delivery: { revenue_minor: 4000, count: 1 },
+    });
+    expect(data.by_order_type).toEqual([
+      { type: "delivery", revenue_minor: 4000, count: 1 },
+      { type: "takeout", revenue_minor: 4000, count: 2 },
+      { type: "dine_in", revenue_minor: 2000, count: 1 },
+    ]);
+    expect(data.by_hour).toEqual([
+      { hour: 10, revenue_minor: 1000, count: 1 },
+      { hour: 11, revenue_minor: 2000, count: 1 },
+      { hour: 12, revenue_minor: 3000, count: 1 },
+      { hour: 13, revenue_minor: 4000, count: 1 },
+    ]);
+  });
+});
+
 describe("offline analytics period boundaries", () => {
   // Sunday 1 Nov 2026. The backend week starts Monday 26 Oct.
   const now = new Date("2026-11-01T12:00:00.000Z");

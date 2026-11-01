@@ -194,7 +194,7 @@ export function createMemoryDriver(): SqliteDriver {
 
       // orders insert (primary DB)
       if (s.includes("INSERT INTO orders")) {
-        const [id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, updated_at, hlc] = args as any[];
+        const [id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at, customer_name, customer_phone, pos_payment_method, payment_mode, delivery_id, business, user, inserted_at, updated_at, hlc] = args as any[];
         const existing = tables.orders.find((r) => r.id === id);
         // LWW check via hlc (if existing and incoming older, skip) — only for
         // the local/LAN write path. The server write path (`upsertServerOrder`)
@@ -202,10 +202,10 @@ export function createMemoryDriver(): SqliteDriver {
         const lwwGuarded = s.includes("excluded.hlc >= orders.hlc");
         if (existing) {
           if (lwwGuarded && hlc && existing.hlc && hlc < existing.hlc) return { lastInsertRowId: 0, changes: 0 };
-          Object.assign(existing, { business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at: paid_at ?? existing.paid_at ?? null, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, updated_at, hlc });
+          Object.assign(existing, { business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at: paid_at ?? existing.paid_at ?? null, customer_name, customer_phone, pos_payment_method, payment_mode, delivery_id, business, user, inserted_at, updated_at, hlc });
           return { lastInsertRowId: 0, changes: 1 };
         }
-        tables.orders.push({ id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at: paid_at ?? null, customer_name, customer_phone, pos_payment_method, delivery_id, business, user, inserted_at, updated_at, hlc, deleted_at: null });
+        tables.orders.push({ id, business_id, order_number, callout_number, status, order_type, is_pos, items, subtotal_minor, total_minor, tax_minor, tax_lines, payment, paid_at: paid_at ?? null, customer_name, customer_phone, pos_payment_method, payment_mode, delivery_id, business, user, inserted_at, updated_at, hlc, deleted_at: null });
         return { lastInsertRowId: 1, changes: 1 };
       }
 

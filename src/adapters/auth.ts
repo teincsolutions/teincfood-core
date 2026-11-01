@@ -5,6 +5,9 @@
 export interface AuthUser {
   id: string;
   email?: string;
+  full_name?: string | null;
+  phone?: string | null;
+  avatar_url?: string | null;
 }
 
 let user: AuthUser | null = null;
