@@ -103,9 +103,14 @@ export class RestTransport implements Transport {
       }
 
       case "delivery:assign": {
+        const assignPayload = payload as {
+          rider_id: string;
+          idempotency_key?: string;
+        };
         const response = await kioskService.assignKioskOrderToRider(
           entity_id!,
-          (payload as { rider_id: string }).rider_id,
+          assignPayload.rider_id,
+          assignPayload.idempotency_key ?? command.command_id,
         );
         return this.wrapResponse("delivery.assigned", response as unknown as Record<string, unknown>, entity_id, timestamp, command);
       }

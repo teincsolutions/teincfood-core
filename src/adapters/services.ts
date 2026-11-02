@@ -61,7 +61,11 @@ export const sellerService = {
 
 // kiosk.service
 export const kioskService = {
-  assignKioskOrderToRider: async (_orderId: string, _riderId: string): Promise<unknown> => {
+  assignKioskOrderToRider: async (
+    _orderId: string,
+    _riderId: string,
+    _idempotencyKey?: string,
+  ): Promise<unknown> => {
     notImpl("kioskService.assignKioskOrderToRider");
   },
 };

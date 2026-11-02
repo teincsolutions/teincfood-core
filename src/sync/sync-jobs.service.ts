@@ -195,7 +195,12 @@ async function tryRest(businessId: string, payload: Record<string, unknown>, com
         // been captured at tap time; without it the job can never succeed.
         const riderId = (payload.rider_id ?? payload.riderId) as string | undefined;
         if (!riderId) return { ok: false, status: 422, code: "MISSING_RIDER", message: "Assign rider job has no rider_id — re-assign from the app" };
-        await http.post(`/deliveries/assign`, { order_id: orderId, rider_id: riderId });
+        const idempotencyKey = (payload.idempotency_key ?? payload.idempotencyKey) as string | undefined;
+        await http.post(`/deliveries/assign`, {
+          order_id: orderId,
+          rider_id: riderId,
+          ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+        });
         return { ok: true };
       }
       // POST /deliveries/:deliveryId/confirm-handover — resolve the delivery

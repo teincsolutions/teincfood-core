@@ -175,12 +175,16 @@ export const orderRepository = {
     // and merchant/rider dual-confirm all require the backend. A connected
     // Local Node may relay to the cloud; otherwise fail loudly — never queue.
     if (!isOnlineCapable() && !localNodeTransport.isAvailable()) assertOnlineFor("delivery:assign");
-    const command = buildCommand<{ rider_id: string }>({
+    const command = buildCommand<{ rider_id: string; idempotency_key: string }>({
       commandType: "delivery:assign",
       businessId: input.businessId,
       entityId: input.orderId,
-      payload: { rider_id: input.riderId },
+      payload: { rider_id: input.riderId, idempotency_key: "" },
     });
+    // One user action = one stable key. Replays of this command (timeout,
+    // reconnect, LAN relay) must converge on the same delivery instead of
+    // creating another one.
+    command.payload.idempotency_key = command.command_id;
     const events = await syncEngine.execute(command);
     const event = events[0];
     if (!event) {
