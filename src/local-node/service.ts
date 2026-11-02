@@ -371,6 +371,89 @@ class LocalNodeServiceCore {
     this.storeUnsub = null;
     this.subscribed = false;
   }
+  /**
+   * Apply an event received over the LAN, regardless of whether it arrived on
+   * a client socket (`peer`) or was relayed through a node by another terminal
+   * (`relay`).
+   *
+   * Both paths must materialize order rows and invalidate the read model. The
+   * relay path previously only applied reference-data events, so an order
+   * created on a phone while it had internet (cloud route) was broadcast to
+   * the LAN but silently dropped by the peer node — the other terminal never
+   * saw it until a later reconciliation.
+   */
+  private applyLanEvent(event: DomainEvent, source: "peer" | "relay"): void {
+    syncLogger.event(event, "received", { origin: "lan", source });
+    const deps = this.getDeps();
+    const eventType = event.event_type as string;
+    // Materialize LAN order events into the canonical orders table so
+    // list queries (POS In Progress, KDS) converge without the backend.
+    // Previously only order:sync inserted rows: a cloud/local-shape
+    // order.created from a peer fell through to the pending-store apply
+    // fns (which never touch the orders table), so the event arrived,
+    // every layer reported success, and the row never materialized.
+    if (eventType === "order:sync" || eventType === "order.created" || eventType === "order.status_changed") {
+      void (async () => {
+        try {
+          const p = event.payload as Record<string, unknown>;
+          const bid = deps.getBusiness()?.id;
+          const payloadBid = (p as { business_id?: unknown }).business_id;
+          if (typeof payloadBid === "string" && bid && payloadBid !== bid) {
+            syncLogger.warn("LocalNodeService", "Ignoring LAN order event for another business", {
+              event_type: eventType,
+              payloadBid,
+              bid,
+            });
+            return;
+          }
+          if (p && typeof p.order_number === "string" && (p as { id?: unknown }).id) {
+            // Full-order payload (order:sync publish or order.created /
+            // status_changed echo): upsert the canonical row. HLC guard
+            // inside insertOrder keeps this idempotent across mesh + phx
+            // double delivery.
+            const db = await openSyncDatabase();
+            await insertOrder(db, p as unknown as SellerOrder & { hlc?: string });
+            syncLogger.info("LocalNodeService", "LAN order row materialized", {
+              event_type: eventType,
+              order_number: p.order_number,
+              source,
+            });
+          } else {
+            // Action-shaped payload (order:sync from a LAN command):
+            // apply the transition to the local row.
+            const action = (p as { action?: string }).action;
+            const orderId = (p as { orderId?: string }).orderId ?? (p as { order_id?: string }).order_id;
+            if (action && orderId && bid) {
+              try {
+                await transitionLocalOrder(bid, String(orderId), action);
+                syncLogger.info("LocalNodeService", "LAN order transition applied", {
+                  event_type: eventType,
+                  action,
+                  orderId: String(orderId),
+                  source,
+                });
+              } catch {}
+            } else {
+              syncLogger.warn("LocalNodeService", "LAN order event has no materializable payload", {
+                event_type: eventType,
+                entity_id: event.entity_id,
+              });
+            }
+          }
+        } catch (e) {
+          syncLogger.warn("LocalNodeService", "LAN order apply failed", { err: String(e), event_type: eventType });
+        }
+        // The row is in SQLite now — invalidate so lists/detail refetch.
+        // (LAN-applied writes bypass the engine pipeline, so no subscriber
+        // does this for us.)
+        notifyPendingOrdersChanged();
+      })();
+    }
+    applyPendingOrderEvent(event, "lan").catch((e) => syncLogger.error("LocalNodeService", "Failed to apply LAN event", { error: String(e), event_type: event.event_type }));
+    applyReferenceChangeEvent(event, "lan").catch((e) => syncLogger.error("LocalNodeService", "Failed to apply LAN reference", { error: String(e), event_type: event.event_type }));
+    applyOrderStateChangeEvent(event, "lan").catch((e) => syncLogger.error("LocalNodeService", "Failed to apply LAN order state", { error: String(e), event_type: event.event_type }));
+  }
+
   private async startAsNode(port: number): Promise<void> {
     if (!this.businessId || !this.secret) throw new Error("LocalNodeService: business context missing");
     const deps = this.getDeps();
@@ -383,7 +466,7 @@ class LocalNodeServiceCore {
         return event ? [event] : [];
       },
       onRelayEvent: (event) => {
-        applyReferenceChangeEvent(event, "lan").catch((e) => syncLogger.error("LocalNodeService", "Failed to apply relayed reference", { error: String(e), event_type: event.event_type }));
+        this.applyLanEvent(event, "relay");
       },
       onClientConnected: (info) => {
         localNodeStore.getState().addConnectedClient({ deviceId: info.deviceId, deviceName: info.deviceName, host: info.host, connectedAt: new Date().toISOString() });
@@ -526,70 +609,7 @@ class LocalNodeServiceCore {
       businessId: this.businessId,
       secret: this.secret,
       onEvent: (event) => {
-        syncLogger.event(event, "received", { origin: "lan" });
-        const eventType = event.event_type as string;
-        // Materialize LAN order events into the canonical orders table so
-        // list queries (POS In Progress, KDS) converge without the backend.
-        // Previously only order:sync inserted rows: a cloud/local-shape
-        // order.created from a peer fell through to the pending-store apply
-        // fns (which never touch the orders table), so the event arrived,
-        // every layer reported success, and the row never materialized.
-        if (eventType === "order:sync" || eventType === "order.created" || eventType === "order.status_changed") {
-          void (async () => {
-            try {
-              const p = event.payload as Record<string, unknown>;
-              const bid = deps.getBusiness()?.id;
-              const payloadBid = (p as { business_id?: unknown }).business_id;
-              if (typeof payloadBid === "string" && bid && payloadBid !== bid) {
-                syncLogger.warn("LocalNodeService", "Ignoring LAN order event for another business", {
-                  event_type: eventType,
-                  payloadBid,
-                  bid,
-                });
-                return;
-              }
-              if (p && typeof p.order_number === "string" && (p as { id?: unknown }).id) {
-                // Full-order payload (order:sync publish or order.created /
-                // status_changed echo): upsert the canonical row. HLC guard
-                // inside insertOrder keeps this idempotent across mesh + phx
-                // double delivery.
-                const db = await openSyncDatabase();
-                await insertOrder(db, p as unknown as SellerOrder & { hlc?: string });
-                syncLogger.info("LocalNodeService", "LAN order row materialized", {
-                  event_type: eventType,
-                  order_number: p.order_number,
-                });
-              } else {
-                // Action-shaped payload (order:sync from a LAN command):
-                // apply the transition to the local row.
-                const action = (p as { action?: string }).action;
-                const orderId = (p as { orderId?: string }).orderId ?? (p as { order_id?: string }).order_id;
-                if (action && orderId && bid) {
-                  try {
-                    await transitionLocalOrder(bid, String(orderId), action);
-                    syncLogger.info("LocalNodeService", "LAN order transition applied", {
-                      event_type: eventType,
-                      action,
-                      orderId: String(orderId),
-                    });
-                  } catch {}
-                } else {
-                  syncLogger.warn("LocalNodeService", "LAN order event has no materializable payload", {
-                    event_type: eventType,
-                    entity_id: event.entity_id,
-                  });
-                }
-              }
-            } catch (e) { syncLogger.warn("LocalNodeService", "LAN order apply failed", { err: String(e), event_type: eventType }); }
-            // The row is in SQLite now — invalidate so lists/detail refetch.
-            // (LAN-applied writes bypass the engine pipeline, so no
-            // subscriber does this for us.)
-            notifyPendingOrdersChanged();
-          })();
-        }
-        applyPendingOrderEvent(event, "lan").catch((e) => syncLogger.error("LocalNodeService", "Failed to apply LAN event", { error: String(e), event_type: event.event_type }));
-        applyReferenceChangeEvent(event, "lan").catch((e) => syncLogger.error("LocalNodeService", "Failed to apply LAN reference", { error: String(e), event_type: event.event_type }));
-        applyOrderStateChangeEvent(event, "lan").catch((e) => syncLogger.error("LocalNodeService", "Failed to apply LAN order state", { error: String(e), event_type: event.event_type }));
+        this.applyLanEvent(event, "peer");
       },
       onConnected: () => {
         this.settleDial(node.deviceId);

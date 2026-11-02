@@ -124,18 +124,22 @@ export function useSyncReconciliation(): void {
       // The node relays engine events (e.g. order.created when a queued
       // command is replayed) to LAN clients so they reconcile their pending
       // orders and refresh caches.
+      //
+      // A terminal that is only a LAN client (its own listener failed to bind,
+      // or it is a phone in the background) also has to forward the events it
+      // produces locally. Otherwise a sale completed over the cloud while the
+      // phone has mobile data — the exact iOS Wi-Fi + LTE case — never reaches
+      // the node until a later full sync. Reference events were already
+      // forwarded here; order/payment/delivery events need the same path.
+      const relayable =
+        event.event_type === REFERENCE_CHANGED_EVENT_TYPE ||
+        event.event_type.startsWith("order.") ||
+        event.event_type.startsWith("order:") ||
+        event.event_type.startsWith("payment.") ||
+        event.event_type.startsWith("delivery.");
       if (localNodeService.isLocalNode()) {
         localNodeService.broadcastToClients(event);
-      }
-
-      // Reference data changed on this device but we are a LAN client (not the
-      // node): forward the event to the node so it rebroadcasts it to every
-      // other terminal (the node also applies it locally via its onRelayEvent
-      // hook). The node does not echo it back to this device.
-      if (
-        event.event_type === REFERENCE_CHANGED_EVENT_TYPE &&
-        !localNodeService.isLocalNode()
-      ) {
+      } else if (relayable) {
         localNodeService.getClient()?.publishEvent?.(event);
       }
 

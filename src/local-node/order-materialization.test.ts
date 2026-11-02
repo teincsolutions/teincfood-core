@@ -64,9 +64,11 @@ function lanEvent(type: string, payload: Record<string, unknown>): DomainEvent {
 
 describe("mesh LAN order.created materialization", () => {
   let capturedOnEvent: ((e: DomainEvent) => void) | null = null;
+  let capturedOnRelay: ((e: DomainEvent) => void) | null = null;
 
   beforeEach(async () => {
     capturedOnEvent = null;
+    capturedOnRelay = null;
     const mem = createMemoryDriver();
     setSqliteDriver(mem as any);
     const kvStore = new Map<string, string>();
@@ -82,12 +84,15 @@ describe("mesh LAN order.created materialization", () => {
     setAppInstanceId("device-mesh-desk");
 
     const transport: TransportAdapter = {
-      createServer: (_opts: any) => ({
-        start: async () => {},
-        stop: async () => {},
-        isListening: () => true,
-        broadcast: () => {},
-      }),
+      createServer: (opts: any) => {
+        capturedOnRelay = opts.onRelayEvent;
+        return {
+          start: async () => {},
+          stop: async () => {},
+          isListening: () => true,
+          broadcast: () => {},
+        };
+      },
       createClient: (opts: any) => {
         capturedOnEvent = opts.onEvent;
         return {
@@ -120,11 +125,18 @@ describe("mesh LAN order.created materialization", () => {
     } as any);
     await new Promise((r) => setTimeout(r, 50));
     expect(capturedOnEvent).not.toBeNull();
+    expect(capturedOnRelay).not.toBeNull();
   });
 
   async function receive(event: DomainEvent) {
     capturedOnEvent!(event);
     // onEvent materialization runs in a fire-and-forget async IIFE.
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  async function receiveRelay(event: DomainEvent) {
+    capturedOnRelay!(event);
+    // onRelayEvent materialization runs in a fire-and-forget async IIFE.
     await new Promise((r) => setTimeout(r, 200));
   }
 
@@ -193,4 +205,39 @@ describe("mesh LAN order.created materialization", () => {
     const listed = await listLocalOrders(BIZ, {}, 1, 100);
     expect(listed.data.filter((o) => o.id === "order-lan-1")).toHaveLength(1);
   });
+  it("materializes an order relayed by a client that completed the sale over the cloud", async () => {
+    const db = await openSyncDatabase();
+    await receiveRelay(lanEvent("order.created", fullOrder({
+      id: "cloud-path-order",
+      order_number: "07-001-003",
+    })));
+    const row = await getOrderById(db, BIZ, "cloud-path-order");
+    expect(row?.order_number).toBe("07-001-003");
+  });
+
+  it("applies relayed order.sync catch-up rows", async () => {
+    const db = await openSyncDatabase();
+    await receiveRelay(lanEvent("order:sync", fullOrder({
+      id: "catchup-order",
+      order_number: "07-001-004",
+      hlc: "2026-01-01T10:00:00.000Z",
+    })));
+    const row = await getOrderById(db, BIZ, "catchup-order");
+    expect(row?.order_number).toBe("07-001-004");
+  });
+
+  it("fires the pending-orders invalidator for relayed order events", async () => {
+    const spy = vi.fn();
+    const unreg = registerPendingOrdersInvalidator(spy);
+    try {
+      await receiveRelay(lanEvent("order.created", fullOrder({
+        id: "relay-invalidate",
+        order_number: "07-001-005",
+      })));
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      unreg();
+    }
+  });
+
 });
