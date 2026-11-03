@@ -10,6 +10,7 @@ import {
   ensureStartupReady,
   REQUIRED_ORDER_KEYS,
 } from "./startup-readiness";
+import { clearLeaseForTests } from "./device-lease.service";
 import type { ReferenceDataKey } from "../reference/types";
 
 const BID = "biz-readiness-test";
@@ -42,6 +43,7 @@ describe("startup readiness", () => {
     } as never);
     try { await closeSyncDatabase(); } catch {}
     await openSyncDatabase();
+    clearLeaseForTests(BID);
     // Offline: readiness must evaluate the cache only, no network.
     setConnectivityState({ isOnline: false, isCloudReachable: "unreachable" });
   });
@@ -68,6 +70,13 @@ describe("startup readiness", () => {
     expect(r.missingKeys).toEqual([]);
     expect(r.needsLease).toBe(false);
     expect(r.ready).toBe(true);
+  });
+
+  it("surfaces why the lease is missing instead of only a generic ready=false", async () => {
+    const r = await getStartupReadiness(BID);
+    expect(r.needsLease).toBe(true);
+    expect(r.leaseError?.code).toBe("OFFLINE");
+    expect(r.network).toEqual({ isOnline: false, isCloudReachable: "unreachable" });
   });
 
   it("reports missing keys precisely", async () => {

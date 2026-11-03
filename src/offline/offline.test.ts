@@ -19,6 +19,7 @@ import {
   updateOfflineMemberRole,
   verifyOfflineMemberPin,
 } from "./store";
+import { setOfflineMemberPin } from "./service";
 
 ed.etc.sha512Async = async (message: Uint8Array) => sha512(message);
 
@@ -163,6 +164,71 @@ describe("offline member PIN", () => {
       locked: false,
     });
     await removeOfflineMember("member-lock", "biz-1");
+  });
+
+  it("changes an existing PIN only after confirming the old one", async () => {
+    await removeOfflineMember("member-pin-change", "biz-1").catch(() => undefined);
+    await createOfflineMemberCredential({
+      businessId: "biz-1",
+      userId: "member-pin-change",
+      fullName: "Yaa",
+      role: "manager",
+      capabilities: [],
+      pin: "123456",
+    });
+
+    await expect(
+      setOfflineMemberPin({
+        businessId: "biz-1",
+        userId: "member-pin-change",
+        newPin: "654321",
+      }),
+    ).rejects.toThrow(/current 6-digit PIN/i);
+
+    await expect(
+      setOfflineMemberPin({
+        businessId: "biz-1",
+        userId: "member-pin-change",
+        currentPin: "000000",
+        newPin: "654321",
+      }),
+    ).rejects.toThrow(/current PIN is incorrect/i);
+
+    await expect(
+      setOfflineMemberPin({
+        businessId: "biz-1",
+        userId: "member-pin-change",
+        currentPin: "123456",
+        newPin: "654321",
+      }),
+    ).resolves.toMatchObject({ user_id: "member-pin-change" });
+
+    await expect(
+      verifyOfflineMemberPin("member-pin-change", "123456", "biz-1"),
+    ).resolves.toBe(false);
+    await expect(
+      verifyOfflineMemberPin("member-pin-change", "654321", "biz-1"),
+    ).resolves.toBe(true);
+    await removeOfflineMember("member-pin-change", "biz-1");
+  });
+
+  it("sets a first PIN for a licensed member without an existing credential", async () => {
+    await removeOfflineMember("member-first-pin", "biz-1").catch(() => undefined);
+    await setOfflineMemberPin({
+      businessId: "biz-1",
+      userId: "member-first-pin",
+      newPin: "112233",
+      member: {
+        fullName: "Kojo",
+        role: "sales",
+        capabilities: ["orders_create"],
+      },
+    });
+
+    await expect(
+      verifyOfflineMemberPin("member-first-pin", "112233", "biz-1"),
+    ).resolves.toBe(true);
+    await removeOfflineMember("member-first-pin", "biz-1");
   });
 
   it("applies offline role changes to the local credential", async () => {

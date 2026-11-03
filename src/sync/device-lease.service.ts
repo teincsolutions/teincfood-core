@@ -5,7 +5,7 @@
  */
 
 import { getItemSync as getSync, setItemSync as setSync, removeItemSync, getItem } from "../adapters/kv";
-import { getHttpClient, ApiError } from "../adapters/http";
+import { getHttpClient } from "../adapters/http";
 import { syncLogger } from "../utils/sync-logger";
 import { getAppInstanceIdAsync } from "../adapters/devices";
 import { getConnectivityState } from "../adapters/connectivity";
@@ -16,6 +16,121 @@ const LEASE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 interface LeaseResponse {
   device_number: string;
   device_uuid: string;
+}
+
+/**
+ * Why the last device-lease attempt failed. Surfaced by startup readiness so a
+ * plan/terminal limit is not reported as "offline data incomplete".
+ */
+export interface DeviceLeaseFailure {
+  code:
+    | "TERMINAL_LIMIT_REACHED"
+    | "DEVICE_LIMIT_REACHED"
+    | "AUTH_REQUIRED"
+    | "OFFLINE"
+    | "LEASE_FAILED";
+  message: string;
+  status?: number;
+  limit?: number;
+  current?: number;
+}
+
+const leaseFailures = new Map<string, DeviceLeaseFailure>();
+
+export function getLastLeaseFailure(businessId: string): DeviceLeaseFailure | null {
+  return leaseFailures.get(businessId) ?? null;
+}
+
+function rememberLeaseFailure(businessId: string, failure: DeviceLeaseFailure): void {
+  leaseFailures.set(businessId, failure);
+}
+
+function clearLeaseFailure(businessId: string): void {
+  leaseFailures.delete(businessId);
+}
+
+interface ApiFailureShape {
+  status?: unknown;
+  code?: unknown;
+  message?: unknown;
+  data?: unknown;
+  response?: { data?: unknown };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Normalise the HTTP-client error into a user-presentable lease failure.
+ * Desktop injects its own ApiError shape; mobile/core may inject another, so
+ * inspect both the error and the backend `{ error: { code, message, details } }`
+ * envelope instead of relying on one class.
+ */
+export function classifyDeviceLeaseFailure(error: unknown): DeviceLeaseFailure {
+  const e = (asRecord(error) ?? {}) as ApiFailureShape;
+  const responseData = asRecord(e.data) ?? asRecord(e.response?.data);
+  const errorBody = asRecord(responseData?.error);
+  const details = asRecord(errorBody?.details);
+  const status = asNumber(e.status);
+  const code =
+    typeof errorBody?.code === "string"
+      ? errorBody.code
+      : typeof e.code === "string"
+        ? e.code
+        : undefined;
+  const message =
+    typeof errorBody?.message === "string"
+      ? errorBody.message
+      : typeof e.message === "string"
+        ? e.message
+        : "";
+  const limit = asNumber(details?.limit);
+  const current = asNumber(details?.current);
+
+  if (status === 402 || code === "TERMINAL_LIMIT_REACHED") {
+    return {
+      code: "TERMINAL_LIMIT_REACHED",
+      message:
+        message ||
+        "This business has reached the number of linked terminals allowed by its plan.",
+      status,
+      limit,
+      current,
+    };
+  }
+
+  if (status === 429 || code === "DEVICE_LIMIT_REACHED") {
+    return {
+      code: "DEVICE_LIMIT_REACHED",
+      message: message || "This business has reached the maximum number of linked terminals.",
+      status,
+    };
+  }
+
+  if (
+    status === 401 ||
+    message.includes("TOKEN_MISSING") ||
+    message.includes("No authentication token")
+  ) {
+    return {
+      code: "AUTH_REQUIRED",
+      message: message || "Sign-in is still finishing. Retry in a moment.",
+      status,
+    };
+  }
+
+  return {
+    code: "LEASE_FAILED",
+    message: message || "The terminal could not be activated.",
+    status,
+  };
 }
 
 export function getDeviceNumber(businessId: string): string | null {
@@ -32,6 +147,7 @@ export async function ensureLease(businessId: string): Promise<string | null> {
   // Offline-first: keep leased DD even offline — if online check/lease fails, return cached
   const existingSync = getDeviceNumber(businessId);
   if (existingSync) {
+    clearLeaseFailure(businessId);
     // Opportunistically refresh touch if online, but never discard cached on failure
     if (getConnectivityState().isOnline) {
       try {
@@ -53,6 +169,7 @@ export async function ensureLease(businessId: string): Promise<string | null> {
     if (asyncCached && /^(0[1-9]|[1-9][0-9])$/.test(asyncCached)) {
       // hydrate sync cache for next getDeviceNumber calls
       try { setSync(LEASE_KEY(businessId), asyncCached); } catch {}
+      clearLeaseFailure(businessId);
       return asyncCached;
     }
   } catch {}
@@ -60,6 +177,10 @@ export async function ensureLease(businessId: string): Promise<string | null> {
   // No cached DD — must lease online. If offline, keep null (caller blocks POS with clear message)
   if (!getConnectivityState().isOnline) {
     syncLogger.debug("DeviceLease", "Offline and no cached DD — need online once", { businessId });
+    rememberLeaseFailure(businessId, {
+      code: "OFFLINE",
+      message: "Connect to the internet once so this terminal can be activated.",
+    });
     return null;
   }
 
@@ -70,49 +191,68 @@ export async function ensureLease(businessId: string): Promise<string | null> {
       `/businesses/${businessId}/devices/lease`,
       { device_uuid: deviceUuid, app_instance_id: deviceUuid },
     );
-    const data: LeaseResponse = (res.data as unknown as { data: LeaseResponse })?.data ?? (res.data as unknown as LeaseResponse);
-    const dn = (data as LeaseResponse).device_number;
+    const payload = res.data as LeaseResponse & { data?: LeaseResponse };
+    const data = payload.data ?? payload;
+    const dn = data.device_number;
     if (dn && /^(0[1-9]|[1-9][0-9])$/.test(dn)) {
       setSync(LEASE_KEY(businessId), dn);
       setSync(`${LEASE_KEY(businessId)}:leased_at`, new Date().toISOString());
       try { await getItem<string>(LEASE_KEY(businessId)); } catch {}
+      clearLeaseFailure(businessId);
       syncLogger.info("DeviceLease", "Leased device number", { businessId, device_number: dn });
       return dn;
     }
+
+    rememberLeaseFailure(businessId, {
+      code: "LEASE_FAILED",
+      message: "The server did not return a terminal number. Try again.",
+    });
   } catch (e) {
-    const apiErr = e as { status?: number; name?: string; code?: string };
-    const msg = String((e as Error)?.message ?? "");
-    const isAuth = apiErr?.status === 401 || msg.includes("TOKEN_MISSING") || msg.includes("No authentication token");
-    if (isAuth) {
+    const failure = classifyDeviceLeaseFailure(e);
+    rememberLeaseFailure(businessId, failure);
+
+    if (failure.code === "TERMINAL_LIMIT_REACHED" || failure.code === "DEVICE_LIMIT_REACHED") {
+      syncLogger.warn("DeviceLease", "Terminal limit reached — activation needs a free slot", {
+        businessId,
+        code: failure.code,
+        limit: failure.limit,
+        current: failure.current,
+      });
+      return cachedLeaseFallback(businessId);
+    }
+
+    if (failure.code === "AUTH_REQUIRED") {
       syncLogger.debug("DeviceLease", "No auth yet — lease deferred until login", { businessId });
-      // fallback to any async cache that may have appeared concurrently
-      try {
-        const fallback = await getItem<string>(LEASE_KEY(businessId));
-        if (fallback && /^(0[1-9]|[1-9][0-9])$/.test(fallback)) return fallback;
-      } catch {}
-      const again = getDeviceNumber(businessId);
-      if (again) return again;
-      return null;
+      return cachedLeaseFallback(businessId);
     }
-    if (apiErr?.status === 429 || msg.includes("DEVICE_LIMIT_REACHED")) {
-      syncLogger.warn("DeviceLease", "Device limit reached — online only", { businessId });
-      return null;
-    }
-    // Network/offline failure while leasing — keep any cached that may exist
+
+    // Network/offline failure while leasing — keep any cached that may exist.
     syncLogger.warn("DeviceLease", "Lease failed — keep cached if any", {
       businessId,
       error: String(e),
     });
-    try {
-      const fallback = await getItem<string>(LEASE_KEY(businessId));
-      if (fallback && /^(0[1-9]|[1-9][0-9])$/.test(fallback)) {
-        try { setSync(LEASE_KEY(businessId), fallback); } catch {}
-        return fallback;
-      }
-    } catch {}
-    const again = getDeviceNumber(businessId);
-    if (again) return again;
+    return cachedLeaseFallback(businessId);
   }
+
+  return cachedLeaseFallback(businessId);
+}
+
+async function cachedLeaseFallback(businessId: string): Promise<string | null> {
+  try {
+    const fallback = await getItem<string>(LEASE_KEY(businessId));
+    if (fallback && /^(0[1-9]|[1-9][0-9])$/.test(fallback)) {
+      try { setSync(LEASE_KEY(businessId), fallback); } catch {}
+      clearLeaseFailure(businessId);
+      return fallback;
+    }
+  } catch {}
+
+  const again = getDeviceNumber(businessId);
+  if (again) {
+    clearLeaseFailure(businessId);
+    return again;
+  }
+
   return null;
 }
 
@@ -139,6 +279,7 @@ export async function refreshLease(businessId: string): Promise<void> {
 export function clearLeaseForTests(businessId: string): void {
   removeItemSync(LEASE_KEY(businessId));
   removeItemSync(`${LEASE_KEY(businessId)}:leased_at`);
+  clearLeaseFailure(businessId);
 }
 
 export const deviceLeaseService = {

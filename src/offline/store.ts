@@ -278,6 +278,27 @@ export async function createOfflineMemberCredential(args: {
   return member;
 }
 
+/** Replace an existing member's PIN without changing their role/capabilities. */
+export async function updateOfflineMemberPin(
+  userId: string,
+  businessId: string,
+  pin: string,
+): Promise<void> {
+  if (!/^\d{6}$/.test(pin)) {
+    throw new Error("Offline PIN must be exactly 6 digits");
+  }
+  const member = await getOfflineMember(userId, businessId);
+  if (!member) throw new Error("This member has no offline credential on this device");
+  const salt = randomHex(32);
+  await saveOfflineMember({
+    ...member,
+    pin_salt: salt,
+    pin_hash: await hashPin(pin, salt),
+    failed_attempts: 0,
+    locked_until: null,
+  });
+}
+
 export const OFFLINE_PIN_MAX_ATTEMPTS = 5;
 
 export interface OfflinePinLockState {

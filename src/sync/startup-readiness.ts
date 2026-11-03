@@ -16,8 +16,12 @@ import { openSyncDatabase } from "../db/connection";
 import { getReferenceData } from "../reference/operations";
 import { referenceSyncService } from "../reference/service";
 import { evaluateBusinessEntitlements } from "../reference/entitlement-guard";
-import { ensureLease } from "./device-lease.service";
-import { getConnectivityState } from "../adapters/connectivity";
+import {
+  ensureLease,
+  getLastLeaseFailure,
+  type DeviceLeaseFailure,
+} from "./device-lease.service";
+import { getConnectivityState, type ConnectivityState } from "../adapters/connectivity";
 import { syncLogger } from "../utils/sync-logger";
 import type { ReferenceDataKey } from "../reference/types";
 
@@ -49,6 +53,13 @@ export interface StartupReadiness {
    * by itself block readiness.
    */
   entitlementUnverified: boolean;
+  /**
+   * Why the terminal lease failed, when `needsLease` is true. Lets the UI show
+   * "terminal limit reached" instead of the generic offline-data message.
+   */
+  leaseError: DeviceLeaseFailure | null;
+  /** Connectivity snapshot used for this check. */
+  network: ConnectivityState;
 }
 
 /** Evaluate the local cache only (no network). */
@@ -73,6 +84,7 @@ export async function getStartupReadiness(businessId: string): Promise<StartupRe
     syncLogger.warn("StartupReadiness", "lease check failed", { err: String(e) });
   }
   const needsLease = !deviceNumber;
+  const leaseError = needsLease ? getLastLeaseFailure(businessId) : null;
 
   let entitlementUnverified = missingKeys.includes("subscription:entitlements");
   if (!entitlementUnverified) {
@@ -89,6 +101,8 @@ export async function getStartupReadiness(businessId: string): Promise<StartupRe
     missingKeys,
     needsLease,
     entitlementUnverified,
+    leaseError,
+    network: getConnectivityState(),
   };
 }
 

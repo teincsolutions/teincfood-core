@@ -47,6 +47,12 @@ describe("calloutNumber", () => {
 });
 
 describe("generateEscpos", () => {
+  it("selects Font A and double-strikes text for solid-black output", () => {
+    const out = generateEscpos(order());
+    expect(out.startsWith("\x1B\x40\x1B\x4D\x00")).toBe(true);
+    expect(out).toContain("\x1B\x47\x01");
+  });
+
   it("sizes the barcode down and keeps text ASCII-clean", () => {
     const out = generateEscpos(
       order({
@@ -202,7 +208,7 @@ describe("golden 80mm receipt (docs/receipt-template.md)", () => {
       "Date: 19 Sep 2026 10:00",
     );
     const stripped = normalized.replace(
-      /\x1B(?:@|[aEd].)|\x1D(?:[!Vhw].)/g,
+      /\x1B(?:@|[aEdGM].)|\x1D(?:[!Vhw].)/g,
       "",
     );
     const lines = stripped.split("\n");

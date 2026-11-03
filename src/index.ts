@@ -104,7 +104,14 @@ export {
   parseOrderNumber,
   resetCalloutForTests,
 } from "./sync/order-number";
-export { deviceLeaseService, getDeviceNumber, isOnlineOnly, ensureLease } from "./sync/device-lease.service";
+export {
+  deviceLeaseService,
+  getDeviceNumber,
+  isOnlineOnly,
+  ensureLease,
+  getLastLeaseFailure,
+  type DeviceLeaseFailure,
+} from "./sync/device-lease.service";
 export { useDeviceLease, ensureDeviceLease } from "./sync/use-device-lease";
 export {
   getStartupReadiness,

@@ -22,6 +22,11 @@ const ESC_ALIGN_LEFT = "\x1B\x61\x00";
 const ESC_ALIGN_CENTER = "\x1B\x61\x01";
 const ESC_BOLD_ON = "\x1B\x45\x01";
 const ESC_BOLD_OFF = "\x1B\x45\x00";
+// Font A is the legible 12×24 thermal font on virtually every ESC/POS head.
+const ESC_FONT_A = "\x1B\x4D\x00";
+// Double-strike is independent of bold and does not change character width, so
+// it deepens every glyph without breaking the 32-column layout.
+const ESC_DOUBLE_STRIKE_ON = "\x1B\x47\x01";
 const GS_SIZE_NORMAL = "\x1D\x21\x00";
 const GS_SIZE_DOUBLE_W = "\x1D\x21\x11";
 const GS_BAR_HEIGHT = "\x1D\x68\x3C";
@@ -407,6 +412,7 @@ export function generateEscpos(
   // NOTE: no logo in ESC/POS text mode — a logo URL cannot be rendered without
   // a raster pipeline (GS v 0). HTML receipts embed the logo instead.
   push(ESC_INIT);
+  push(ESC_FONT_A);
   if (logoRasterB64) {
     try {
       push(binaryFromBase64(logoRasterB64));
@@ -414,6 +420,9 @@ export function generateEscpos(
       /* logo is decorative — never fail the receipt */
     }
   }
+  // Solid-black text: double-strike every line. This is what turns faint
+  // grey thermal output into a crisp receipt on low-density heads.
+  push(ESC_DOUBLE_STRIKE_ON);
   push(ESC_ALIGN_CENTER);
   for (const part of nameBlockEscpos(business?.name || "Teinc Food"))
     push(part);
@@ -641,33 +650,33 @@ export function generateHtml(
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-  body{font-family:monospace;max-width:320px;margin:0 auto;padding:16px;background:#fff;color:#111;}
-  .header{text-align:center;border-top:2px solid #333;border-bottom:2px solid #333;padding:8px 0;margin-bottom:12px;}
+  body{font-family:"Courier New",Courier,"Liberation Mono",monospace;font-weight:600;max-width:320px;margin:0 auto;padding:16px;background:#fff;color:#000;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  .header{text-align:center;border-top:2px solid #000;border-bottom:2px solid #000;padding:8px 0;margin-bottom:12px;}
   .header .logo{max-width:200px;max-height:64px;margin:4px auto;display:block;object-fit:contain;}
   .header h2{margin:4px 0 0;}
-  .header h2.name-2x{font-size:28px;font-weight:bold;}
-  .header h2.name-1x-bold{font-size:16px;font-weight:bold;}
-  .header h2.name-1x{font-size:14px;}
-  .header .address{font-size:11px;color:#555;margin:2px 0;}
+  .header h2.name-2x{font-size:28px;font-weight:800;}
+  .header h2.name-1x-bold{font-size:16px;font-weight:800;}
+  .header h2.name-1x{font-size:14px;font-weight:700;}
+  .header .address{font-size:11px;color:#000;font-weight:600;margin:2px 0;}
   .callout{text-align:center;margin:16px 0;}
-  .callout .number{font-size:36px;font-weight:bold;letter-spacing:4px;margin:0;}
-  .callout .label{font-size:10px;color:#555;margin:0;}
+  .callout .number{font-size:36px;font-weight:800;letter-spacing:4px;margin:0;}
+  .callout .label{font-size:10px;color:#000;font-weight:700;margin:0;}
   .order-info{font-size:12px;margin:8px 0;}
   table{width:100%;font-size:12px;border-collapse:collapse;table-layout:fixed;}
   td{padding:2px 0;vertical-align:top;overflow-wrap:anywhere;}
   .item-name{width:17ch;}
   .item-qty{width:3ch;text-align:right;}
   .item-price{width:10ch;text-align:right;}
-  .addon-row td{font-size:11px;color:#666;padding-left:12px;}
+  .addon-row td{font-size:11px;color:#000;font-weight:600;padding-left:12px;}
   .addon-row td.addon-price{text-align:right;}
-  .variant-row td{font-size:11px;color:#444;padding-left:8px;}
+  .variant-row td{font-size:11px;color:#000;font-weight:600;padding-left:8px;}
   .totals{margin-top:8px;}
   .totals td.label{text-align:left;width:70%;}
   .totals td.amount{text-align:right;width:30%;}
   .total-row td{padding-top:12px;}
-  .total-row{font-weight:bold;font-size:15px;border-top:2px solid #333;border-bottom:2px solid #333;padding:4px 0;}
-  .footer{text-align:center;margin-top:16px;padding-top:8px;font-size:12px;color:#555;}
-  @media print{body{max-width:80mm;padding:0;}}
+  .total-row{font-weight:800;font-size:15px;border-top:2px solid #000;border-bottom:2px solid #000;padding:4px 0;}
+  .footer{text-align:center;margin-top:16px;padding-top:8px;font-size:12px;color:#000;font-weight:600;}
+  @media print{body{max-width:80mm;padding:0;color:#000;}}
 </style></head>
 <body>
 <div class="header">

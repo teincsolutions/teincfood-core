@@ -41,6 +41,7 @@ import {
   saveStoredLicense,
   saveStoredLicenseKeyId,
   saveStoredLicensePublicKey,
+  updateOfflineMemberPin,
   verifyOfflineMemberPin,
   type OfflineMemberCredential,
 } from "./store";
@@ -90,26 +91,23 @@ async function getPrivateKeyBytes(): Promise<Uint8Array | null> {
   }
 }
 
-/**
- * First-time activation. Generates the device keypair, registers the public
- * key, stores the signed license and enrolls the current member's PIN.
- */
-export async function activateOfflineDevice(args: {
+interface OfflineActivationBaseArgs {
   businessId: string;
-  member: {
-    userId: string;
-    fullName: string;
-    email?: string | null;
-    role: string;
-    capabilities: string[];
-  };
-  pin: string;
   appInstanceId?: string;
   platform?: string;
   deviceName?: string;
   osVersion?: string;
   appVersion?: string;
-}): Promise<OfflineActivationResult> {
+}
+
+/**
+ * Activate the terminal license without creating any member PIN. The backend
+ * activation also enrolls the signed-in user, but the quick-login PIN is a
+ * separate, optional local credential.
+ */
+export async function activateOfflineLicense(
+  args: OfflineActivationBaseArgs,
+): Promise<OfflineActivationResult> {
   if (!getAuthToken()) throw new Error("Sign in online before activating this device");
 
   const deviceId = args.appInstanceId ?? (await getAppInstanceIdAsync());
@@ -140,6 +138,28 @@ export async function activateOfflineDevice(args: {
   await saveStoredLicensePublicKey(args.businessId, data.public_key);
   await saveStoredLicenseKeyId(args.businessId, data.key_id);
 
+  return { ...data, payload: verified };
+}
+
+/**
+ * First-time activation plus the optional local quick-login PIN. Kept as the
+ * mobile-compatible entry point; desktop can call activateOfflineLicense()
+ * first and set the PIN later.
+ */
+export async function activateOfflineDevice(
+  args: OfflineActivationBaseArgs & {
+    member: {
+      userId: string;
+      fullName: string;
+      email?: string | null;
+      role: string;
+      capabilities: string[];
+    };
+    pin: string;
+  },
+): Promise<OfflineActivationResult> {
+  const result = await activateOfflineLicense(args);
+
   await createOfflineMemberCredential({
     businessId: args.businessId,
     userId: args.member.userId,
@@ -154,7 +174,7 @@ export async function activateOfflineDevice(args: {
   // the intent explicit and is idempotent.
   await enrollMemberOnDevice({
     businessId: args.businessId,
-    deviceId,
+    deviceId: args.appInstanceId,
     userId: args.member.userId,
   }).catch((error) => {
     syncLogger.warn("OfflineAuth", "Member enrollment call failed", {
@@ -162,7 +182,61 @@ export async function activateOfflineDevice(args: {
     });
   });
 
-  return { ...data, payload: verified };
+  return result;
+}
+
+/**
+ * Set or change the local 6-digit quick-login PIN. Existing PINs must be
+ * confirmed first; changing a PIN never requires the network.
+ */
+export async function setOfflineMemberPin(args: {
+  businessId: string;
+  userId: string;
+  newPin: string;
+  currentPin?: string;
+  member?: {
+    fullName: string;
+    email?: string | null;
+    role: string;
+    capabilities: string[];
+  };
+}): Promise<OfflineMemberCredential> {
+  if (!/^\d{6}$/.test(args.newPin)) {
+    throw new Error("Offline PIN must be exactly 6 digits");
+  }
+
+  const existing = await getOfflineMember(args.userId, args.businessId);
+  if (existing) {
+    if (existing.pin_hash) {
+      if (!args.currentPin) {
+        throw new Error("Enter your current 6-digit PIN");
+      }
+      const valid = await verifyOfflineMemberPin(
+        args.userId,
+        args.currentPin,
+        args.businessId,
+      );
+      if (!valid) throw new Error("Current PIN is incorrect");
+    }
+    await updateOfflineMemberPin(args.userId, args.businessId, args.newPin);
+    const updated = await getOfflineMember(args.userId, args.businessId);
+    if (!updated) throw new Error("Could not update the offline PIN");
+    return updated;
+  }
+
+  if (!args.member) {
+    throw new Error("Sign in online once before setting up an offline PIN");
+  }
+
+  return createOfflineMemberCredential({
+    businessId: args.businessId,
+    userId: args.userId,
+    fullName: args.member.fullName,
+    email: args.member.email,
+    role: args.member.role,
+    capabilities: args.member.capabilities,
+    pin: args.newPin,
+  });
 }
 
 /** Refresh the signed license while online using the normal access token. */
