@@ -34,7 +34,7 @@ async function fetchReceipt(orderId: string, format: "html" | "escpos" = "html")
 }
 
 /**
- * Generate receipt locally without network — used for offline queued DD-RRR-CCC orders.
+ * Generate receipt locally without network — used for offline queued DD-NNNN-MMM orders.
  * Pass a base64 logo raster (see resolveLogoRaster) to include the thermal header logo.
  */
 export function generateLocalReceipt(
@@ -77,8 +77,8 @@ export async function printOrderReceipt(order: SellerOrder, opts?: { logoDataUri
 
   if (isTcp) {
     try {
-      // Prefer backend escpos when we have a real UUID (not DD-RRR-CCC)
-      const isLocal = /^[0-9]{2}-[0-9]{3}-[0-9]{3}$/.test(order.order_number) || /^[0-9A-F-]{36}$/.test(order.id) === false && order.id === order.order_number;
+      // Prefer backend escpos when we have a real UUID (not a local order number)
+      const isLocal = /^[0-9]{2}-[0-9]{3,4}-[0-9]{3}$/.test(order.order_number) || /^[0-9A-F-]{36}$/.test(order.id) === false && order.id === order.order_number;
       if (!isLocal || order.id) {
         try {
           escpos = await fetchReceipt(order.id, "escpos");

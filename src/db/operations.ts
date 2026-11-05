@@ -773,7 +773,7 @@ export async function listOrdersWithHlc(
   limit = 200,
 ): Promise<Array<import("../types/api/seller.api").SellerOrder & { hlc?: string }>> {
   const rows = await db.getAllAsync<OrderRow>(
-    `SELECT * FROM orders WHERE business_id = ? AND deleted_at IS NULL ORDER BY inserted_at DESC LIMIT ?;`,
+    `SELECT * FROM orders WHERE business_id = ? AND deleted_at IS NULL ORDER BY inserted_at DESC, rowid DESC LIMIT ?;`,
     businessId,
     limit,
   );
@@ -803,7 +803,7 @@ export async function listOrders(db: SQLiteDatabase, businessId: string, filters
   const countRow = await db.getFirstAsync<{ c: number }>(`SELECT COUNT(*) as c FROM orders WHERE ${whereSql};`, ...args);
   const total = countRow?.c ?? 0;
   const offset = (page - 1) * pageSize;
-  const rows = await db.getAllAsync<OrderRow>(`SELECT * FROM orders WHERE ${whereSql} ORDER BY inserted_at DESC LIMIT ? OFFSET ?;`, ...args, pageSize, offset);
+  const rows = await db.getAllAsync<OrderRow>(`SELECT * FROM orders WHERE ${whereSql} ORDER BY inserted_at DESC, rowid DESC LIMIT ? OFFSET ?;`, ...args, pageSize, offset);
   return { data: rows.map(orderRowToSellerOrder), total };
 }
 

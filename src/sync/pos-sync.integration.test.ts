@@ -70,7 +70,7 @@ describe("POS sync — full correct data like Desktop CartPanel", () => {
           // validate payload shape like backend expects
           const b = body as Record<string, any>;
           expect(b.id).toBeDefined();
-          expect(b.local_order_number).toMatch(/^[0-9]{2}-[0-9]{3}-[0-9]{3}$/);
+          expect(b.local_order_number).toMatch(/^[0-9]{2}-[0-9]{4}-[0-9]{3}$/);
           expect(b.items).toBeDefined();
           expect(Array.isArray(b.items)).toBe(true);
           expect(b.items[0].menu_item_id).toBeDefined();
@@ -112,7 +112,7 @@ describe("POS sync — full correct data like Desktop CartPanel", () => {
       currency_code: "GHS",
     } as any);
 
-    expect(order.order_number).toMatch(/^[0-9]{2}-[0-9]{3}-[0-9]{3}$/);
+    expect(order.order_number).toMatch(/^[0-9]{2}-[0-9]{4}-[0-9]{3}$/);
     expect(order.order_number).not.toBe("[object Object]");
     expect(order.id).toBeDefined();
     // should have created sync_job
@@ -232,7 +232,7 @@ describe("POS sync — full correct data like Desktop CartPanel", () => {
     expect(job).toBeTruthy();
     const payload = JSON.parse(job.payload);
     expect(payload.order_number).not.toBe(originalNumber);
-    expect(payload.order_number).toMatch(/^[0-9]{2}-[0-9]{3}-[0-9]{3}$/);
+    expect(payload.order_number).toMatch(/^[0-9]{2}-[0-9]{4}-[0-9]{3}$/);
     // order row also updated
     const { getOrderById } = await import("../db/operations");
     const updated = await getOrderById(await openSyncDatabase(), BUSINESS_ID, originalId);

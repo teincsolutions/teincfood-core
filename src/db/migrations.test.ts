@@ -94,13 +94,15 @@ describe("migrations fidelity", () => {
       new Date().toISOString(),
     );
     for (const m of MIGRATIONS) {
-      if (m.version <= 8) continue;
+      // Stop before v14: that migration intentionally clears local data for
+      // the DD-NNNN-MMM cutover.
+      if (m.version <= 8 || m.version >= 14) continue;
       await m.up(drv);
       await drv.runAsync("INSERT INTO migrations (version, applied_at) VALUES (?, ?);", m.version, new Date().toISOString());
     }
     expect(tables(db)).toContain("commands");
     expect(tables(db)).toContain("events");
-    // pre-existing data survives the heal
+    // pre-existing data survives the v8/v9 heal
     const row = db.prepare("SELECT id FROM orders WHERE id='o1';").get() as { id: string } | undefined;
     expect(row?.id).toBe("o1");
     // and the restored tables are writable
@@ -116,6 +118,46 @@ describe("migrations fidelity", () => {
       new Date().toISOString(),
       new Date().toISOString(),
     );
+    db.close();
+  });
+
+  it("v14 clears local orders and sync state for a fresh login", async () => {
+    const db = await migrateFresh();
+    const drv = nodeDriver(db);
+    const now = new Date().toISOString();
+
+    await drv.runAsync(
+      "INSERT INTO orders (id, business_id, order_number, status, items, subtotal_minor, total_minor, inserted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+      "o1", "biz", "07-100-001", "accepted", "[]", 0, 0, now,
+    );
+    await drv.runAsync(
+      "INSERT INTO commands (command_id, command_type, command_version, business_id, user_id, device_id, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+      "c1", "order:create", "1.0", "biz", "u", "d", "{}", now, now,
+    );
+    await drv.runAsync(
+      "INSERT INTO events (event_id, event_type, event_version, entity_id, user_id, device_id, payload, origin, timestamp, persisted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+      "e1", "order.create_queued", "1.0", "o1", "u", "d", "{}", "local", now, now,
+    );
+    await drv.runAsync(
+      "INSERT INTO sync_jobs (id, business_id, command_type, entity_id, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?);",
+      "j1", "biz", "order:create", "o1", "{}", now, now,
+    );
+    await drv.runAsync(
+      "INSERT INTO entity_snapshots (entity_type, entity_id, business_id, last_event_id, last_event_timestamp, payload) VALUES (?, ?, ?, ?, ?, ?);",
+      "seller_orders", "list-main", "biz", "e1", now, "{}",
+    );
+    await drv.runAsync(
+      "INSERT INTO reference_data (business_id, key, version, payload, downloaded_at) VALUES (?, ?, ?, ?, ?);",
+      "biz", "business:profile", "v1", "{}", now,
+    );
+
+    const v14 = MIGRATIONS.find((m) => m.version === 14)!;
+    await v14.up(drv);
+
+    for (const table of ["orders", "commands", "events", "sync_jobs", "entity_snapshots", "reference_data"]) {
+      const row = db.prepare(`SELECT COUNT(*) AS c FROM ${table};`).get() as { c: number };
+      expect(row.c).toBe(0);
+    }
     db.close();
   });
 });

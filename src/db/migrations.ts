@@ -458,4 +458,28 @@ export const MIGRATIONS: Migration[] = [
       } catch {}
     },
   },
+  {
+    version: 14,
+    up: async (db) => {
+      // Fresh local data for the DD-NNNN-MMM order-number cutover.
+      //
+      // Old local rows, queued commands and cached reference data can carry
+      // stale order numbers/statuses and would otherwise be replayed under
+      // the new sequence. Accounts will sign in again after this update, so a
+      // clean local slate is intentional: everything is re-hydrated from the
+      // server on the next login/sync.
+      //
+      // The per-business callout sequence lives in KV, not SQLite, and is
+      // deliberately left untouched so a reset can never reuse an existing
+      // server-side order number.
+      await db.execAsync(`
+          DELETE FROM sync_jobs;
+          DELETE FROM commands;
+          DELETE FROM events;
+          DELETE FROM entity_snapshots;
+          DELETE FROM orders;
+          DELETE FROM reference_data;
+        `);
+    },
+  },
 ];

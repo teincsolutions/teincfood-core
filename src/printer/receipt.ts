@@ -188,7 +188,7 @@ export function calloutNumber(order: SellerOrder): string {
     return String(Math.abs(direct));
   const num = order.order_number || "";
   if (!num) return "----";
-  // Strip non-digits first: local DD-RRR-CCC numbers end in "-CCC" and
+  // Strip non-digits first: local DD-NNNN-MMM numbers end in "-MMM" and
   // parseInt("-005") would give -5 (the old "-5" bug).
   const digits = num.slice(-4).replace(/\D/g, "");
   if (!digits) return num.slice(-4);

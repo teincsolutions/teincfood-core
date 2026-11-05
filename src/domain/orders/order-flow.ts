@@ -72,16 +72,19 @@ export async function getBusinessOrderFlowMode(
 /**
  * Status a POS/business-app order starts in.
  *
- * Cash sales in direct flow are complete on creation. Anything that still
- * needs money (mobile money / card) must stay `awaiting_payment` first — the
- * backend moves it to `accepted` (staged) or `delivered` (direct) once the
+ * Cash sales in direct flow are complete on creation, except delivery orders:
+ * those must always enter the rider pipeline. Anything that still needs money
+ * (mobile money / card) must stay `awaiting_payment` first — the backend moves
+ * it to `accepted` (staged/delivery) or `delivered` (direct walk-in) once the
  * payment lands.
  */
 export function initialPosOrderStatus(
   paymentMethod: string | null | undefined,
   mode: OrderFlowMode,
+  orderType: string | null | undefined = "takeout",
 ): "accepted" | "awaiting_payment" | "delivered" {
   const method = paymentMethod ?? "cash";
   if (method !== "cash") return "awaiting_payment";
+  if (orderType === "delivery") return "accepted";
   return mode === "direct" ? "delivered" : "accepted";
 }

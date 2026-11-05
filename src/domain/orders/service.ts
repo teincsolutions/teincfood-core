@@ -1,6 +1,6 @@
 /**
  * Local Orders Service — SQLite is real DB (like backend Orders).
- * Device-partitioned by UUID PK + DD-RRR-CCC per business.
+ * Device-partitioned by UUID PK + DD-NNNN-MMM per business.
  * POS orders start in the business's configured flow (staged → accepted,
  * direct → delivered); online payment requires connectivity.
  */
@@ -71,6 +71,7 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
   // Offline validation mirror — backend Order.changeset rules, pre-commit.
   validateOrderCreateInput(input as unknown as Parameters<typeof validateOrderCreateInput>[0]);
   const method = (input.pos_payment_method as string) ?? "cash";
+  const orderType = (input.order_type as string) ?? "takeout";
   // Business-configurable fulfilment flow (cached business profile, offline).
   // "direct" completes walk-in sales the moment they are rung up; "staged"
   // keeps accept → preparing → ready → completed.
@@ -137,8 +138,10 @@ export async function createLocalOrder(businessId: string, input: POSOrderCreate
     id,
     order_number: orderNumber,
     callout_number: callout,
-    status: isPos ? initialPosOrderStatus(method, flowMode) : "pending",
-    order_type: (input.order_type as string) ?? "takeout",
+    status: isPos
+      ? initialPosOrderStatus(method, flowMode, orderType)
+      : "pending",
+    order_type: orderType,
     is_pos: isPos,
     customer_name: (input.customer_name as string) ?? null,
     customer_phone: (input.customer_phone as string) ?? null,
@@ -209,7 +212,10 @@ export async function transitionLocalOrder(businessId: string, orderId: string, 
         toStatus = "pending";
       } else {
         const flowMode = await getBusinessOrderFlowMode(businessId, db);
-        toStatus = flowMode === "direct" ? "delivered" : "accepted";
+        toStatus =
+          flowMode === "direct" && order.order_type !== "delivery"
+            ? "delivered"
+            : "accepted";
       }
     }
     await updateOrderPayment(db, businessId, orderId, { is_paid: true, paid_at: new Date().toISOString() });

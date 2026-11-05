@@ -46,12 +46,17 @@ describe("order flow mode", () => {
     expect(await getBusinessOrderFlowMode(BID, db)).toBe("direct");
   });
 
-  it("born-completed only for cash sales in direct mode", () => {
+  it("born-completed only for cash walk-in sales in direct mode", () => {
     expect(initialPosOrderStatus("cash", "staged")).toBe("accepted");
     expect(initialPosOrderStatus("cash", "direct")).toBe("delivered");
+    // Delivery orders always enter the rider pipeline, even in direct mode.
+    expect(initialPosOrderStatus("cash", "direct", "delivery")).toBe("accepted");
+    expect(initialPosOrderStatus("cash", "staged", "delivery")).toBe("accepted");
     // Money must land before the order can complete.
     expect(initialPosOrderStatus("mobile_money", "direct")).toBe("awaiting_payment");
+    expect(initialPosOrderStatus("mobile_money", "direct", "delivery")).toBe("awaiting_payment");
     expect(initialPosOrderStatus("card", "staged")).toBe("awaiting_payment");
     expect(initialPosOrderStatus(undefined, "direct")).toBe("delivered");
+    expect(initialPosOrderStatus(undefined, "direct", "delivery")).toBe("accepted");
   });
 });

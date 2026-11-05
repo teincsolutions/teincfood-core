@@ -71,7 +71,7 @@ export const orderRepository = {
    * Single create path: build an `order:create` command and route it through
    * the SyncEngine (cloud → LAN node → queue). Every path returns an
    * order-shaped payload: cloud/LAN execute the real create, queue returns
-   * the optimistic order (same UUID + DD-RRR-CCC, replayed idempotently).
+   * the optimistic order (same UUID + DD-NNNN-MMM, replayed idempotently).
    * Direct `createLocalOrder` bypasses sync — never call it from UI flows.
    */
   async createOrder(input: CreateOrderInput): Promise<SellerOrder> {

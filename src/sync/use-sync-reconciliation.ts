@@ -45,7 +45,7 @@ function isLocalOrderEvent(event: DomainEvent): boolean {
   const payload = event.payload as Record<string, unknown> | undefined;
   if (!payload) return false;
   const localOrderNumber = payload.local_order_number;
-  return typeof localOrderNumber === "string" && /^[0-9]{2}-[0-9]{3}-[0-9]{3}$/.test(localOrderNumber);
+  return typeof localOrderNumber === "string" && /^[0-9]{2}-[0-9]{3,4}-[0-9]{3}$/.test(localOrderNumber);
 }
 
 const RECONCILE_DEBOUNCE_MS = 400;

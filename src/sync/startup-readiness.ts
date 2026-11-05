@@ -45,7 +45,7 @@ export interface StartupReadiness {
   ready: boolean;
   /** Required keys with no cached payload. */
   missingKeys: ReferenceDataKey[];
-  /** True when no DD-RRR-CCC device number is available (needs one online lease). */
+  /** True when no DD-NNNN-MMM device number is available (needs one online lease). */
   needsLease: boolean;
   /**
    * True when an entitlement envelope is absent or does not evaluate as

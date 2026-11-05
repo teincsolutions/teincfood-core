@@ -81,10 +81,10 @@ describe("standalone integration — single node", () => {
     expect(v).toMatch(/^[0-9]+-[0-9]+-01$/);
   });
 
-  it("single device order DD-RRR-CCC generation and offline storage", async () => {
+  it("single device order DD-NNNN-MMM generation and offline storage", async () => {
     setItemSync("teinc_device_number:biz-single", "07");
     const { orderNumber, callout } = generateOrderNumber("07");
-    expect(orderNumber).toMatch(/^07-[0-9]{3}-[0-9]{3}$/);
+    expect(orderNumber).toMatch(/^07-[0-9]{4}-[0-9]{3}$/);
     expect(callout).toBeGreaterThan(0);
 
     // persist as event (offline order)
@@ -105,12 +105,15 @@ describe("standalone integration — single node", () => {
     expect((unsynced[0].payload as any).order_number).toBe(orderNumber);
   });
 
-  it("callout wraps 999->001", async () => {
+  it("callout wraps 999->001 into the next block", async () => {
     setItemSync("teinc_callout_seq", 998);
     const a = generateOrderNumber("03");
     expect(a.callout).toBe(999);
+    expect(a.block).toBe(1);
     const b = generateOrderNumber("03");
     expect(b.callout).toBe(1);
+    expect(b.block).toBe(2);
+    expect(b.orderNumber).toBe("03-0002-001");
     expect(b.orderNumber).not.toBe(a.orderNumber);
   });
 });
@@ -202,7 +205,7 @@ describe("standalone integration — backend sync simulation", () => {
     resetCalloutForTests();
   });
 
-  it("backend adopt offline DD-RRR-CCC and mark synced (no re-number)", async () => {
+  it("backend adopt offline DD-NNNN-MMM and mark synced (no re-number)", async () => {
     const db = await openSyncDatabase();
     setItemSync("teinc_device_number:biz-backend", "05");
     const { orderNumber } = generateOrderNumber("05");

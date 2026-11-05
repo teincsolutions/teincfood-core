@@ -34,23 +34,27 @@ describe("order-number callout persistence (async driver + sync layer)", () => {
     backing.set("teinc_callout_seq:biz-restart", JSON.stringify(41));
     const a = generateOrderNumber("34", "biz-restart");
     expect(a.callout).toBe(42);
+    expect(a.block).toBe(1);
     expect(parseOrderNumber(a.orderNumber)?.callout).toBe("042");
     const b = generateOrderNumber("34", "biz-restart");
     expect(b.callout).toBe(43);
   });
 
-  it("wrap 999->001 persists through the driver", () => {
+  it("rolls 999 into block 0002 and persists through the driver", () => {
     backing.set("teinc_callout_seq:biz-wrap", JSON.stringify(999));
     const a = generateOrderNumber("34", "biz-wrap");
+    expect(a.orderNumber).toBe("34-0002-001");
     expect(a.callout).toBe(1);
-    expect(backing.get("teinc_callout_seq:biz-wrap")).toBe("1");
+    expect(a.block).toBe(2);
+    expect(backing.get("teinc_callout_seq:biz-wrap")).toBe("1000");
     const b = generateOrderNumber("34", "biz-wrap");
     expect(b.callout).toBe(2);
+    expect(b.block).toBe(2);
   });
 
-  it("starts at 001 for a brand-new business", () => {
+  it("starts at 0001-001 for a brand-new business", () => {
     const a = generateOrderNumber("34", "biz-fresh");
     expect(a.callout).toBe(1);
-    expect(a.orderNumber).toMatch(/^34-[0-9]{3}-001$/);
+    expect(a.orderNumber).toBe("34-0001-001");
   });
 });

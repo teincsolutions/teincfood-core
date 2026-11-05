@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { generateOrderNumberForBusiness, resetCalloutForTests, parseOrderNumber } from "./order-number";
 import { setItemSync, removeItemSync } from "../adapters/kv";
 
-describe("CCC per business", () => {
+describe("DD-NNNN-MMM per business", () => {
   beforeEach(() => {
     removeItemSync("teinc_callout_seq");
     removeItemSync("teinc_callout_seq:biz-A");
@@ -16,22 +16,28 @@ describe("CCC per business", () => {
     setItemSync("teinc_device_number:biz-B", "08");
   });
 
-  it("biz-A and biz-B have independent CCC sequences", () => {
+  it("biz-A and biz-B have independent sequences", () => {
     const a1 = generateOrderNumberForBusiness("biz-A");
     const a2 = generateOrderNumberForBusiness("biz-A");
     const b1 = generateOrderNumberForBusiness("biz-B");
+    expect(a1).toBe("07-0001-001");
+    expect(a2).toBe("07-0001-002");
+    expect(b1).toBe("08-0001-001");
     expect(parseOrderNumber(a1)!.callout).toBe("001");
     expect(parseOrderNumber(a2)!.callout).toBe("002");
     expect(parseOrderNumber(b1)!.callout).toBe("001");
   });
 
-  it("wrap per business independent", () => {
+  it("rolls over per business independently", () => {
     setItemSync("teinc_callout_seq:biz-A", 998);
     const a1 = generateOrderNumberForBusiness("biz-A");
     const a2 = generateOrderNumberForBusiness("biz-A");
+    expect(a1).toBe("07-0001-999");
+    expect(a2).toBe("07-0002-001");
     expect(parseOrderNumber(a1)!.callout).toBe("999");
     expect(parseOrderNumber(a2)!.callout).toBe("001");
+    expect(parseOrderNumber(a2)!.block).toBe("0002");
     const b1 = generateOrderNumberForBusiness("biz-B");
-    expect(parseOrderNumber(b1)!.callout).toBe("001");
+    expect(b1).toBe("08-0001-001");
   });
 });

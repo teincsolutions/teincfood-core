@@ -471,7 +471,7 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
     const is409 = rest.status === 409 && rest.code === "ORDER_NUMBER_TAKEN";
     if (is409) {
       const on = (payload.order_number ?? payload.local_order_number) as string | undefined;
-      const parsed = on ? String(on).match(/^([0-9]{2})-([0-9]{3})-([0-9]{3})$/) : null;
+      const parsed = on ? String(on).match(/^([0-9]{2})-([0-9]{3,4})-([0-9]{3})$/) : null;
       if (parsed) {
         const newOn = generateOrderNumber(parsed[1], businessId).orderNumber;
         const newPayload = { ...payload, order_number: newOn, local_order_number: newOn };

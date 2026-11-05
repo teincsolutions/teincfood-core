@@ -41,10 +41,10 @@ describe.sequential("E2E TEST 1 — offline create → online sync", () => {
     setConnectivityState({ isOnline: false, isCloudReachable: "unreachable" });
 
     // offline create — engine routes to the outbox (no transport available).
-    // Returns the optimistic order (same UUID + DD-RRR-CCC, cash paid).
+    // Returns the optimistic order (same UUID + DD-NNNN-MMM, cash paid).
     const itemSnap = [{ menu_item_id: "item1", name: "Jollof", quantity: 1, unit_price_minor: 5000 }];
     const res = await posRepository.createOrder(bid, { items: [{ menu_item_id: "item1", quantity: 1 }], item_snapshots: itemSnap as unknown as [], total_minor: 5000, pos_payment_method: "cash" } as unknown as Parameters<typeof posRepository.createOrder>[1]);
-    expect((res as { order_number: string }).order_number).toMatch(/^07-[0-9]{3}-[0-9]{3}$/);
+    expect((res as { order_number: string }).order_number).toMatch(/^07-[0-9]{4}-[0-9]{3}$/);
     expect(res.is_paid).toBe(true);
     // durable command outbox holds it (not yet confirmed in the orders table)
     expect(await commandQueueService.getPendingCount()).toBe(1);

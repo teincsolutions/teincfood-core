@@ -84,6 +84,12 @@ export function notifyPendingOrdersChanged(): void {
  *     reflects the queued status immediately (converges on replay).
  * Reactivity comes from the invalidator: every apply path above refetches.
  */
+function sortByCreatedDesc(orders: SellerOrder[]): SellerOrder[] {
+  return [...orders].sort((a, b) =>
+    String(b.inserted_at ?? "").localeCompare(String(a.inserted_at ?? "")),
+  );
+}
+
 export async function mergePendingIntoList(
   base: SellerOrder[],
   businessId: string,
@@ -102,7 +108,7 @@ export async function mergePendingIntoList(
   try {
     const db = await openSyncDatabase();
     const snaps = await getEntitySnapshotsByType<{ data?: SellerOrder[] }>(db, "seller_orders", businessId);
-    if (!snaps.length) return merged;
+    if (!snaps.length) return sortByCreatedDesc(merged);
     const statusById = new Map<string, string>();
     for (const s of snaps) {
       const arr = (s.payload as { data?: SellerOrder[] })?.data ?? [];
@@ -110,7 +116,7 @@ export async function mergePendingIntoList(
         if (o?.id && o.status) statusById.set(String(o.id), String(o.status));
       }
     }
-    if (!statusById.size) return merged;
+    if (!statusById.size) return sortByCreatedDesc(merged);
     let patched = false;
     merged = merged.map((o) => {
       const want = statusById.get(String(o.id));
@@ -121,7 +127,7 @@ export async function mergePendingIntoList(
       syncLogger.debug("PendingOrders", "overlaid queued statuses onto list", { businessId, count: merged.length });
     }
   } catch {}
-  return merged;
+  return sortByCreatedDesc(merged);
 }
 
 /**

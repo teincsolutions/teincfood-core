@@ -121,6 +121,33 @@ describe("command-queue enqueue hours gate", () => {
     expect(pending.is_paid).toBe(true);
   });
 
+  it("optimistic delivery order stays accepted in direct flow", async () => {
+    await seedState();
+    const db = await openSyncDatabase();
+    await mergeReferenceData(
+      db,
+      BID,
+      "business:profile",
+      { data: { pos_order_flow: "direct" } },
+      "hlc-direct-delivery",
+      "evt-direct-delivery",
+    );
+    setItemSync(`teinc_device_number:${BID}`, "07");
+
+    const event = await commandQueueService.enqueue({
+      ...orderCommand(),
+      payload: {
+        items: [],
+        order_type: "delivery",
+        pos_payment_method: "cash",
+        delivery_address: "12 Test Street",
+      },
+    });
+    const pending = event.payload as { status?: string };
+
+    expect(pending.status).toBe("accepted");
+  });
+
   it("optimistic order stays accepted in staged flow", async () => {
     await seedState();
     setItemSync(`teinc_device_number:${BID}`, "07");
