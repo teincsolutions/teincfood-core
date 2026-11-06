@@ -46,6 +46,12 @@ export interface LocalNodeClient {
     businessId: string,
     url: string,
   ): Promise<{ url: string; base64: string | null; contentType?: string | null; error?: string | null }>;
+  /** Mirror locally cached image bytes to a connected node. */
+  putAsset?(
+    businessId: string,
+    url: string,
+    base64: string,
+  ): Promise<void>;
   publishEvent?(event: DomainEvent): Promise<void> | void;
 }
 

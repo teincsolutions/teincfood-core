@@ -96,6 +96,32 @@ class LocalNodeServiceCore {
   }
 
   /**
+   * Push locally cached image bytes to every connected node so terminals that
+   * cannot reach S3 (dark LAN) can fetch the same offline image.
+   */
+  async putAsset(
+    businessId: string,
+    url: string,
+    base64: string,
+  ): Promise<boolean> {
+    if (!businessId || !url || !base64) return false;
+    let sent = false;
+    for (const peer of this.peers.values()) {
+      if (!peer.isConnected() || !peer.putAsset) continue;
+      try {
+        await peer.putAsset(businessId, url, base64);
+        sent = true;
+      } catch (error) {
+        syncLogger.debug("LocalNodeService", "asset put failed", {
+          url,
+          error: String(error),
+        });
+      }
+    }
+    return sent;
+  }
+
+  /**
    * Catch a newly connected peer up on orders created while the mesh was not
    * connected (e.g. a sale rung up before Local Node was enabled).
    *
