@@ -78,6 +78,70 @@ function clearRetry(businessId: string): void {
   backoffTracker.reset(businessId);
 }
 
+type MenuDependencyGate = "clear" | "pending" | "failed";
+
+function orderMenuItemIds(payload: Record<string, unknown>): string[] {
+  const ids = new Set<string>();
+  const add = (value: unknown) => {
+    if (typeof value === "string" && value) ids.add(value);
+  };
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    add((item as { menu_item_id?: unknown }).menu_item_id);
+  }
+  // item_snapshots carry the same id and are present on offline queues.
+  const snapshots = Array.isArray(payload.item_snapshots)
+    ? payload.item_snapshots
+    : [];
+  for (const item of snapshots) {
+    if (!item || typeof item !== "object") continue;
+    add((item as { menu_item_id?: unknown }).menu_item_id);
+  }
+  return [...ids];
+}
+
+/**
+ * An order may only be POSTed once every menu item it references has been
+ * accepted by the backend. Offline-created items live in the command outbox,
+ * which replays independently of sync_jobs; without this gate the order
+ * reaches the server first and is rejected with 422 INVALID_ITEMS.
+ */
+async function menuDependencyGate(
+  db: Awaited<ReturnType<typeof openSyncDatabase>>,
+  businessId: string,
+  itemIds: string[],
+): Promise<MenuDependencyGate> {
+  if (itemIds.length === 0) return "clear";
+  const placeholders = itemIds.map(() => "?").join(", ");
+  const rows = await db.getAllAsync<{ command_type: string; status: string }>(
+    `
+      SELECT command_type, status
+      FROM commands
+      WHERE business_id = ?
+        AND entity_id IN (${placeholders})
+        AND command_type IN ('menu:create_item', 'menu:update_item', 'menu:delete_item')
+        AND status IN ('pending', 'in_flight', 'failed');
+    `,
+    businessId,
+    ...itemIds,
+  );
+  if (rows.some((row) => row.status === "failed")) return "failed";
+  if (rows.length > 0) return "pending";
+  return "clear";
+}
+
+async function replayMenuOutbox(): Promise<void> {
+  try {
+    const { commandQueueService } = await import("./command-queue.service");
+    await commandQueueService.replay();
+  } catch (error) {
+    syncLogger.debug("SyncJobs", "Menu outbox replay before order drain failed", {
+      error: String(error),
+    });
+  }
+}
+
 /** Best-effort device id for failure reports (never throws). */
 function safeDeviceId(): string | undefined {
   try {
@@ -393,6 +457,51 @@ export async function drainOne(businessId: string, entityId: string): Promise<vo
       return;
     }
     const payload = JSON.parse(row.payload) as Record<string, unknown>;
+
+    // Menu-before-order: give pending menu creates/updates a chance to reach
+    // the backend first, then defer the order (without consuming an attempt)
+    // until they are accepted. A failed menu item is terminal for this order.
+    if (isOrderCreate(row.command_type)) {
+      const itemIds = orderMenuItemIds(payload);
+      if (itemIds.length > 0) {
+        await replayMenuOutbox();
+        const gate = await menuDependencyGate(db, businessId, itemIds);
+        if (gate === "pending") {
+          syncLogger.debug("SyncJobs", "Order waiting on menu item sync", {
+            businessId,
+            entityId,
+            itemIds,
+          });
+          scheduleRetry(businessId, 1_000);
+          return;
+        }
+        if (gate === "failed") {
+          const message =
+            "A menu item on this order failed to sync. Remove it and create the order again.";
+          await db.runAsync(
+            `UPDATE sync_jobs SET status='failed', last_error=?, updated_at=? WHERE id=?;`,
+            "menu_item_sync_failed",
+            new Date().toISOString(),
+            row.id,
+          );
+          try {
+            await markOrderSyncFailed(db, businessId, row.entity_id, message);
+          } catch {}
+          reportJobFailure(businessId, row, {
+            code: "MENU_ITEM_SYNC_FAILED",
+            message,
+            attempts: row.attempts,
+            terminal: true,
+          });
+          try {
+            const { notifyError } = await import("../adapters/notify");
+            notifyError(message);
+          } catch {}
+          return;
+        }
+      }
+    }
+
     // Create-before-transition: a transition whose parent order:create has
     // dead-lettered can never apply — fail it now rather than POSTing to a
     // guaranteed 404. A still-pending create (defensive: FIFO normally drains
@@ -766,6 +875,9 @@ export async function drainPending(businessId: string): Promise<void> {
     return;
   }
   const db = await openSyncDatabase();
+  // Flush the menu outbox first. Orders may reference items created offline;
+  // POSTing them before those items replay guarantees 422 INVALID_ITEMS.
+  await replayMenuOutbox();
   const rows = await db.getAllAsync<{ entity_id: string }>(`SELECT entity_id FROM sync_jobs WHERE business_id=? AND status='pending' ORDER BY created_at ASC, rowid ASC LIMIT 20;`, businessId);
   syncLogger.debug("SyncJobs", "drainPending found rows", { businessId, count: rows.length, rows });
   for (const r of rows) {

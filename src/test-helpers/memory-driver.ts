@@ -400,6 +400,13 @@ export function createMemoryDriver(): SqliteDriver {
         return (row ? { hlc: row.hlc } as unknown as T : null);
       }
 
+      // sync_jobs by primary key
+      if (s.includes("SELECT * FROM sync_jobs WHERE id = ?")) {
+        const [id] = args as string[];
+        const row = tables.sync_jobs.find((r) => r.id === id);
+        return (row as unknown as T) ?? null;
+      }
+
       // sync_jobs pending single
       if (s.includes("SELECT * FROM sync_jobs WHERE business_id = ? AND entity_id = ? AND status='pending'")) {
         const [business_id, entity_id] = args as string[];
@@ -457,6 +464,28 @@ export function createMemoryDriver(): SqliteDriver {
         const [entity_type] = args as string[];
         const rows = tables.entity_snapshots.filter((r) => r.entity_type === entity_type).sort((a, b) => (a.last_event_timestamp < b.last_event_timestamp ? 1 : -1));
         return rows as unknown as T[];
+      }
+
+      if (
+        s.includes("SELECT command_type, status") &&
+        s.includes("FROM commands") &&
+        s.includes("entity_id IN")
+      ) {
+        const [business_id, ...entityIds] = args as string[];
+        return tables.commands
+          .filter(
+            (r) =>
+              r.business_id === business_id &&
+              entityIds.includes(r.entity_id) &&
+              ["menu:create_item", "menu:update_item", "menu:delete_item"].includes(
+                r.command_type,
+              ) &&
+              ["pending", "in_flight", "failed"].includes(r.status),
+          )
+          .map(
+            (r) =>
+              ({ command_type: r.command_type, status: r.status }) as unknown as T,
+          );
       }
 
       if (
