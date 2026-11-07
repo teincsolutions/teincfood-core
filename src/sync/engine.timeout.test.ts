@@ -82,6 +82,18 @@ describe("SyncEngine bounded attempts (offline-first hang fix)", () => {
     expect(elapsed).toBeLessThan(10_000);
   }, 15_000);
 
+  it("replay preserves a server error instead of claiming no transport", async () => {
+    const serverError = Object.assign(new Error("Internal Server Error"), {
+      status: 500,
+    });
+    vi.spyOn(restTransport, "execute").mockRejectedValue(serverError);
+    vi.spyOn(localNodeTransport, "isAvailable").mockReturnValue(false);
+
+    await expect(
+      syncEngine.execute(cashOrderCommand(), { forReplay: true }),
+    ).rejects.toMatchObject({ status: 500 });
+  });
+
   it("queues cash orders despite entitlement failure, flagged for the UI", async () => {
     guardMock.mockRejectedValue(
       new TransitionError(TRANSITION_ERROR_CODES.SUBSCRIPTION_REQUIRED, "no proof"),

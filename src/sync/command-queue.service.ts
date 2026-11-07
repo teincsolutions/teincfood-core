@@ -556,6 +556,24 @@ class CommandQueueService {
           if (await this.absorbIfApplied(command)) return;
         } catch {}
       }
+      // A delete of a row the server never had is already the desired end
+      // state (common for locally-created items removed before their create
+      // ever synced). Treat it as success so the tombstone survives without
+      // retrying a permanent 404 or tripping the transport breaker.
+      if (
+        status === 404 &&
+        (command.command_type === "menu:delete_item" ||
+          command.command_type === "menu:delete_category")
+      ) {
+        await deleteCommand(db, command.command_id);
+        retryNotBefore.delete(command.command_id);
+        syncLogger.info("CommandQueueService", "Delete already applied on server, absorbing", {
+          command_id: command.command_id,
+          command_type: command.command_type,
+          entity_id: command.entity_id,
+        });
+        return;
+      }
       // Transition 404: the server has no such order. The absorb above already
       // checked the duplicate-tap / replayed-race case; if it did not apply,
       // replaying can never create the order — fail fast instead of burning

@@ -46,8 +46,32 @@ function transitionCommand(entityId: string): Command {
   };
 }
 
+function menuDeleteCommand(entityId: string): Command {
+  return {
+    command_id: `cmd-${entityId}-delete`,
+    command_type: "menu:delete_item",
+    command_version: "1.0",
+    business_id: BID,
+    entity_id: entityId,
+    user_id: "u1",
+    device_id: "d1",
+    timestamp: new Date().toISOString(),
+    payload: { id: entityId },
+  };
+}
+
 function networkError(): unknown {
   return new Error("socket hang up");
+}
+
+function notFoundError(): unknown {
+  return Object.assign(new Error("Menu item not found"), {
+    status: 404,
+    response: {
+      status: 404,
+      data: { error: { code: "NOT_FOUND", message: "Menu item not found" } },
+    },
+  });
 }
 
 function noTransportError(): unknown {
@@ -149,6 +173,17 @@ describe("command-queue replay head-of-line isolation", () => {
     expect(executeMock).toHaveBeenCalledTimes(2);
     const attempted = executeMock.mock.calls.map((c) => (c[0] as Command).command_id);
     expect(attempted).not.toContain(`cmd-${a}-mark_ready`);
+  });
+
+  it("absorbs a delete whose row is already absent on the server", async () => {
+    const item = uuid(7);
+    await seed(menuDeleteCommand(item));
+    executeMock.mockRejectedValue(notFoundError());
+
+    await commandQueueService.replay();
+
+    const db = await openSyncDatabase();
+    expect(await getPendingCommands(db, 100)).toHaveLength(0);
   });
 
   it("stops the whole pass when no transport is available", async () => {

@@ -207,6 +207,13 @@ export class SyncEngine {
         // stops the whole replay pass (nothing can succeed) rather than
         // skipping just this entity and hammering the rest.
         if (opts?.forReplay) {
+          // A transport DID answer (e.g. HTTP 5xx) or failed at the network
+          // layer: preserve that error so the outbox treats it as a per-entity
+          // failure and keeps draining independent commands. Only a genuine
+          // "no transport attempted" pass stops replay entirely — otherwise a
+          // single broken entity (like a 500 on one menu delete) would wedge
+          // every later command, including menu creates needed by orders.
+          if (lastError) throw lastError;
           throw new TransitionError(TRANSITION_ERROR_CODES.REPLAY_NO_TRANSPORT, "No transport available, keeping command queued");
         }
         const event = await commandQueueService.enqueue(command);
