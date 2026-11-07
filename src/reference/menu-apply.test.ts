@@ -6,6 +6,8 @@ import { setReferenceData, getReferenceData, mergeReferenceData } from "./operat
 import { applyMenuCommandLocal } from "./menu-apply";
 import { buildMenuItemRecord, buildMenuCategoryRecord } from "./menu-record";
 import { hlcToString, tickHLC } from "../utils/hlc";
+import { insertCommand } from "../db/operations";
+import { buildCommand } from "../sync/command-builder";
 
 const BID = "biz-menu-test";
 
@@ -154,6 +156,95 @@ describe("menu-apply — offline/LAN cache convergence", () => {
     const ids = (await items()).map((i) => i.id);
     expect(ids).not.toContain("m1");
     expect(ids).toContain("m2");
+  });
+
+  it("a pending local update survives a newer stale server pull", async () => {
+    const record = buildMenuItemRecord({
+      id: "m1",
+      businessId: BID,
+      name: "Local Jollof",
+      priceMinor: 1800,
+      categoryId: "c1",
+    });
+    await applyMenuCommandLocal(
+      BID,
+      cmd("menu:update_item", { id: "m1", cacheRecord: record }, "m1"),
+    );
+
+    const db = await openSyncDatabase();
+    await insertCommand(db, {
+      command: buildCommand({
+        commandType: "menu:update_item",
+        businessId: BID,
+        entityId: "m1",
+        payload: { id: "m1", cacheRecord: record },
+      }),
+      status: "pending",
+    });
+    await mergeReferenceData(
+      db,
+      BID,
+      "menu:items",
+      {
+        data: [
+          {
+            id: "m1",
+            name: "Server Jollof",
+            updated_at: new Date().toISOString(),
+          },
+        ],
+      },
+      hlcToString(tickHLC(Date.now() + 120_000, null, "server")),
+      "evt-pending-update",
+    );
+
+    const item = (await items()).find((i) => i.id === "m1");
+    expect(item?.name).toBe("Local Jollof");
+  });
+
+  it("a pending local create survives a pull that does not include it yet", async () => {
+    const record = buildMenuItemRecord({
+      id: "m-local-new",
+      businessId: BID,
+      name: "Offline Waakye",
+      priceMinor: 2500,
+      categoryId: "c1",
+    });
+    await applyMenuCommandLocal(
+      BID,
+      cmd("menu:create_item", { id: record.id, cacheRecord: record }, record.id),
+    );
+
+    const db = await openSyncDatabase();
+    await insertCommand(db, {
+      command: buildCommand({
+        commandType: "menu:create_item",
+        businessId: BID,
+        entityId: record.id,
+        payload: { id: record.id, cacheRecord: record },
+      }),
+      status: "pending",
+    });
+    await mergeReferenceData(
+      db,
+      BID,
+      "menu:items",
+      {
+        data: [
+          {
+            id: "m1",
+            name: "Server Jollof",
+            updated_at: new Date().toISOString(),
+          },
+        ],
+      },
+      hlcToString(tickHLC(Date.now() + 120_000, null, "server")),
+      "evt-pending-create",
+    );
+
+    const ids = (await items()).map((i) => i.id);
+    expect(ids).toContain(record.id);
+    expect(ids).toContain("m1");
   });
 
   it("recreating the same item id locally clears the delete tombstone", async () => {

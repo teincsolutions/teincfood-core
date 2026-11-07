@@ -459,6 +459,32 @@ export function createMemoryDriver(): SqliteDriver {
         return rows as unknown as T[];
       }
 
+      if (
+        s.includes("SELECT command_type, entity_id, payload FROM commands") &&
+        s.includes("WHERE business_id = ?")
+      ) {
+        const [business_id, createType, updateType, deleteType] = args as string[];
+        const wanted = new Set([createType, updateType, deleteType]);
+        return tables.commands
+          .filter(
+            (r) =>
+              r.business_id === business_id &&
+              ["pending", "failed", "in_flight"].includes(r.status) &&
+              wanted.has(r.command_type),
+          )
+          .sort((a, b) =>
+            a.created_at === b.created_at ? a.id - b.id : a.created_at < b.created_at ? -1 : 1,
+          )
+          .map(
+            (r) =>
+              ({
+                command_type: r.command_type,
+                entity_id: r.entity_id,
+                payload: r.payload,
+              }) as unknown as T,
+          );
+      }
+
       if (s.includes("SELECT * FROM commands") && s.includes("WHERE status IN")) {
         const limit = args[args.length - 1] as number;
         // Mirror production: `failed` is terminal and only returned when the

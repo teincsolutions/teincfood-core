@@ -12,6 +12,7 @@ import { getAppInstanceId } from "../adapters/devices";
 import { notifyDbChange } from "../db/operations";
 import { isServerAuthoritativeKey } from "./entitlements";
 import { applyTombstonesToPayload } from "./tombstones";
+import { applyPendingLocalMenuChanges } from "./pending-local";
 
 export async function getReferenceData<T>(
   db: SQLiteDatabase,
@@ -104,11 +105,20 @@ export async function mergeReferenceData<T extends Record<string, unknown>>(
     key,
     incoming,
   );
+  // Keep unsynced local creates/updates visible even if a stale pull lands
+  // before the outbox has replayed them.
+  const incomingWithPending = await applyPendingLocalMenuChanges(
+    db,
+    businessId,
+    key,
+    incomingWithoutTombstones,
+    existing?.payload,
+  );
   if (!existing) {
     await setReferenceData(db, businessId, {
       key,
       version: hlc,
-      payload: incomingWithoutTombstones as T,
+      payload: incomingWithPending as T,
       downloadedAt: new Date().toISOString(),
       lastEventId: eventId,
       lastHlc: hlc,
@@ -123,7 +133,7 @@ export async function mergeReferenceData<T extends Record<string, unknown>>(
   await setReferenceData(db, businessId, {
     key,
     version: hlc,
-    payload: incomingWithoutTombstones as T,
+    payload: incomingWithPending as T,
     downloadedAt: new Date().toISOString(),
     lastEventId: eventId,
     lastHlc: hlc,
