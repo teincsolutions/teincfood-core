@@ -36,20 +36,47 @@ export interface OfflineCapableOptions<TService, TCommandPayload> {
   payload: TCommandPayload;
 }
 
+/**
+ * Enforce the cached RBAC capabilities downloaded from the backend.
+ *
+ * Fail-open only when no capabilities record exists yet (first boot); once a
+ * record is present, an unknown capability is a real denial and must never
+ * reach the local cache or the outbox.
+ */
+async function assertCachedCapability(
+  businessId: string,
+  required: string,
+): Promise<void> {
+  try {
+    const db = await openSyncDatabase();
+    const rec = await getReferenceData(db, businessId, "capabilities");
+    const caps: string[] =
+      (rec?.payload as unknown as { data?: { capabilities?: string[] } })?.data
+        ?.capabilities ?? [];
+    if (rec && caps.length > 0 && !caps.includes(required)) {
+      throw new ApiError(`Missing capability: ${required}`, 403, "FORBIDDEN");
+    }
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 403) throw e;
+  }
+}
+
 export async function runOfflineCapableMutation<TService, TCommandPayload>(
   options: OfflineCapableOptions<TService, TCommandPayload>,
 ): Promise<TService> {
-  // Per-command capability guard before even attempting direct call
-  const required = CAPABILITY_BY_COMMAND[options.commandType];
-  if (required) {
   // Online-required gate first: these commands can never succeed offline —
   // throw loud immediately instead of queuing what no transport can fulfill.
   assertOnlineFor(options.commandType, options.payload as Record<string, unknown>);
+
+  // Per-command capability guard before touching local state or the network.
+  const required = CAPABILITY_BY_COMMAND[options.commandType];
+
   // Local-first for engine-routed domains (menu:*): persist to SQLite and the
   // durable outbox immediately, update the local reference cache, and let
   // replay upload to the cloud/LAN in the background. A slow or absent
   // network must never hold the form open.
   if (options.commandType.startsWith("menu:")) {
+    if (required) await assertCachedCapability(options.businessId, required);
     // Preserve the entitlement gate that the engine normally applies before
     // queueing: local-first must not weaken subscription enforcement.
     await assertEntitledForCommand(options.businessId, options.commandType);
@@ -78,17 +105,9 @@ export async function runOfflineCapableMutation<TService, TCommandPayload>(
     }
     return event.payload as TService;
   }
-  try {
-      const db = await openSyncDatabase();
-      const rec = await getReferenceData(db, options.businessId, "capabilities");
-      const caps: string[] = (rec?.payload as unknown as { data?: { capabilities?: string[] } })?.data?.capabilities ?? [];
-      if (rec && caps.length > 0 && !caps.includes(required)) {
-        throw new ApiError(`Missing capability: ${required}`, 403, "FORBIDDEN");
-      }
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 403) throw e;
-    }
-  }
+
+  if (required) await assertCachedCapability(options.businessId, required);
+
   try {
     // Cloud already known unreachable (or no network): skip the direct REST
     // attempt entirely — it would only burn a timeout before falling back.
