@@ -248,3 +248,29 @@ export async function setBusinessProfileLocal(
   await mergeReferenceData(db, businessId, "business:profile", payload as unknown as Record<string, unknown>, hlcStr, `evt_${hlcStr}`);
   await enqueueReferenceSyncJob(businessId, "business:profile", hlcStr);
 }
+
+/**
+ * Local-first delivery settings commit.
+ *
+ * The SQLite cache is updated immediately and a reference sync job is queued;
+ * the network write happens in the background/outbox, never on the UI path.
+ */
+export async function setDeliverySettingsLocal(
+  businessId: string,
+  settings: Record<string, unknown>,
+): Promise<void> {
+  const db = await openSyncDatabase();
+  const payload = { data: settings };
+  const existing = await getReferenceData(db, businessId, "delivery-settings");
+  const lastHlc = existing?.lastHlc ? hlcFromString(existing.lastHlc) : null;
+  const hlcStr = hlcToString(tickHLC(Date.now(), lastHlc, getAppInstanceId()));
+  await mergeReferenceData(
+    db,
+    businessId,
+    "delivery-settings",
+    payload as unknown as Record<string, unknown>,
+    hlcStr,
+    `evt_${hlcStr}`,
+  );
+  await enqueueReferenceSyncJob(businessId, "delivery-settings", hlcStr);
+}

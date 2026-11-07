@@ -94,4 +94,8 @@ export async function fetchReferenceChanges<T>(
 }
 
 export { setReferenceData, mergeReferenceData } from "./operations";
-export { setOperatingHoursLocal, setBusinessProfileLocal } from "./operations";
+export {
+  setOperatingHoursLocal,
+  setBusinessProfileLocal,
+  setDeliverySettingsLocal,
+} from "./operations";

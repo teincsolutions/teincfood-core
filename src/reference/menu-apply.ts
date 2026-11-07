@@ -99,8 +99,8 @@ export async function applyMenuCommandLocal(
   businessId: string,
   command: Pick<
     Command,
-    "command_type" | "entity_id" | "command_id" | "payload" | "timestamp"
-  >,
+    "command_type" | "entity_id" | "command_id" | "payload"
+  > & { timestamp?: string },
 ): Promise<{ keys: ReferenceDataKey[]; applied: boolean }> {
   const payload = (command.payload ?? {}) as Record<string, unknown>;
   const idOf = (v: unknown) => (typeof v === "string" && v ? v : null);
@@ -139,7 +139,10 @@ export async function applyMenuCommandLocal(
     case "menu:delete_item": {
       const id = idOf(command.entity_id) ?? idOf(payload.id);
       if (!id) return { keys: [MENU_ITEM_KEY], applied: false };
-      const applied = await patchKey(businessId, MENU_ITEM_KEY, (arr) => arr.filter((o) => String(o.id) !== id));
+      const applied = await patchKey(businessId, MENU_ITEM_KEY, (arr) => {
+        stashPrior(arr, businessId, id);
+        return arr.filter((o) => String(o.id) !== id);
+      });
       await markRecordDeleted(await openSyncDatabase(), businessId, MENU_ITEM_KEY, id, stamp);
       return { keys: [MENU_ITEM_KEY], applied };
     }
@@ -176,7 +179,10 @@ export async function applyMenuCommandLocal(
     case "menu:delete_category": {
       const id = idOf(command.entity_id) ?? idOf(payload.id) ?? idOf(payload.category_id);
       if (!id) return { keys: [MENU_CATEGORY_KEY], applied: false };
-      const applied = await patchKey(businessId, MENU_CATEGORY_KEY, (arr) => arr.filter((o) => String(o.id) !== id));
+      const applied = await patchKey(businessId, MENU_CATEGORY_KEY, (arr) => {
+        stashPrior(arr, businessId, id);
+        return arr.filter((o) => String(o.id) !== id);
+      });
       await markRecordDeleted(await openSyncDatabase(), businessId, MENU_CATEGORY_KEY, id, stamp);
       return { keys: [MENU_CATEGORY_KEY], applied };
     }
@@ -235,6 +241,22 @@ export async function revertMenuCommand(businessId: string, commandType: string,
       if (prior === undefined) return false;
       const applied = await patchKey(businessId, MENU_CATEGORY_KEY, (arr) => {
         if (prior === null) return arr.filter((o) => String(o.id) !== entityId);
+        return arr.some((o) => String(o.id) === entityId)
+          ? arr.map((o) => (String(o.id) === entityId ? { ...prior, id: entityId } : o))
+          : [...arr, { ...prior, id: entityId }];
+      });
+      return applied;
+    }
+    if (commandType === "menu:delete_item" || commandType === "menu:delete_category") {
+      const isItem = commandType === "menu:delete_item";
+      const refKey = isItem ? MENU_ITEM_KEY : MENU_CATEGORY_KEY;
+      const prior = priorRecords.get(key);
+      priorRecords.delete(key);
+      // A rejected delete is no longer local intent: drop the tombstone so
+      // the next server pull can restore the row even if it was never cached.
+      await clearRecordTombstone(await openSyncDatabase(), businessId, refKey, entityId);
+      if (prior === undefined || prior === null) return true;
+      const applied = await patchKey(businessId, refKey, (arr) => {
         return arr.some((o) => String(o.id) === entityId)
           ? arr.map((o) => (String(o.id) === entityId ? { ...prior, id: entityId } : o))
           : [...arr, { ...prior, id: entityId }];

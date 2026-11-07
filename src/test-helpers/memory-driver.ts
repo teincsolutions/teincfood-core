@@ -469,7 +469,7 @@ export function createMemoryDriver(): SqliteDriver {
           .filter(
             (r) =>
               r.business_id === business_id &&
-              ["pending", "failed", "in_flight"].includes(r.status) &&
+              ["pending", "in_flight"].includes(r.status) &&
               wanted.has(r.command_type),
           )
           .sort((a, b) =>

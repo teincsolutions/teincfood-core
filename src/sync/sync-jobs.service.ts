@@ -153,6 +153,9 @@ async function tryRest(businessId: string, payload: Record<string, unknown>, com
         } else if (key === "business:profile") {
           const data = (rec.payload as { data?: Record<string, unknown> })?.data ?? rec.payload;
           await http.patch(`/businesses/${businessId}`, data as Record<string, unknown>);
+        } else if (key === "delivery-settings") {
+          const data = (rec.payload as { data?: Record<string, unknown> })?.data ?? rec.payload;
+          await http.put(`/businesses/${businessId}/delivery-settings`, data as Record<string, unknown>);
         } else {
           return { ok: true };
         }

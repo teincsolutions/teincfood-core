@@ -3,7 +3,7 @@ import { createMemoryDriver } from "../test-helpers/memory-driver";
 import { setSqliteDriver } from "../adapters/sqlite";
 import { openSyncDatabase, closeSyncDatabase } from "../db/connection";
 import { setReferenceData, getReferenceData, mergeReferenceData } from "./operations";
-import { applyMenuCommandLocal } from "./menu-apply";
+import { applyMenuCommandLocal, revertMenuCommand } from "./menu-apply";
 import { buildMenuItemRecord, buildMenuCategoryRecord } from "./menu-record";
 import { hlcToString, tickHLC } from "../utils/hlc";
 import { insertCommand } from "../db/operations";
@@ -132,6 +132,29 @@ describe("menu-apply — offline/LAN cache convergence", () => {
     const m4 = (await items()).find((i) => i.id === created.id) as unknown as Record<string, unknown>;
     expect(m4.basePrice).toEqual({ amountMinor: 1500, currencyCode: "GHS" });
     expect((m4.variants as Array<Record<string, unknown>>).length).toBe(1);
+  });
+
+  it("a rejected delete restores the row and clears its tombstone", async () => {
+    await applyMenuCommandLocal(BID, cmd("menu:delete_item", { id: "m1" }, "m1"));
+    expect((await items()).some((i) => i.id === "m1")).toBe(false);
+
+    await revertMenuCommand(BID, "menu:delete_item", "m1");
+    expect((await items()).some((i) => i.id === "m1")).toBe(true);
+
+    const db = await openSyncDatabase();
+    await mergeReferenceData(
+      db,
+      BID,
+      "menu:items",
+      {
+        data: [
+          { id: "m1", name: "Server Jollof", updated_at: "2020-01-01T00:00:00.000Z" },
+        ],
+      },
+      hlcToString(tickHLC(Date.now() + 120_000, null, "server")),
+      "evt-revert-delete",
+    );
+    expect((await items()).some((i) => i.id === "m1")).toBe(true);
   });
 
   it("a deleted item is not resurrected by a stale server reference pull", async () => {

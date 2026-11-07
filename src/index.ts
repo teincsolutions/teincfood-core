@@ -172,7 +172,7 @@ export {
 // ── Reference ──
 export * from "./reference/types";
 export * from "./reference/operations";
-export { fetchReferenceVersions, fetchReferenceData, fetchReferenceChanges, setReferenceLocalNodeFetcher, setReferenceData, mergeReferenceData, setOperatingHoursLocal, setBusinessProfileLocal } from "./reference/api";
+export { fetchReferenceVersions, fetchReferenceData, fetchReferenceChanges, setReferenceLocalNodeFetcher, setReferenceData, mergeReferenceData, setOperatingHoursLocal, setBusinessProfileLocal, setDeliverySettingsLocal } from "./reference/api";
 export type { ReferenceLocalNodeFetcher } from "./reference/api";
 export { emitReferenceChanged, applyReferenceChangeEvent, syncReferenceDataOnReconnect, registerReferenceEventEngine, registerReferenceInvalidator } from "./reference/events";
 export * from "./reference/events";

@@ -93,7 +93,7 @@ export async function applyPendingLocalMenuChanges<T>(
       SELECT command_type, entity_id, payload
       FROM commands
       WHERE business_id = ?
-        AND status IN ('pending', 'failed', 'in_flight')
+        AND status IN ('pending', 'in_flight')
         AND command_type IN (?, ?, ?)
       ORDER BY created_at ASC, rowid ASC;
     `,
