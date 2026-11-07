@@ -20,6 +20,7 @@ import { generateUUID } from "../utils/uuid";
 import type { Command } from "../sync/types";
 import { hlcToString, tickHLC, hlcFromString } from "../utils/hlc";
 import { getAppInstanceId } from "../adapters/devices";
+import { clearRecordTombstone, markRecordDeleted } from "./tombstones";
 
 export const MENU_ITEM_KEY: ReferenceDataKey = "menu:items";
 export const MENU_CATEGORY_KEY: ReferenceDataKey = "menu:categories";
@@ -96,10 +97,14 @@ async function patchKey(
  */
 export async function applyMenuCommandLocal(
   businessId: string,
-  command: Pick<Command, "command_type" | "entity_id" | "command_id" | "payload">,
+  command: Pick<
+    Command,
+    "command_type" | "entity_id" | "command_id" | "payload" | "timestamp"
+  >,
 ): Promise<{ keys: ReferenceDataKey[]; applied: boolean }> {
   const payload = (command.payload ?? {}) as Record<string, unknown>;
   const idOf = (v: unknown) => (typeof v === "string" && v ? v : null);
+  const stamp = command.timestamp ?? new Date().toISOString();
   switch (command.command_type) {
     case "menu:create_item": {
       const id = idOf(command.entity_id) ?? idOf(payload.id) ?? generateUUID();
@@ -113,6 +118,7 @@ export async function applyMenuCommandLocal(
         stashPrior(arr, businessId, id);
         return arr.some((o) => String(o.id) === id) ? arr.map((o) => (String(o.id) === id ? item : o)) : [...arr, item];
       });
+      await clearRecordTombstone(await openSyncDatabase(), businessId, MENU_ITEM_KEY, id);
       return { keys: [MENU_ITEM_KEY], applied };
     }
     case "menu:update_item": {
@@ -127,12 +133,14 @@ export async function applyMenuCommandLocal(
         stashPrior(arr, businessId, id);
         return arr.map((o) => (String(o.id) === id ? { ...record, id } : o));
       });
+      await clearRecordTombstone(await openSyncDatabase(), businessId, MENU_ITEM_KEY, id);
       return { keys: [MENU_ITEM_KEY], applied };
     }
     case "menu:delete_item": {
       const id = idOf(command.entity_id) ?? idOf(payload.id);
       if (!id) return { keys: [MENU_ITEM_KEY], applied: false };
       const applied = await patchKey(businessId, MENU_ITEM_KEY, (arr) => arr.filter((o) => String(o.id) !== id));
+      await markRecordDeleted(await openSyncDatabase(), businessId, MENU_ITEM_KEY, id, stamp);
       return { keys: [MENU_ITEM_KEY], applied };
     }
     case "menu:create_category": {
@@ -147,6 +155,7 @@ export async function applyMenuCommandLocal(
         stashPrior(arr, businessId, id);
         return arr.some((o) => String(o.id) === id) ? arr.map((o) => (String(o.id) === id ? cat : o)) : [...arr, cat];
       });
+      await clearRecordTombstone(await openSyncDatabase(), businessId, MENU_CATEGORY_KEY, id);
       return { keys: [MENU_CATEGORY_KEY], applied };
     }
     case "menu:update_category": {
@@ -161,12 +170,14 @@ export async function applyMenuCommandLocal(
         stashPrior(arr, businessId, id);
         return arr.map((o) => (String(o.id) === id ? { ...record, id } : o));
       });
+      await clearRecordTombstone(await openSyncDatabase(), businessId, MENU_CATEGORY_KEY, id);
       return { keys: [MENU_CATEGORY_KEY], applied };
     }
     case "menu:delete_category": {
       const id = idOf(command.entity_id) ?? idOf(payload.id) ?? idOf(payload.category_id);
       if (!id) return { keys: [MENU_CATEGORY_KEY], applied: false };
       const applied = await patchKey(businessId, MENU_CATEGORY_KEY, (arr) => arr.filter((o) => String(o.id) !== id));
+      await markRecordDeleted(await openSyncDatabase(), businessId, MENU_CATEGORY_KEY, id, stamp);
       return { keys: [MENU_CATEGORY_KEY], applied };
     }
     default:

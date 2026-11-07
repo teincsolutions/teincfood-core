@@ -16,6 +16,7 @@ export function createMemoryDriver(): SqliteDriver {
     events: [],
     orders: [],
     sync_jobs: [],
+    record_tombstones: [],
   };
   let autoId = { commands: 1, events: 1, migrations: 1, sync_jobs: 1 };
 
@@ -34,6 +35,42 @@ export function createMemoryDriver(): SqliteDriver {
         const version = args[0] as number;
         tables.migrations.push({ version, applied_at: args[1] });
         return { lastInsertRowId: autoId.migrations++, changes: 1 };
+      }
+
+      // record_tombstones upsert
+      if (s.includes("INSERT INTO record_tombstones")) {
+        const [business_id, collection, entity_id, deleted_at, device_id] = args as any[];
+        const existing = tables.record_tombstones.find(
+          (r) =>
+            r.business_id === business_id &&
+            r.collection === collection &&
+            r.entity_id === entity_id,
+        );
+        if (existing) {
+          if (String(deleted_at) > String(existing.deleted_at)) {
+            existing.deleted_at = deleted_at;
+            existing.device_id = device_id;
+          }
+        } else {
+          tables.record_tombstones.push({ business_id, collection, entity_id, deleted_at, device_id });
+        }
+        return { lastInsertRowId: 1, changes: 1 };
+      }
+      if (s.includes("DELETE FROM record_tombstones WHERE business_id = ? AND collection = ? AND entity_id = ?")) {
+        const [business_id, collection, entity_id] = args as string[];
+        tables.record_tombstones = tables.record_tombstones.filter(
+          (r) =>
+            !(
+              r.business_id === business_id &&
+              r.collection === collection &&
+              r.entity_id === entity_id
+            ),
+        );
+        return { lastInsertRowId: 0, changes: 1 };
+      }
+      if (s.includes("DELETE FROM record_tombstones")) {
+        tables.record_tombstones = [];
+        return { lastInsertRowId: 0, changes: 1 };
       }
 
       // reference_data insert
@@ -390,6 +427,20 @@ export function createMemoryDriver(): SqliteDriver {
 
     async getAllAsync<T>(sql: string, ...args: unknown[]): Promise<T[]> {
       const s = sql.replace(/\s+/g, " ").trim();
+
+      if (s.includes("SELECT entity_id, deleted_at FROM record_tombstones WHERE business_id = ? AND collection = ?")) {
+        const [business_id, collection] = args as string[];
+        return tables.record_tombstones
+          .filter((r) => r.business_id === business_id && r.collection === collection)
+          .map((r) => ({ entity_id: r.entity_id, deleted_at: r.deleted_at } as unknown as T));
+      }
+
+      if (s.includes("SELECT entity_id FROM record_tombstones WHERE business_id = ? AND entity_id = ?")) {
+        const [business_id, entity_id] = args as string[];
+        return tables.record_tombstones
+          .filter((r) => r.business_id === business_id && r.entity_id === entity_id)
+          .map((r) => ({ entity_id: r.entity_id } as unknown as T));
+      }
 
       if (s.includes("SELECT key FROM reference_data WHERE business_id = ? ORDER BY key")) {
         const [business_id] = args as string[];

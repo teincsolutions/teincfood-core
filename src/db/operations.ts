@@ -878,6 +878,7 @@ export async function wipeForNewInstall(db: SQLiteDatabase): Promise<void> {
   try { await db.execAsync(`DELETE FROM sync_jobs;`); } catch {}
   try { await db.execAsync(`DELETE FROM entity_snapshots;`); } catch {}
   try { await db.execAsync(`DELETE FROM reference_data;`); } catch {}
+  try { await db.execAsync(`DELETE FROM record_tombstones;`); } catch {}
   try { await db.execAsync(`DELETE FROM commands;`); } catch {}
   try { await db.execAsync(`DELETE FROM events;`); } catch {}
   try { await db.execAsync(`DELETE FROM migrations WHERE version >= 5;`); } catch {}
@@ -885,6 +886,11 @@ export async function wipeForNewInstall(db: SQLiteDatabase): Promise<void> {
 
 export async function clearReferenceData(db: SQLiteDatabase): Promise<void> {
   await db.execAsync(`DELETE FROM reference_data;`);
+  try {
+    await db.execAsync(`DELETE FROM record_tombstones;`);
+  } catch {
+    // Older schema before migration 15.
+  }
 }
 
 const dbChangeListeners = new Set<(info: { businessId?: string; table: string }) => void>();

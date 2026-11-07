@@ -78,11 +78,22 @@ export function useMenuItemsQuery(filters?: { search?: string; category_ids?: st
     ? (networkQuery.data as { pages: { data: unknown[] }[] }).pages.flatMap((p) => p.data)
     : undefined;
 
-  const data = isOnline && networkData !== undefined ? networkData : enabled ? filtered : undefined;
-
   // A local snapshot (even an empty list) means the POS has something to
   // render: never gate the whole screen on the in-flight network refresh.
   const hasLocalSnapshot = cachedQuery.data != null;
+
+  // Local SQLite is the read model whenever it has a snapshot. The network
+  // query is only a cold-start fallback; it must never resurrect a row that
+  // was deleted/updated locally and is still waiting to sync.
+  const data = hasLocalSnapshot
+    ? enabled
+      ? filtered
+      : undefined
+    : isOnline && networkData !== undefined
+      ? networkData
+      : enabled
+        ? filtered
+        : undefined;
   const pending =
     cachedQuery.isPending || (!hasLocalSnapshot && networkQuery.isFetching);
 
@@ -126,9 +137,14 @@ export function useMenuCategoriesQuery() {
     retry: false,
     networkMode: "offlineFirst" as const,
   });
-  const usingNetwork = isOnline && (networkQuery.data as unknown);
-  const data = usingNetwork ? networkQuery.data : cachedQuery.data;
   const hasCache = cachedQuery.data != null;
+  // Local categories are authoritative once a snapshot exists. The network
+  // response must not re-show a category that was just deleted offline.
+  const data = hasCache
+    ? cachedQuery.data
+    : isOnline
+      ? networkQuery.data
+      : cachedQuery.data;
   // Only report "loading" when there is nothing local to show; the network
   // refresh must never hide an already-cached category list.
   const pending = cachedQuery.isPending || (!hasCache && networkQuery.isFetching);
@@ -142,6 +158,74 @@ export function useMenuCategoriesQuery() {
   } as unknown as ReturnType<typeof useQuery>;
 }
 
+type QuerySnapshot = Array<[readonly unknown[], unknown]>;
+
+function restoreQuerySnapshots(
+  qc: ReturnType<typeof useQueryClient>,
+  snapshot: QuerySnapshot | undefined,
+): void {
+  if (!snapshot) return;
+  for (const [key, data] of snapshot) {
+    qc.setQueryData(key as unknown[], data);
+  }
+}
+
+function recordId(record: unknown): string | undefined {
+  const id = (record as { id?: unknown } | null | undefined)?.id;
+  return id == null ? undefined : String(id);
+}
+
+/**
+ * Patch a menu query payload regardless of shape: the SQLite-backed query is
+ * `{ data: [...] }`, the network query is `{ pages: [{ data: [...] }] }`.
+ * This lets one optimistic patch update every mounted variant at once.
+ */
+function patchMenuRows(
+  old: unknown,
+  patch: (rows: unknown[]) => unknown[],
+): unknown {
+  if (Array.isArray(old)) return patch(old);
+  if (!old || typeof old !== "object") return old;
+  const obj = old as Record<string, unknown>;
+  if (Array.isArray(obj.data)) {
+    return { ...obj, data: patch(obj.data) };
+  }
+  if (Array.isArray(obj.pages)) {
+    return {
+      ...obj,
+      pages: obj.pages.map((page) => {
+        if (!page || typeof page !== "object") return page;
+        const p = page as Record<string, unknown>;
+        return Array.isArray(p.data) ? { ...p, data: patch(p.data) } : page;
+      }),
+    };
+  }
+  return old;
+}
+
+function upsertMenuRow(rows: unknown[], record: unknown): unknown[] {
+  const id = recordId(record);
+  if (!id) return rows;
+  const index = rows.findIndex((row) => recordId(row) === id);
+  if (index >= 0) {
+    return rows.map((row, i) =>
+      i === index ? { ...(row as object), ...(record as object) } : row,
+    );
+  }
+  return [record, ...rows];
+}
+
+function removeMenuRow(rows: unknown[], id: string): unknown[] {
+  return rows.filter((row) => recordId(row) !== id);
+}
+
+function useOptimisticMenuPatch() {
+  const qc = useQueryClient();
+  const snapshot = (queryKey: readonly unknown[]): QuerySnapshot =>
+    qc.getQueriesData({ queryKey }) as QuerySnapshot;
+  return { qc, snapshot, restore: (s: QuerySnapshot | undefined) => restoreQuerySnapshots(qc, s) };
+}
+
 // Mutations — local-first.
 //
 // The only work on the mutation path is the local SQLite commit. Reference
@@ -150,7 +234,7 @@ export function useMenuCategoriesQuery() {
 // Invalidating the cached query key makes the committed row render immediately.
 export function useCreateMenuItemMutation() {
   const businessId = useBusinessId();
-  const qc = useQueryClient();
+  const { qc, snapshot, restore } = useOptimisticMenuPatch();
   return useMutation({
     mutationFn: (payload: Record<string, unknown>) =>
       commitMenuMutationLocal({
@@ -159,6 +243,18 @@ export function useCreateMenuItemMutation() {
         entityId: (payload as { id?: string }).id,
         payload,
       }),
+    onMutate: (payload) => {
+      const record = (payload as { cacheRecord?: unknown }).cacheRecord;
+      const prev = snapshot(CATALOG_KEYS.items(businessId));
+      if (record) {
+        qc.setQueriesData({ queryKey: CATALOG_KEYS.items(businessId) }, (old) =>
+          patchMenuRows(old, (rows) => upsertMenuRow(rows, record)),
+        );
+      }
+      return { prev };
+    },
+    onError: (_error, _vars, ctx) =>
+      restore((ctx as { prev?: QuerySnapshot } | undefined)?.prev),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CATALOG_KEYS.items(businessId) });
     },
@@ -166,7 +262,7 @@ export function useCreateMenuItemMutation() {
 }
 export function useUpdateMenuItemMutation() {
   const businessId = useBusinessId();
-  const qc = useQueryClient();
+  const { qc, snapshot, restore } = useOptimisticMenuPatch();
   return useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: Record<string, unknown> }) =>
       commitMenuMutationLocal({
@@ -175,6 +271,18 @@ export function useUpdateMenuItemMutation() {
         entityId: id,
         payload,
       }),
+    onMutate: ({ payload }) => {
+      const record = (payload as { cacheRecord?: unknown }).cacheRecord;
+      const prev = snapshot(CATALOG_KEYS.items(businessId));
+      if (record) {
+        qc.setQueriesData({ queryKey: CATALOG_KEYS.items(businessId) }, (old) =>
+          patchMenuRows(old, (rows) => upsertMenuRow(rows, record)),
+        );
+      }
+      return { prev };
+    },
+    onError: (_error, _vars, ctx) =>
+      restore((ctx as { prev?: QuerySnapshot } | undefined)?.prev),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CATALOG_KEYS.items(businessId) });
     },
@@ -182,7 +290,7 @@ export function useUpdateMenuItemMutation() {
 }
 export function useDeleteMenuItemMutation() {
   const businessId = useBusinessId();
-  const qc = useQueryClient();
+  const { qc, snapshot, restore } = useOptimisticMenuPatch();
   return useMutation({
     mutationFn: (id: string) =>
       commitMenuMutationLocal({
@@ -191,6 +299,15 @@ export function useDeleteMenuItemMutation() {
         entityId: id,
         payload: { id },
       }),
+    onMutate: (id) => {
+      const prev = snapshot(CATALOG_KEYS.items(businessId));
+      qc.setQueriesData({ queryKey: CATALOG_KEYS.items(businessId) }, (old) =>
+        patchMenuRows(old, (rows) => removeMenuRow(rows, id)),
+      );
+      return { prev };
+    },
+    onError: (_error, _vars, ctx) =>
+      restore((ctx as { prev?: QuerySnapshot } | undefined)?.prev),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CATALOG_KEYS.items(businessId) });
     },
@@ -198,7 +315,7 @@ export function useDeleteMenuItemMutation() {
 }
 export function useToggleItemAvailabilityMutation() {
   const businessId = useBusinessId();
-  const qc = useQueryClient();
+  const { qc, snapshot, restore } = useOptimisticMenuPatch();
   return useMutation({
     mutationFn: ({ id, available, cacheRecord }: { id: string; available: boolean; cacheRecord?: unknown }) =>
       commitMenuMutationLocal({
@@ -207,6 +324,25 @@ export function useToggleItemAvailabilityMutation() {
         entityId: id,
         payload: cacheRecord ? { id, available, cacheRecord } : { id, available },
       }),
+    onMutate: ({ id, available, cacheRecord }) => {
+      const prev = snapshot(CATALOG_KEYS.items(businessId));
+      const record =
+        cacheRecord && typeof cacheRecord === "object"
+          ? { ...(cacheRecord as object), id, available }
+          : undefined;
+      qc.setQueriesData({ queryKey: CATALOG_KEYS.items(businessId) }, (old) =>
+        patchMenuRows(old, (rows) =>
+          rows.map((row) =>
+            recordId(row) === id
+              ? record ?? { ...(row as object), available }
+              : row,
+          ),
+        ),
+      );
+      return { prev };
+    },
+    onError: (_error, _vars, ctx) =>
+      restore((ctx as { prev?: QuerySnapshot } | undefined)?.prev),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CATALOG_KEYS.items(businessId) });
     },
@@ -214,7 +350,7 @@ export function useToggleItemAvailabilityMutation() {
 }
 export function useCreateMenuCategoryMutation() {
   const businessId = useBusinessId();
-  const qc = useQueryClient();
+  const { qc, snapshot, restore } = useOptimisticMenuPatch();
   return useMutation({
     mutationFn: (payload: Record<string, unknown>) =>
       commitMenuMutationLocal({
@@ -223,6 +359,18 @@ export function useCreateMenuCategoryMutation() {
         entityId: (payload as { id?: string }).id,
         payload,
       }),
+    onMutate: (payload) => {
+      const record = (payload as { cacheRecord?: unknown }).cacheRecord;
+      const prev = snapshot(CATALOG_KEYS.categories(businessId));
+      if (record) {
+        qc.setQueriesData({ queryKey: CATALOG_KEYS.categories(businessId) }, (old) =>
+          patchMenuRows(old, (rows) => upsertMenuRow(rows, record)),
+        );
+      }
+      return { prev };
+    },
+    onError: (_error, _vars, ctx) =>
+      restore((ctx as { prev?: QuerySnapshot } | undefined)?.prev),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CATALOG_KEYS.categories(businessId) });
     },
@@ -230,7 +378,7 @@ export function useCreateMenuCategoryMutation() {
 }
 export function useUpdateMenuCategoryMutation() {
   const businessId = useBusinessId();
-  const qc = useQueryClient();
+  const { qc, snapshot, restore } = useOptimisticMenuPatch();
   return useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: Record<string, unknown> }) =>
       commitMenuMutationLocal({
@@ -239,6 +387,18 @@ export function useUpdateMenuCategoryMutation() {
         entityId: id,
         payload: { ...payload, id },
       }),
+    onMutate: ({ payload }) => {
+      const record = (payload as { cacheRecord?: unknown }).cacheRecord;
+      const prev = snapshot(CATALOG_KEYS.categories(businessId));
+      if (record) {
+        qc.setQueriesData({ queryKey: CATALOG_KEYS.categories(businessId) }, (old) =>
+          patchMenuRows(old, (rows) => upsertMenuRow(rows, record)),
+        );
+      }
+      return { prev };
+    },
+    onError: (_error, _vars, ctx) =>
+      restore((ctx as { prev?: QuerySnapshot } | undefined)?.prev),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CATALOG_KEYS.categories(businessId) });
     },
@@ -246,7 +406,7 @@ export function useUpdateMenuCategoryMutation() {
 }
 export function useDeleteMenuCategoryMutation() {
   const businessId = useBusinessId();
-  const qc = useQueryClient();
+  const { qc, snapshot, restore } = useOptimisticMenuPatch();
   return useMutation({
     mutationFn: (id: string) =>
       commitMenuMutationLocal({
@@ -255,6 +415,15 @@ export function useDeleteMenuCategoryMutation() {
         entityId: id,
         payload: { id },
       }),
+    onMutate: (id) => {
+      const prev = snapshot(CATALOG_KEYS.categories(businessId));
+      qc.setQueriesData({ queryKey: CATALOG_KEYS.categories(businessId) }, (old) =>
+        patchMenuRows(old, (rows) => removeMenuRow(rows, id)),
+      );
+      return { prev };
+    },
+    onError: (_error, _vars, ctx) =>
+      restore((ctx as { prev?: QuerySnapshot } | undefined)?.prev),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CATALOG_KEYS.categories(businessId) });
     },

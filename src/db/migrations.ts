@@ -482,4 +482,29 @@ export const MIGRATIONS: Migration[] = [
         `);
     },
   },
+  {
+    version: 15,
+    up: async (db) => {
+      // Delete tombstones for mutable reference collections.
+      //
+      // A full-array reference pull from the cloud/LAN must never resurrect a
+      // row that was deleted locally while offline. Tombstones are retained
+      // until a newer record with the same id arrives or the row is recreated
+      // locally. This is the delete half of LWW; mutable-record versioning
+      // will build on the same table.
+      await db.execAsync(`
+          CREATE TABLE IF NOT EXISTS record_tombstones (
+            business_id TEXT NOT NULL,
+            collection TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            deleted_at TEXT NOT NULL,
+            device_id TEXT,
+            PRIMARY KEY (business_id, collection, entity_id)
+          );
+
+          CREATE INDEX IF NOT EXISTS idx_record_tombstones_collection
+            ON record_tombstones(business_id, collection);
+        `);
+    },
+  },
 ];

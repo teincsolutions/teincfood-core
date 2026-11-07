@@ -11,6 +11,7 @@ import type { OperatingHoursEntry } from "../types/api/business.api";
 import { getAppInstanceId } from "../adapters/devices";
 import { notifyDbChange } from "../db/operations";
 import { isServerAuthoritativeKey } from "./entitlements";
+import { applyTombstonesToPayload } from "./tombstones";
 
 export async function getReferenceData<T>(
   db: SQLiteDatabase,
@@ -95,11 +96,19 @@ export async function mergeReferenceData<T extends Record<string, unknown>>(
   // Use writeServerReferenceData() for the verified server path instead.
   if (isServerAuthoritativeKey(key)) return;
   const existing = await getReferenceData<T>(db, businessId, key);
+  // Local deletes win over stale full-array pulls. This must run before the
+  // cache is written so a deleted menu row can never be resurrected.
+  const incomingWithoutTombstones = await applyTombstonesToPayload(
+    db,
+    businessId,
+    key,
+    incoming,
+  );
   if (!existing) {
     await setReferenceData(db, businessId, {
       key,
       version: hlc,
-      payload: incoming as T,
+      payload: incomingWithoutTombstones as T,
       downloadedAt: new Date().toISOString(),
       lastEventId: eventId,
       lastHlc: hlc,
@@ -114,7 +123,7 @@ export async function mergeReferenceData<T extends Record<string, unknown>>(
   await setReferenceData(db, businessId, {
     key,
     version: hlc,
-    payload: incoming as T,
+    payload: incomingWithoutTombstones as T,
     downloadedAt: new Date().toISOString(),
     lastEventId: eventId,
     lastHlc: hlc,

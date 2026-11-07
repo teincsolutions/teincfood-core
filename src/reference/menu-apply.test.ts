@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { createMemoryDriver } from "../test-helpers/memory-driver";
 import { setSqliteDriver } from "../adapters/sqlite";
 import { openSyncDatabase, closeSyncDatabase } from "../db/connection";
-import { setReferenceData, getReferenceData } from "./operations";
+import { setReferenceData, getReferenceData, mergeReferenceData } from "./operations";
 import { applyMenuCommandLocal } from "./menu-apply";
 import { buildMenuItemRecord, buildMenuCategoryRecord } from "./menu-record";
+import { hlcToString, tickHLC } from "../utils/hlc";
 
 const BID = "biz-menu-test";
 
@@ -129,5 +130,53 @@ describe("menu-apply — offline/LAN cache convergence", () => {
     const m4 = (await items()).find((i) => i.id === created.id) as unknown as Record<string, unknown>;
     expect(m4.basePrice).toEqual({ amountMinor: 1500, currencyCode: "GHS" });
     expect((m4.variants as Array<Record<string, unknown>>).length).toBe(1);
+  });
+
+  it("a deleted item is not resurrected by a stale server reference pull", async () => {
+    await applyMenuCommandLocal(BID, cmd("menu:delete_item", { id: "m1" }, "m1"));
+    expect((await items()).some((i) => i.id === "m1")).toBe(false);
+
+    const db = await openSyncDatabase();
+    await mergeReferenceData(
+      db,
+      BID,
+      "menu:items",
+      {
+        data: [
+          { id: "m1", name: "Stale Jollof", updated_at: "2020-01-01T00:00:00.000Z" },
+          { id: "m2", name: "Fresh Banku", updated_at: new Date().toISOString() },
+        ],
+      },
+      hlcToString(tickHLC(Date.now() + 60_000, null, "server")),
+      "evt-v2",
+    );
+
+    const ids = (await items()).map((i) => i.id);
+    expect(ids).not.toContain("m1");
+    expect(ids).toContain("m2");
+  });
+
+  it("recreating the same item id locally clears the delete tombstone", async () => {
+    await applyMenuCommandLocal(BID, cmd("menu:delete_item", { id: "m1" }, "m1"));
+    const record = buildMenuItemRecord({
+      id: "m1",
+      businessId: BID,
+      name: "Jollof Again",
+      priceMinor: 2000,
+      categoryId: "c1",
+    });
+    await applyMenuCommandLocal(
+      BID,
+      cmd("menu:create_item", { id: "m1", cacheRecord: record }, "m1"),
+    );
+    expect((await items()).some((i) => i.name === "Jollof Again")).toBe(true);
+
+    const db = await openSyncDatabase();
+    const tombstones = await db.getAllAsync<{ entity_id: string }>(
+      "SELECT entity_id FROM record_tombstones WHERE business_id = ? AND entity_id = ?;",
+      BID,
+      "m1",
+    );
+    expect(tombstones).toEqual([]);
   });
 });
