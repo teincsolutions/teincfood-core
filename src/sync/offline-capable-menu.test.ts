@@ -10,7 +10,10 @@ import {
   buildMenuItemEnvelope,
 } from "../reference/menu-record";
 import { commandQueueService } from "./command-queue.service";
-import { runOfflineCapableMutation } from "./offline-capable";
+import {
+  commitMenuMutationLocal,
+  runOfflineCapableMutation,
+} from "./offline-capable";
 
 const BID = "biz-menu-offline-test";
 
@@ -60,6 +63,38 @@ describe("offline-capable menu mutations", () => {
         business_id: BID,
       }),
     );
+  });
+
+  it("commitMenuMutationLocal has no network parameter at all", async () => {
+    const env = buildMenuItemEnvelope({
+      businessId: BID,
+      name: "Local Only",
+      priceMinor: 900,
+      categoryId: "cat-1",
+    });
+    const enqueueSpy = vi.spyOn(commandQueueService, "enqueue");
+    const started = Date.now();
+    const event = await commitMenuMutationLocal({
+      commandType: "menu:create_item",
+      businessId: BID,
+      entityId: env.cacheRecord.id,
+      payload: { ...env.wire, cacheRecord: env.cacheRecord },
+    });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(event.event_type).toBe("menu.create_item_queued");
+    expect(enqueueSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command_type: "menu:create_item",
+        business_id: BID,
+      }),
+    );
+    const db = await openSyncDatabase();
+    const cached = await getReferenceData<{ data?: { id: string }[] }>(
+      db,
+      BID,
+      "menu:items",
+    );
+    expect(cached?.payload?.data?.some((item) => item.id === env.cacheRecord.id)).toBe(true);
   });
 
   it("removes a menu item from the local cache when deleted offline", async () => {

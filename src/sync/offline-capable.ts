@@ -25,11 +25,21 @@ import { applyMenuCommandLocal } from "../reference/menu-apply";
 import { emitReferenceChanged } from "../reference/events";
 import { assertEntitledForCommand } from "../reference/entitlement-guard";
 import { isOnlineCapable } from "./online-gates";
+import type { DomainEvent } from "./types";
+import type { ReferenceDataKey } from "../reference/types";
 
 export interface OfflineCapableOptions<TService, TCommandPayload> {
   /** Direct REST call — used online. */
   run: () => Promise<TService>;
   /** Sync-engine command fallback (Local Node / outbox). */
+  commandType: string;
+  businessId: string;
+  entityId?: string;
+  payload: TCommandPayload;
+}
+
+export interface LocalMenuMutationOptions<TCommandPayload> {
+  /** Must be a `menu:*` command. */
   commandType: string;
   businessId: string;
   entityId?: string;
@@ -61,51 +71,111 @@ async function assertCachedCapability(
   }
 }
 
-export async function runOfflineCapableMutation<TService, TCommandPayload>(
-  options: OfflineCapableOptions<TService, TCommandPayload>,
-): Promise<TService> {
-  // Online-required gate first: these commands can never succeed offline —
-  // throw loud immediately instead of queuing what no transport can fulfill.
-  assertOnlineFor(options.commandType, options.payload as Record<string, unknown>);
-
-  // Per-command capability guard before touching local state or the network.
-  const required = CAPABILITY_BY_COMMAND[options.commandType];
-
-  // Local-first for engine-routed domains (menu:*): persist to SQLite and the
-  // durable outbox immediately, update the local reference cache, and let
-  // replay upload to the cloud/LAN in the background. A slow or absent
-  // network must never hold the form open.
-  if (options.commandType.startsWith("menu:")) {
-    if (required) await assertCachedCapability(options.businessId, required);
-    // Preserve the entitlement gate that the engine normally applies before
-    // queueing: local-first must not weaken subscription enforcement.
-    await assertEntitledForCommand(options.businessId, options.commandType);
-    const command = buildCommand({
-      commandType: options.commandType,
-      businessId: options.businessId,
-      entityId: options.entityId,
-      payload: options.payload,
-    });
-    try {
-      const { keys } = await applyMenuCommandLocal(options.businessId, command);
-      if (keys.length) emitReferenceChanged(options.businessId, keys);
-    } catch (error) {
-      syncLogger.debug("OfflineCapable", "menu local apply failed", {
-        error: String(error),
-      });
+/**
+ * Publish fan-out only after the local transaction has committed.
+ *
+ * This is deliberately scheduled off the mutation's promise: reference sync
+ * and replay are downstream of SQLite, never a prerequisite for it. If either
+ * fails, the local row and outbox stay intact for the next retry.
+ */
+function scheduleMenuPostCommit(
+  businessId: string,
+  keys: ReferenceDataKey[],
+): void {
+  setTimeout(() => {
+    if (keys.length > 0) {
+      try {
+        emitReferenceChanged(businessId, keys);
+      } catch (error) {
+        syncLogger.debug("OfflineCapable", "menu reference fan-out failed", {
+          error: String(error),
+        });
+      }
     }
-    const event = await commandQueueService.enqueue(command);
     if (isOnlineCapable()) {
-      // Background only: save must return now.
       void syncEngine.replayQueuedCommands().catch((error) => {
         syncLogger.debug("OfflineCapable", "menu background replay failed", {
           error: String(error),
         });
       });
     }
+  }, 0);
+}
+
+/**
+ * The ONLY menu write path.
+ *
+ * Local SQLite is the source of truth: capability/entitlement checks read the
+ * cached proof, the menu row is applied to the reference cache, and the
+ * command is inserted into the durable outbox. All of that completes before
+ * this promise resolves. No HTTP, connectivity probe, image upload, reference
+ * pull, LAN call, or replay is allowed here.
+ *
+ * Consumers must treat the returned event as the committed local state and
+ * close the form immediately. Sync is a separate background worker.
+ */
+export async function commitMenuMutationLocal<TCommandPayload>(
+  options: LocalMenuMutationOptions<TCommandPayload>,
+): Promise<DomainEvent> {
+  if (!options.commandType.startsWith("menu:")) {
+    throw new Error(
+      `commitMenuMutationLocal only accepts menu:* commands, got ${options.commandType}`,
+    );
+  }
+
+  // Cached permission proof — local reads only. The backend remains the final
+  // authority when the queued command replays.
+  const required = CAPABILITY_BY_COMMAND[options.commandType];
+  if (required) await assertCachedCapability(options.businessId, required);
+  await assertEntitledForCommand(options.businessId, options.commandType);
+
+  const command = buildCommand({
+    commandType: options.commandType,
+    businessId: options.businessId,
+    entityId: options.entityId,
+    payload: options.payload,
+  });
+
+  // 1) local read model, 2) durable outbox. Both are local writes.
+  let keys: ReferenceDataKey[] = [];
+  try {
+    const applied = await applyMenuCommandLocal(options.businessId, command);
+    keys = applied.keys;
+  } catch (error) {
+    // The outbox row is still authoritative and will re-apply on replay.
+    syncLogger.debug("OfflineCapable", "menu local apply failed", {
+      error: String(error),
+    });
+  }
+  const event = await commandQueueService.enqueue(command);
+
+  // 3) only now may the rest of the system hear about it.
+  scheduleMenuPostCommit(options.businessId, keys);
+  return event;
+}
+
+export async function runOfflineCapableMutation<TService, TCommandPayload>(
+  options: OfflineCapableOptions<TService, TCommandPayload>,
+): Promise<TService> {
+  // Menu writes have a dedicated local-first API. Keep this branch for legacy
+  // callers (e.g. image upload follow-ups) but route it through the same
+  // commit-only implementation.
+  if (options.commandType.startsWith("menu:")) {
+    const event = await commitMenuMutationLocal({
+      commandType: options.commandType,
+      businessId: options.businessId,
+      entityId: options.entityId,
+      payload: options.payload,
+    });
     return event.payload as TService;
   }
 
+  // Online-required gate first: these commands can never succeed offline —
+  // throw loud immediately instead of queuing what no transport can fulfill.
+  assertOnlineFor(options.commandType, options.payload as Record<string, unknown>);
+
+  // Per-command capability guard before touching local state or the network.
+  const required = CAPABILITY_BY_COMMAND[options.commandType];
   if (required) await assertCachedCapability(options.businessId, required);
 
   try {
