@@ -20,6 +20,11 @@ import { getConnectivityState } from "../adapters/connectivity";
 import { CAPABILITY_BY_COMMAND } from "../reference/capabilities";
 import { openSyncDatabase } from "../db/connection";
 import { getReferenceData } from "../reference/operations";
+import { commandQueueService } from "./command-queue.service";
+import { applyMenuCommandLocal } from "../reference/menu-apply";
+import { emitReferenceChanged } from "../reference/events";
+import { assertEntitledForCommand } from "../reference/entitlement-guard";
+import { isOnlineCapable } from "./online-gates";
 
 export interface OfflineCapableOptions<TService, TCommandPayload> {
   /** Direct REST call — used online. */
@@ -40,19 +45,38 @@ export async function runOfflineCapableMutation<TService, TCommandPayload>(
   // Online-required gate first: these commands can never succeed offline —
   // throw loud immediately instead of queuing what no transport can fulfill.
   assertOnlineFor(options.commandType, options.payload as Record<string, unknown>);
-  // Local-first for engine-routed domains (menu:*): commit locally via the
-  // engine and resolve immediately. Network is sync transport only — never a
-  // mutation delay. The engine cloud path carries the same 2.5s cap and
-  // returns the backend response when online.
+  // Local-first for engine-routed domains (menu:*): persist to SQLite and the
+  // durable outbox immediately, update the local reference cache, and let
+  // replay upload to the cloud/LAN in the background. A slow or absent
+  // network must never hold the form open.
   if (options.commandType.startsWith("menu:")) {
+    // Preserve the entitlement gate that the engine normally applies before
+    // queueing: local-first must not weaken subscription enforcement.
+    await assertEntitledForCommand(options.businessId, options.commandType);
     const command = buildCommand({
       commandType: options.commandType,
       businessId: options.businessId,
       entityId: options.entityId,
       payload: options.payload,
     });
-    const events = await syncEngine.execute(command);
-    return events[0]?.payload as TService;
+    try {
+      const { keys } = await applyMenuCommandLocal(options.businessId, command);
+      if (keys.length) emitReferenceChanged(options.businessId, keys);
+    } catch (error) {
+      syncLogger.debug("OfflineCapable", "menu local apply failed", {
+        error: String(error),
+      });
+    }
+    const event = await commandQueueService.enqueue(command);
+    if (isOnlineCapable()) {
+      // Background only: save must return now.
+      void syncEngine.replayQueuedCommands().catch((error) => {
+        syncLogger.debug("OfflineCapable", "menu background replay failed", {
+          error: String(error),
+        });
+      });
+    }
+    return event.payload as TService;
   }
   try {
       const db = await openSyncDatabase();
