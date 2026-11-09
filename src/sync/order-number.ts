@@ -12,6 +12,7 @@
  */
 
 import { getItemSync as getItem, setItemSync as setItem } from "../adapters/kv";
+import { getDeviceNumber } from "./device-lease.service";
 
 const CALLOUT_SEQ_KEY = "teinc_callout_seq";
 const ORDERS_PER_BLOCK = 999;
@@ -82,9 +83,12 @@ export function generateLocalOrderNumber(): string {
 }
 
 export function generateOrderNumberForBusiness(businessId: string): string {
-  const v = getItem<string>(`teinc_device_number:${businessId}`);
-  if (!v || !/^(0[1-9]|[1-9][0-9])$/.test(v)) {
-    throw new Error(`No device lease for business ${businessId} — call ensureLease(businessId) first (online-only until leased)`);
+  // getDeviceNumber rejects DD 01 (reserved for online orders), so a stale
+  // cached 01 can never generate a POS order number that collides with the
+  // buyer app. The caller must lease a real POS device (02-99) online first.
+  const v = getDeviceNumber(businessId);
+  if (!v) {
+    throw new Error(`No POS device lease for business ${businessId} — call ensureLease(businessId) first (online-only until leased)`);
   }
   return generateOrderNumber(v, businessId).orderNumber;
 }

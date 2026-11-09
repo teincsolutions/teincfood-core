@@ -26,6 +26,12 @@ describe("device-lease", () => {
     expect(getDeviceNumber("biz1")).toBeNull();
   });
 
+  it("reserves DD 01 for online orders", () => {
+    setItemSync("teinc_device_number:biz1", "01");
+    expect(getDeviceNumber("biz1")).toBeNull();
+    expect(isOnlineOnly("biz1")).toBe(true);
+  });
+
   it("ensureLease handles 429 limit", async () => {
     // mock http client that returns 429
     setHttpClient({

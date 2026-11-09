@@ -13,6 +13,12 @@ import { getConnectivityState } from "../adapters/connectivity";
 const LEASE_KEY = (businessId: string) => `teinc_device_number:${businessId}`;
 const LEASE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+// DD 01 is reserved for online orders created by the buyer app. POS terminals
+// lease 02-99 only, so local order numbers can never collide with online ones.
+function isPosDeviceNumber(value: unknown): value is string {
+  return typeof value === "string" && /^(0[2-9]|[1-9][0-9])$/.test(value);
+}
+
 interface LeaseResponse {
   device_number: string;
   device_uuid: string;
@@ -135,8 +141,7 @@ export function classifyDeviceLeaseFailure(error: unknown): DeviceLeaseFailure {
 
 export function getDeviceNumber(businessId: string): string | null {
   const v = getSync<string>(LEASE_KEY(businessId));
-  if (v && /^(0[1-9]|[1-9][0-9])$/.test(v)) return v;
-  return null;
+  return isPosDeviceNumber(v) ? v : null;
 }
 
 export function isOnlineOnly(businessId: string): boolean {
@@ -166,7 +171,7 @@ export async function ensureLease(businessId: string): Promise<string | null> {
   // No sync cache — try async KV (covers boot race where sync cache not yet hydrated from kv.json)
   try {
     const asyncCached = await getItem<string>(LEASE_KEY(businessId));
-    if (asyncCached && /^(0[1-9]|[1-9][0-9])$/.test(asyncCached)) {
+    if (isPosDeviceNumber(asyncCached)) {
       // hydrate sync cache for next getDeviceNumber calls
       try { setSync(LEASE_KEY(businessId), asyncCached); } catch {}
       clearLeaseFailure(businessId);
@@ -194,7 +199,7 @@ export async function ensureLease(businessId: string): Promise<string | null> {
     const payload = res.data as LeaseResponse & { data?: LeaseResponse };
     const data = payload.data ?? payload;
     const dn = data.device_number;
-    if (dn && /^(0[1-9]|[1-9][0-9])$/.test(dn)) {
+    if (isPosDeviceNumber(dn)) {
       setSync(LEASE_KEY(businessId), dn);
       setSync(`${LEASE_KEY(businessId)}:leased_at`, new Date().toISOString());
       try { await getItem<string>(LEASE_KEY(businessId)); } catch {}
@@ -240,7 +245,7 @@ export async function ensureLease(businessId: string): Promise<string | null> {
 async function cachedLeaseFallback(businessId: string): Promise<string | null> {
   try {
     const fallback = await getItem<string>(LEASE_KEY(businessId));
-    if (fallback && /^(0[1-9]|[1-9][0-9])$/.test(fallback)) {
+    if (isPosDeviceNumber(fallback)) {
       try { setSync(LEASE_KEY(businessId), fallback); } catch {}
       clearLeaseFailure(businessId);
       return fallback;
