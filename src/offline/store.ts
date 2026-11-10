@@ -10,8 +10,15 @@
  */
 
 import { getItem, removeItem, setItem } from "../adapters/kv";
+import {
+  accountScopedKey,
+  accountScopedKeyFor,
+  getAccountScope,
+} from "../session/account-scope";
 import { sha256Hex } from "../reference/entitlement-crypto";
 import { offlineRandomBytes } from "./random";
+
+const scopedKey = (key: string) => accountScopedKey(key);
 
 export const OFFLINE_STORAGE_KEYS = {
   /** Business-id keyed map: { [businessId]: { token, public_key, key_id } } */
@@ -22,6 +29,8 @@ export const OFFLINE_STORAGE_KEYS = {
   KEY_ID: "offline:license:key_id",
   MEMBERS: "offline:members",
   DEVICE_PRIVATE_KEY: "offline:device:private_key",
+  /** Device-level index: { [businessId]: accountId[] } used by revocation. */
+  DEVICE_ACCOUNTS: "offline:device:accounts",
 } as const;
 
 export interface OfflineLicenseRecord {
@@ -34,7 +43,7 @@ export interface OfflineLicenseRecord {
 type OfflineLicenseMap = Record<string, OfflineLicenseRecord>;
 
 async function getLicenseMap(): Promise<OfflineLicenseMap> {
-  return (await getItem<OfflineLicenseMap>(OFFLINE_STORAGE_KEYS.LICENSES)) ?? {};
+  return (await getItem<OfflineLicenseMap>(scopedKey(OFFLINE_STORAGE_KEYS.LICENSES))) ?? {};
 }
 
 async function getLicenseRecord(businessId?: string): Promise<OfflineLicenseRecord | null> {
@@ -45,29 +54,122 @@ async function getLicenseRecord(businessId?: string): Promise<OfflineLicenseReco
     if (first) return first;
   }
 
-  // Migration path from the original single-license build. Verification still
-  // checks the business id inside the signed payload, so this cannot leak a
-  // license into the wrong tenant.
-  const [token, publicKey, keyId] = await Promise.all([
-    getItem<string>(OFFLINE_STORAGE_KEYS.LICENSE),
-    getItem<string>(OFFLINE_STORAGE_KEYS.PUBLIC_KEY),
-    getItem<string>(OFFLINE_STORAGE_KEYS.KEY_ID),
-  ]);
-  if (token && publicKey) {
-    return { token, public_key: publicKey, key_id: keyId ?? "", saved_at: new Date().toISOString() };
-  }
   return null;
+}
+
+async function readDeviceAccountIndex(): Promise<Record<string, string[]>> {
+  return (
+    (await getItem<Record<string, string[]>>(
+      OFFLINE_STORAGE_KEYS.DEVICE_ACCOUNTS,
+    )) ?? {}
+  );
+}
+
+async function writeDeviceAccountIndex(
+  index: Record<string, string[]>,
+): Promise<void> {
+  await setItem(OFFLINE_STORAGE_KEYS.DEVICE_ACCOUNTS, index);
+  if (Object.keys(index).length === 0) {
+    await removeDevicePrivateKey().catch(() => undefined);
+  }
+}
+
+async function registerOfflineAccountForBusiness(
+  accountId: string | null,
+  businessId: string,
+): Promise<void> {
+  if (!accountId || !businessId) return;
+  const index = await readDeviceAccountIndex();
+  const accounts = new Set(index[businessId] ?? []);
+  accounts.add(accountId);
+  index[businessId] = [...accounts];
+  await writeDeviceAccountIndex(index);
+}
+
+async function unregisterOfflineAccountForBusiness(
+  accountId: string,
+  businessId: string,
+): Promise<void> {
+  const index = await readDeviceAccountIndex();
+  const accounts = (index[businessId] ?? []).filter((id) => id !== accountId);
+  if (accounts.length) index[businessId] = accounts;
+  else delete index[businessId];
+  await writeDeviceAccountIndex(index);
+}
+
+async function unregisterOfflineBusiness(businessId: string): Promise<void> {
+  const index = await readDeviceAccountIndex();
+  if (!(businessId in index)) return;
+  delete index[businessId];
+  await writeDeviceAccountIndex(index);
+}
+
+async function propagateLicenseRecord(
+  businessId: string,
+  record: OfflineLicenseRecord,
+): Promise<void> {
+  const current = getAccountScope();
+  const index = await readDeviceAccountIndex();
+  for (const accountId of index[businessId] ?? []) {
+    if (accountId === current) continue;
+    const key = accountScopedKeyFor(accountId, OFFLINE_STORAGE_KEYS.LICENSES);
+    const map = (await getItem<OfflineLicenseMap>(key)) ?? {};
+    map[businessId] = record;
+    await setItem(key, map);
+  }
+}
+
+async function writeMemberToAccount(
+  accountId: string,
+  businessId: string,
+  member: OfflineMemberCredential | null,
+  userId?: string,
+): Promise<void> {
+  const key = accountScopedKeyFor(accountId, OFFLINE_STORAGE_KEYS.MEMBERS);
+  const all = (await getItem<OfflineMemberCredential[]>(key)) ?? [];
+  const targetUserId = member?.user_id ?? userId;
+  if (!targetUserId) return;
+  const next = all.filter(
+    (existing) =>
+      existing.user_id !== targetUserId ||
+      existing.business_id !== businessId,
+  );
+  if (member) next.push(member);
+  if (next.length !== all.length || member) {
+    await setItem(key, next);
+  }
+}
+
+async function propagateMemberToCopies(
+  member: OfflineMemberCredential,
+  remove = false,
+): Promise<void> {
+  if (!member.business_id) return;
+  const current = getAccountScope();
+  const index = await readDeviceAccountIndex();
+  for (const accountId of index[member.business_id] ?? []) {
+    if (accountId === current) continue;
+    await writeMemberToAccount(
+      accountId,
+      member.business_id,
+      remove ? null : member,
+      member.user_id,
+    );
+  }
 }
 
 async function saveLicenseRecord(businessId: string, record: OfflineLicenseRecord): Promise<void> {
   const map = await getLicenseMap();
   map[businessId] = record;
-  await setItem(OFFLINE_STORAGE_KEYS.LICENSES, map);
+  await setItem(scopedKey(OFFLINE_STORAGE_KEYS.LICENSES), map);
+  await registerOfflineAccountForBusiness(getAccountScope(), businessId);
+  // Keep every member's copied license current after renewal/activation.
+  await propagateLicenseRecord(businessId, record);
   // Drop legacy singletons once a scoped record exists.
   await Promise.all([
-    removeItem(OFFLINE_STORAGE_KEYS.LICENSE),
-    removeItem(OFFLINE_STORAGE_KEYS.PUBLIC_KEY),
-    removeItem(OFFLINE_STORAGE_KEYS.KEY_ID),
+    removeItem(scopedKey(OFFLINE_STORAGE_KEYS.LICENSE)),
+    removeItem(scopedKey(OFFLINE_STORAGE_KEYS.PUBLIC_KEY)),
+    removeItem(scopedKey(OFFLINE_STORAGE_KEYS.KEY_ID)),
   ]);
 }
 
@@ -112,7 +214,7 @@ export async function listStoredLicenseBusinessIds(): Promise<string[]> {
 export async function removeStoredLicense(businessId: string): Promise<void> {
   const map = await getLicenseMap();
   delete map[businessId];
-  await setItem(OFFLINE_STORAGE_KEYS.LICENSES, map);
+  await setItem(scopedKey(OFFLINE_STORAGE_KEYS.LICENSES), map);
 }
 
 export interface OfflineSecureStorage {
@@ -166,13 +268,14 @@ export interface OfflineMemberCredential {
 
 function memberMatchesBusiness(member: OfflineMemberCredential, businessId?: string): boolean {
   if (!businessId) return true;
-  // Pre-migration rows had no business_id; keep them visible until an online
-  // activation rewrites them with the correct scope.
-  return !member.business_id || member.business_id === businessId;
+  // Account-scoped stores only contain credentials written by this version.
+  // Require an exact business match so two businesses on one account cannot
+  // read each other's team members.
+  return member.business_id === businessId;
 }
 
 export async function listOfflineMembers(businessId?: string): Promise<OfflineMemberCredential[]> {
-  const members = (await getItem<OfflineMemberCredential[]>(OFFLINE_STORAGE_KEYS.MEMBERS)) ?? [];
+  const members = (await getItem<OfflineMemberCredential[]>(scopedKey(OFFLINE_STORAGE_KEYS.MEMBERS))) ?? [];
   return members.filter((member) => memberMatchesBusiness(member, businessId));
 }
 
@@ -185,25 +288,51 @@ export async function getOfflineMember(
 }
 
 export async function saveOfflineMember(member: OfflineMemberCredential): Promise<void> {
-  const all = (await getItem<OfflineMemberCredential[]>(OFFLINE_STORAGE_KEYS.MEMBERS)) ?? [];
+  const all = (await getItem<OfflineMemberCredential[]>(scopedKey(OFFLINE_STORAGE_KEYS.MEMBERS))) ?? [];
   const next = all.filter(
     (existing) =>
       existing.user_id !== member.user_id ||
       (existing.business_id ?? "") !== (member.business_id ?? ""),
   );
   next.push(member);
-  await setItem(OFFLINE_STORAGE_KEYS.MEMBERS, next);
+  await setItem(scopedKey(OFFLINE_STORAGE_KEYS.MEMBERS), next);
+  if (member.business_id) {
+    await registerOfflineAccountForBusiness(
+      getAccountScope(),
+      member.business_id,
+    );
+    // Role/capability/PIN changes must reach terminals that already hold a
+    // copied credential for this member, not only the enrolling account.
+    await propagateMemberToCopies(member);
+  }
 }
 
 export async function removeOfflineMember(userId: string, businessId?: string): Promise<void> {
-  const all = (await getItem<OfflineMemberCredential[]>(OFFLINE_STORAGE_KEYS.MEMBERS)) ?? [];
+  const all = (await getItem<OfflineMemberCredential[]>(scopedKey(OFFLINE_STORAGE_KEYS.MEMBERS))) ?? [];
   await setItem(
-    OFFLINE_STORAGE_KEYS.MEMBERS,
+    scopedKey(OFFLINE_STORAGE_KEYS.MEMBERS),
     all.filter((member) => {
       if (member.user_id !== userId) return true;
       return businessId ? member.business_id !== businessId : false;
     }),
   );
+  if (!businessId) return;
+
+  // A removed member must not keep a usable offline license in their own
+  // account scope. Other copied accounts simply drop that member from their
+  // team directory so they cannot unlock as the removed person.
+  const current = getAccountScope();
+  const index = await readDeviceAccountIndex();
+  const accounts = new Set(index[businessId] ?? []);
+  if (current) accounts.add(current);
+  for (const accountId of accounts) {
+    if (accountId === userId) {
+      await removeOfflineBusinessFromAccount(accountId, businessId);
+      await unregisterOfflineAccountForBusiness(accountId, businessId);
+    } else if (accountId !== current) {
+      await writeMemberToAccount(accountId, businessId, null, userId);
+    }
+  }
 }
 
 export async function markOfflineMemberLogin(userId: string, businessId?: string): Promise<void> {
@@ -212,24 +341,132 @@ export async function markOfflineMemberLogin(userId: string, businessId?: string
   await saveOfflineMember({ ...member, last_login_at: new Date().toISOString() });
 }
 
-export async function clearOfflineDevice(businessId?: string): Promise<void> {
-  if (businessId) {
-    await removeStoredLicense(businessId);
-    const all = (await getItem<OfflineMemberCredential[]>(OFFLINE_STORAGE_KEYS.MEMBERS)) ?? [];
+async function removeOfflineBusinessFromAccount(
+  accountId: string,
+  businessId: string,
+): Promise<void> {
+  const licenses =
+    (await getItem<OfflineLicenseMap>(
+      accountScopedKeyFor(accountId, OFFLINE_STORAGE_KEYS.LICENSES),
+    )) ?? {};
+  if (licenses[businessId]) {
+    delete licenses[businessId];
     await setItem(
-      OFFLINE_STORAGE_KEYS.MEMBERS,
-      all.filter((member) => member.business_id !== businessId),
+      accountScopedKeyFor(accountId, OFFLINE_STORAGE_KEYS.LICENSES),
+      licenses,
     );
+  }
+  const members =
+    (await getItem<OfflineMemberCredential[]>(
+      accountScopedKeyFor(accountId, OFFLINE_STORAGE_KEYS.MEMBERS),
+    )) ?? [];
+  const remaining = members.filter(
+    (member) => member.business_id !== businessId,
+  );
+  if (remaining.length !== members.length) {
+    await setItem(
+      accountScopedKeyFor(accountId, OFFLINE_STORAGE_KEYS.MEMBERS),
+      remaining,
+    );
+  }
+  // Legacy singletons were never business-keyed; drop them with the device.
+  await Promise.all([
+    removeItem(accountScopedKeyFor(accountId, OFFLINE_STORAGE_KEYS.LICENSE)),
+    removeItem(accountScopedKeyFor(accountId, OFFLINE_STORAGE_KEYS.PUBLIC_KEY)),
+    removeItem(accountScopedKeyFor(accountId, OFFLINE_STORAGE_KEYS.KEY_ID)),
+  ]);
+}
+
+export async function clearOfflineDevice(businessId?: string): Promise<void> {
+  const index =
+    (await getItem<Record<string, string[]>>(
+      OFFLINE_STORAGE_KEYS.DEVICE_ACCOUNTS,
+    )) ?? {};
+
+  if (businessId) {
+    const accounts = new Set(index[businessId] ?? []);
+    const current = getAccountScope();
+    if (current) accounts.add(current);
+    for (const accountId of accounts) {
+      await removeOfflineBusinessFromAccount(accountId, businessId);
+    }
+    await unregisterOfflineBusiness(businessId);
     return;
   }
+
+  for (const [indexedBusinessId, accounts] of Object.entries(index)) {
+    for (const accountId of accounts) {
+      await removeOfflineBusinessFromAccount(accountId, indexedBusinessId);
+    }
+  }
+  await removeItem(OFFLINE_STORAGE_KEYS.DEVICE_ACCOUNTS);
   await Promise.all([
-    removeItem(OFFLINE_STORAGE_KEYS.LICENSES),
-    removeItem(OFFLINE_STORAGE_KEYS.LICENSE),
-    removeItem(OFFLINE_STORAGE_KEYS.PUBLIC_KEY),
-    removeItem(OFFLINE_STORAGE_KEYS.KEY_ID),
-    removeItem(OFFLINE_STORAGE_KEYS.MEMBERS),
+    removeItem(scopedKey(OFFLINE_STORAGE_KEYS.LICENSES)),
+    removeItem(scopedKey(OFFLINE_STORAGE_KEYS.LICENSE)),
+    removeItem(scopedKey(OFFLINE_STORAGE_KEYS.PUBLIC_KEY)),
+    removeItem(scopedKey(OFFLINE_STORAGE_KEYS.KEY_ID)),
+    removeItem(scopedKey(OFFLINE_STORAGE_KEYS.MEMBERS)),
     removeDevicePrivateKey().catch(() => undefined),
   ]);
+}
+
+/**
+ * Copy the offline license + team directory for one business from the account
+ * that activated the terminal to the account of a member signing in offline.
+ *
+ * Offline member sessions run under their own account scope (cart, chat and
+ * SQLite stay isolated), so the device license must be present in that scope
+ * before the session starts. Only this business's license and members are
+ * copied — never the source account's other persisted data.
+ */
+export async function copyOfflineDeviceDataForAccount(args: {
+  fromAccountId: string;
+  toAccountId: string;
+  businessId: string;
+}): Promise<void> {
+  const { fromAccountId, toAccountId, businessId } = args;
+  if (!fromAccountId || !toAccountId || !businessId) return;
+  if (fromAccountId === toAccountId) return;
+
+  const fromLicenses =
+    (await getItem<OfflineLicenseMap>(
+      accountScopedKeyFor(fromAccountId, OFFLINE_STORAGE_KEYS.LICENSES),
+    )) ?? {};
+  const license = fromLicenses[businessId];
+  if (!license) {
+    throw new Error("Offline license not found for this device");
+  }
+
+  const toLicenses =
+    (await getItem<OfflineLicenseMap>(
+      accountScopedKeyFor(toAccountId, OFFLINE_STORAGE_KEYS.LICENSES),
+    )) ?? {};
+  toLicenses[businessId] = license;
+  await setItem(
+    accountScopedKeyFor(toAccountId, OFFLINE_STORAGE_KEYS.LICENSES),
+    toLicenses,
+  );
+
+  const fromMembers =
+    (await getItem<OfflineMemberCredential[]>(
+      accountScopedKeyFor(fromAccountId, OFFLINE_STORAGE_KEYS.MEMBERS),
+    )) ?? [];
+  const businessMembers = fromMembers.filter(
+    (member) => member.business_id === businessId,
+  );
+  const toMembers =
+    (await getItem<OfflineMemberCredential[]>(
+      accountScopedKeyFor(toAccountId, OFFLINE_STORAGE_KEYS.MEMBERS),
+    )) ?? [];
+  await setItem(
+    accountScopedKeyFor(toAccountId, OFFLINE_STORAGE_KEYS.MEMBERS),
+    [
+      ...toMembers.filter((member) => member.business_id !== businessId),
+      ...businessMembers,
+    ],
+  );
+  await registerOfflineAccountForBusiness(fromAccountId, businessId);
+  await registerOfflineAccountForBusiness(toAccountId, businessId);
 }
 
 const PIN_ROUNDS = 20_000;

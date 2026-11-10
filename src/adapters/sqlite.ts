@@ -15,6 +15,12 @@ export interface SqliteDriver {
   getAllAsync<T>(sql: string, ...args: unknown[]): Promise<T[]>;
   withTransactionAsync?(fn: () => Promise<void>): Promise<void>;
   closeAsync?(): Promise<void>;
+  /**
+   * Optional hook for host drivers that open one database file per account.
+   * Core calls this before opening the connection; drivers should close their
+   * current handle and switch to the file for `accountId`.
+   */
+  setAccountScope?(accountId: string | null): Promise<void> | void;
 }
 
 export type SQLiteDatabase = SqliteDriver;

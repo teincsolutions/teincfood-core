@@ -6,15 +6,30 @@
 import { syncLogger } from "../utils/sync-logger";
 import { MIGRATIONS } from "./migrations";
 import { getSqliteDriver, hasSqliteDriver, type SQLiteDatabase } from "../adapters/sqlite";
+import { getAccountScope } from "../session/account-scope";
 
 const DB_NAME = "teincfood_sync.db";
 
 let dbInstance: SQLiteDatabase | null = null;
 let initPromise: Promise<SQLiteDatabase> | null = null;
+/** Account whose database the current handle belongs to. */
+let openedAccountId: string | null | undefined;
 
 export async function openSyncDatabase(): Promise<SQLiteDatabase> {
+  const accountId = getAccountScope();
+
+  // A different account must never reuse the previous account's connection.
+  if (dbInstance && openedAccountId !== accountId) {
+    await closeSyncDatabase();
+  }
   if (dbInstance) return dbInstance;
-  if (initPromise) return initPromise;
+  if (initPromise) {
+    // An open for a previous scope may still be running. Never hand its
+    // handle to the new account; settle it, close it, then open the new file.
+    await initPromise.catch(() => undefined);
+    if (dbInstance && openedAccountId === accountId) return dbInstance;
+    await closeSyncDatabase();
+  }
 
   if (!hasSqliteDriver()) {
     throw new Error(
@@ -25,11 +40,21 @@ export async function openSyncDatabase(): Promise<SQLiteDatabase> {
   const driver = getSqliteDriver();
 
   initPromise = (async () => {
+    // Host drivers open a per-account file (e.g. teincfood_sync_<userId>.db).
+    try {
+      await driver.setAccountScope?.(accountId);
+    } catch (error) {
+      syncLogger.warn("SQLite", "Driver account-scope switch failed", {
+        accountId,
+        error: String(error),
+      });
+    }
     await runMigrations(driver);
     await recoverInFlightCommands(driver);
     dbInstance = driver;
+    openedAccountId = accountId;
     syncLogger.info("SQLite", "Database opened and migrated", {
-      name: DB_NAME,
+      name: accountId ? `${DB_NAME} (account ${accountId})` : DB_NAME,
     });
     return driver;
   })();
@@ -120,10 +145,23 @@ async function recoverInFlightCommands(db: SQLiteDatabase): Promise<void> {
 }
 
 export async function closeSyncDatabase(): Promise<void> {
+  // If an open is in flight, let it settle so we close the handle it created
+  // instead of leaking a connection to the previous account's file.
+  if (initPromise && !dbInstance) {
+    try {
+      await initPromise;
+    } catch {
+      // Failed opens have nothing to close.
+    }
+  }
   if (dbInstance) {
     if (dbInstance.closeAsync) await dbInstance.closeAsync();
     dbInstance = null;
     initPromise = null;
+    openedAccountId = undefined;
     syncLogger.info("SQLite", "Database closed");
+  } else {
+    initPromise = null;
+    openedAccountId = undefined;
   }
 }

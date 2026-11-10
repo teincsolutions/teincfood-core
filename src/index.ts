@@ -85,6 +85,15 @@ export * from "./db/migrations";
 export * from "./db/operations";
 export * as dbOps from "./db/operations";
 export { openSyncDatabase, getSyncDatabase, closeSyncDatabase } from "./db/connection";
+export {
+  getAccountScope,
+  setAccountScope,
+  accountScopedKey,
+  accountScopedKeyFor,
+  subscribeAccountScope,
+  type AccountScopeListener,
+} from "./session/account-scope";
+export { switchAccountScope } from "./session/account-lifecycle";
 
 // ── Sync ──
 export * from "./sync/types";
@@ -302,6 +311,7 @@ import { restTransport } from "./sync/transport-rest";
 import { localNodeTransport } from "./sync/transport-local-node";
 import { setupSyncJobsDrain } from "./sync/sync-jobs.service";
 import { startHealthProbe, stopHealthProbe } from "./sync/health-probe";
+import { hydrateCartStore, resetCartHydration } from "./cart/store";
 
 export interface CoreConfig {
   sqliteDriver?: SqliteDriver;
@@ -329,7 +339,14 @@ export function createTeincCore(config: CoreConfig = {}): { engine: SyncEngine }
     });
   } catch {}
   if (config.sqliteDriver) setSqliteDriver(config.sqliteDriver);
-  if (config.kvDriver) setKVDriver(config.kvDriver);
+  if (config.kvDriver) {
+    setKVDriver(config.kvDriver);
+    // Auth hydration may have set the account scope before the host injected
+    // its persistent KV driver. Re-read the now-scoped cart so a restart never
+    // silently starts with an empty basket (or an unscoped legacy one).
+    resetCartHydration();
+    void hydrateCartStore();
+  }
   if (config.httpClient) setHttpClient(config.httpClient);
   if (config.printAdapters?.tcp) setTcpAdapter(config.printAdapters.tcp);
   if (config.printAdapters?.printFile) setPrintFileAdapter(config.printAdapters.printFile);
