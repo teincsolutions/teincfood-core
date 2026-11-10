@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { setKVDriver } from "../adapters/kv";
-import { clearAll as clearCart, getCartSnapshot } from "../cart/store";
+import {
+  clearAll as clearCart,
+  getCartSnapshot,
+  hydrateCartStore,
+  resetCartHydration,
+} from "../cart/store";
 import { setAccountScope } from "../session/account-scope";
 import {
   clearOfflineDevice,
@@ -118,19 +123,32 @@ describe("offline account isolation", () => {
     expect(kv.has("offline:members")).toBe(false);
   });
 
-  it("never persists a cart without an account or across accounts", () => {
+  it("never persists a cart without an account or across accounts", async () => {
     setAccountScope(null);
     clearCart();
     expect(kv.has("Teinc Food-pos-cart")).toBe(false);
 
     setAccountScope(A);
-    clearCart();
-    const key = `acct:${encodeURIComponent(A)}:Teinc Food-pos-cart`;
-    expect(kv.has(key)).toBe(true);
+    const aKey = `acct:${encodeURIComponent(A)}:Teinc Food-pos-cart`;
+    kv.set(
+      aKey,
+      JSON.stringify({
+        state: { items: [{ id: "a-item" }], checkoutForm: {} },
+        version: 0,
+      }),
+    );
+    resetCartHydration();
+    await hydrateCartStore();
+    expect(getCartSnapshot().items).toEqual([{ id: "a-item" }]);
 
     setAccountScope(B);
+    await hydrateCartStore();
     expect(getCartSnapshot().items).toEqual([]);
     expect(kv.has("Teinc Food-pos-cart")).toBe(false);
+
+    setAccountScope(A);
+    await hydrateCartStore();
+    expect(getCartSnapshot().items).toEqual([{ id: "a-item" }]);
   });
 
   it("propagates license/member updates and removes every account copy on revocation", async () => {
