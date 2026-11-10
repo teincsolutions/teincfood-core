@@ -151,6 +151,11 @@ export async function syncReferenceDataOnReconnect(): Promise<void> {
         failed: result.failed,
       });
     }
+    // Query hooks keep reference reads at staleTime Infinity; refresh them
+    // after a reconnect pass so changed entitlements appear immediately.
+    try {
+      invalidator?.();
+    } catch {}
   } catch (error) {
     syncLogger.error("ReferenceChange", "Reconnect sync failed", {
       error: String(error),

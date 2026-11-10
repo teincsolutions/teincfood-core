@@ -95,6 +95,11 @@ export function useBusinessReferenceDataSync() {
       .then((result: ReferenceSyncResult) => {
         if (cancelled) return;
         try {
+          // Reference reads use staleTime: Infinity. A launch/internet sync
+          // that just replaced SQLite rows must invalidate the React Query
+          // cache too, otherwise plan entitlements and menus stay stale until
+          // the app is restarted.
+          void queryClient.invalidateQueries({ queryKey: REFERENCE_KEYS.all });
           void queryClient.invalidateQueries({ queryKey: ["cachedImage"] });
         } catch {}
         if (result.failed.length > 0) {
