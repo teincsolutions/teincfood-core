@@ -8,6 +8,10 @@ export interface Business {
   phone: string;
   email: string;
   status: string;
+  /** Role of the signed-in user in this business (owner/member/cashier/...). */
+  role?: string;
+  /** Where the relationship comes from: owner | member | super_admin. */
+  source?: string;
   currency: string;
   is_open: boolean;
   /** Seller-facing open/close toggle (present when backend serializes it). */
@@ -86,10 +90,33 @@ export interface BusinessMember {
   role: string;
   status: string;
   inserted_at: string;
+  user?: {
+    id: string;
+    email: string | null;
+    full_name: string | null;
+  } | null;
+  full_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  avatar_url?: string | null;
+  capabilities?: string[];
 }
 
 export interface BusinessMemberListResponse {
   data: BusinessMember[];
+}
+
+export interface BusinessMemberDetail extends BusinessMember {
+  user?: {
+    id: string;
+    email: string | null;
+    full_name: string | null;
+  } | null;
+  updated_at?: string;
+}
+
+export interface BusinessMemberDetailResponse {
+  data: BusinessMemberDetail;
 }
 
 // ─── Operating Hours ───

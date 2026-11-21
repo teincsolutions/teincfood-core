@@ -102,6 +102,9 @@ export const businessService = {
   fetchBusinessMembers: async (_businessId: string): Promise<unknown> => {
     notImpl("businessService.fetchBusinessMembers");
   },
+  fetchBusinessMember: async (_businessId: string, _userId: string): Promise<unknown> => {
+    notImpl("businessService.fetchBusinessMember");
+  },
   inviteBusinessMember: async (_businessId: string, _data: Record<string, unknown>): Promise<unknown> => {
     notImpl("businessService.inviteBusinessMember");
   },

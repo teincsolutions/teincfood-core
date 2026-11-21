@@ -162,6 +162,7 @@ export * from "./hooks/delivery.hooks";
 export * from "./hooks/dashboard.hooks";
 export * from "./hooks/analytics.hooks";
 export * from "./hooks/members.hooks";
+export * from "./hooks/use-membership-guard";
 export * from "./hooks/places.hooks";
 export * from "./hooks/offline-orders.hooks";
 export * from "./hooks/image.hooks";
@@ -288,7 +289,8 @@ export {
   setOfflineSessionRecoveryProvider,
 } from "./auth/session";
 
-// ── Offline device license + member unlock ──
+// ── Membership validation (online-only) + offline device license ──
+export * from "./membership/validation";
 export * from "./offline/license";
 export * from "./offline/random";
 export * from "./offline/store";

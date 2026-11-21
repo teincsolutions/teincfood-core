@@ -405,6 +405,16 @@ export async function deleteEntitySnapshot(
   );
 }
 
+export async function deleteEntitySnapshotsForBusiness(
+  db: SQLiteDatabase,
+  businessId: string,
+): Promise<void> {
+  await db.runAsync(
+    "DELETE FROM entity_snapshots WHERE business_id = ?;",
+    businessId,
+  );
+}
+
 export async function pruneEntitySnapshots(
   db: SQLiteDatabase,
   entityType: string,

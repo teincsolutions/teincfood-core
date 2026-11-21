@@ -61,6 +61,15 @@ const DEFAULT_SYNC_KEYS: ReferenceDataKey[] = [
   "payment-settings",
 ];
 
+function isPermissionDenied(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const status = (error as { status?: unknown }).status;
+  return (
+    status === 403 ||
+    /permission|forbidden/i.test(String((error as { message?: unknown }).message ?? ""))
+  );
+}
+
 class ReferenceSyncService {
   /** Single-flight per business (a global flag made a business switch skip its sync). */
   private inflight = new Map<string, Promise<ReferenceSyncResult>>();
@@ -232,6 +241,16 @@ class ReferenceSyncService {
             result.skipped.push(key);
           }
         } catch (error) {
+          // Some cached keys are owner-only (e.g. delivery/payment settings).
+          // A member is expected to get 403 for those — skip quietly instead of
+          // surfacing a RedBox/LogBox error on every sync pass.
+          if (isPermissionDenied(error)) {
+            result.skipped.push(key);
+            syncLogger.debug("ReferenceSync", `Skipped sync ${key} (not permitted)`, {
+              key,
+            });
+            continue;
+          }
           result.failed.push(key);
           result.errors[key] = String(error);
           // A persisted-but-expired session can pass `canBusinessSync` on the

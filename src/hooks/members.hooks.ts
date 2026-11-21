@@ -18,7 +18,12 @@ import { extractApiErrorMessage } from "../utils/error";
 import { emitReferenceChanged } from "../reference/events";
 import { useReferenceData } from "../reference/hooks";
 import { useIsEffectivelyOnline } from "./use-infinite-list";
-import type { BusinessMemberListResponse, RolesResponse, TaxRuleListResponse } from "../types/api/business.api";
+import type {
+  BusinessMemberDetailResponse,
+  BusinessMemberListResponse,
+  RolesResponse,
+  TaxRuleListResponse,
+} from "../types/api/business.api";
 
 function useBusinessId(): string | undefined {
   const id = useSyncExternalStore(subscribeBusiness, () => getActiveBusiness()?.id ?? null, () => null);
@@ -40,6 +45,8 @@ function isQueued(result: unknown): boolean {
 export const MEMBER_KEYS = {
   all: ["business-members"] as const,
   list: (businessId?: string) => [...MEMBER_KEYS.all, businessId] as const,
+  detail: (businessId?: string, userId?: string) =>
+    [...MEMBER_KEYS.all, businessId, "detail", userId] as const,
   invitations: (businessId?: string) => [...MEMBER_KEYS.all, businessId, "invitations"] as const,
 };
 
@@ -76,6 +83,26 @@ export function useBusinessMembersQuery() {
   });
   // Offline: SQLite cache directly so screens stay populated when down.
   return { ...q, data: (q.data as unknown) ?? cached.data?.payload } as typeof q;
+}
+
+export function useBusinessMemberQuery(userId?: string | null, enabled = true) {
+  const businessId = useBusinessId();
+  const online = useIsEffectivelyOnline();
+  const isAuthenticated = useIsAuthenticated();
+
+  const q = useQuery({
+    queryKey: MEMBER_KEYS.detail(businessId ?? "", userId ?? ""),
+    queryFn: () =>
+      (
+        businessService as unknown as {
+          fetchBusinessMember: (b: string, u: string) => Promise<BusinessMemberDetailResponse>;
+        }
+      ).fetchBusinessMember(businessId!, userId!),
+    enabled: enabled && Boolean(businessId && userId) && online && isAuthenticated,
+    ...OFFLINE_FIRST,
+  });
+
+  return q;
 }
 
 export function useInviteMemberMutation() {
@@ -295,9 +322,18 @@ export function useAcceptBusinessInvitationMutation() {
       assertOnlineFor("member:manage");
       return (businessService as unknown as { acceptBusinessInvitation: (d: unknown) => Promise<unknown> }).acceptBusinessInvitation(data);
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      const businessId =
+        (result as { data?: { business_id?: string } })?.data?.business_id ?? undefined;
       notifySuccess("Invitation accepted!");
       queryClient.invalidateQueries({ queryKey: INVITATION_KEYS.list() });
+      // A newly joined business must appear in "my businesses" immediately,
+      // even when the store was populated before the invite was accepted.
+      queryClient.invalidateQueries({ queryKey: ["businesses"] });
+      queryClient.invalidateQueries({ queryKey: ["businesses", "relationships"] });
+      queryClient.invalidateQueries({ queryKey: MEMBER_KEYS.all });
+      if (businessId) queryClient.invalidateQueries({ queryKey: MEMBER_KEYS.list(businessId) });
+      return result;
     },
     onError: (error) => {
       notifyError(extractApiErrorMessage(error));

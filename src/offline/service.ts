@@ -10,6 +10,10 @@ import { getAppInstanceIdAsync, getDeviceMetadata } from "../adapters/devices";
 import { getHttpClient } from "../adapters/http";
 import { getAuthToken } from "../adapters/auth";
 import { getConnectivityState } from "../adapters/connectivity";
+import {
+  MembershipRevokedError,
+  isMembershipRevocationStatus,
+} from "../membership/validation";
 import { syncLogger } from "../utils/sync-logger";
 import { offlineRandomBytes } from "./random";
 import {
@@ -403,7 +407,8 @@ export async function removeOfflineDevice(businessId: string, reason?: string): 
 
 /**
  * Best-effort presence heartbeat. Updates the admin dashboard's last-seen and
- * online state; never throws into app startup or sync loops.
+ * online state. Transient failures are swallowed; an explicit 401/403/404 is
+ * surfaced as MembershipRevokedError so the host app can log the user out.
  */
 export async function sendOfflineDeviceHeartbeat(
   businessId: string,
@@ -426,6 +431,17 @@ export async function sendOfflineDeviceHeartbeat(
       },
     );
   } catch (error) {
+    const status =
+      error && typeof error === "object" && "status" in error
+        ? (error as { status?: unknown }).status
+        : undefined;
+    if (isMembershipRevocationStatus(status)) {
+      syncLogger.warn("OfflineAuth", "Device heartbeat reports revoked membership", {
+        businessId,
+        status,
+      });
+      throw new MembershipRevokedError(businessId, error);
+    }
     syncLogger.debug("OfflineAuth", "Device heartbeat failed", { error: String(error) });
   }
 }
