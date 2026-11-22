@@ -228,13 +228,19 @@ function orderTypeText(order: SellerOrder): string {
   return "Walk-in";
 }
 
+function channelText(order: SellerOrder): string {
+  const o = order as unknown as { is_pos?: boolean; sales_channel?: string | null };
+  if (o.sales_channel) return o.sales_channel.charAt(0).toUpperCase() + o.sales_channel.slice(1);
+  return o.is_pos ? "Terminal (POS)" : "Online";
+}
+
 function paymentLineText(order: SellerOrder): string {
   const m = order.pos_payment_method as string | null;
   if (m) return `Payment: ${m.charAt(0).toUpperCase() + m.slice(1)}`;
   if (order.payment_mode === "pay_on_delivery")
     return "Payment: Cash / Pay on Delivery";
   if (order.payment_mode === "prepaid") return "Payment: Prepaid (Online)";
-  return "Payment: Walk-in";
+  return "Payment: Unknown";
 }
 
 function escHtml(s: string | null | undefined): string {
@@ -445,6 +451,7 @@ export function generateEscpos(
   push(ESC_ALIGN_LEFT);
   pushT(`Date: ${formatDatetime(order.inserted_at)}${LF}`);
   pushT(`Type: ${orderTypeEscpos(order)}${LF}`);
+  pushT(`Channel: ${channelText(order)}${LF}`);
   const custLine = customerLineEscpos(order);
   if (custLine) pushT(custLine);
   const tellerLine = tellerLineEscpos(order);
@@ -689,6 +696,7 @@ export function generateHtml(
   <strong>Order:</strong> ${escHtml(order.order_number)}<br>
   <strong>Date:</strong> ${escHtml(formatDatetime(order.inserted_at))}<br>
   <strong>Type:</strong> ${escHtml(orderTypeText(order))}<br>
+  <strong>Channel:</strong> ${escHtml(channelText(order))}<br>
   ${
     order.customer_name
       ? `<strong>Customer:</strong> ${escHtml(order.customer_name)}<br>`

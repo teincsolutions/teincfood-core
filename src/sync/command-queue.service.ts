@@ -193,7 +193,7 @@ function buildOptimisticOrder(
     order_number: orderNumber,
     callout_number: parsedCallout ? Number(parsedCallout) : generateLocalCalloutNumber(command.business_id),
     order_type: orderType,
-    is_pos: true,
+    is_pos: payload.is_pos !== undefined ? !!payload.is_pos : true,
     customer_name: (payload.customer_name as string) ?? null,
     customer_phone: (payload.customer_phone as string) ?? null,
     pos_payment_method: method,

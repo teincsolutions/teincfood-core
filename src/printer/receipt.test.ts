@@ -164,6 +164,7 @@ describe("golden 80mm receipt (docs/receipt-template.md)", () => {
       total_minor: 17437,
       inserted_at: "2026-09-19T10:00:00Z",
       order_type: "takeout",
+      is_pos: true,
       pos_payment_method: "cash",
       customer_name: "Kwame Mensah",
       business: {
@@ -230,6 +231,7 @@ describe("golden 80mm receipt (docs/receipt-template.md)", () => {
       "",
       "Date: 19 Sep 2026 10:00",
       "Type: Takeout",
+      "Channel: Terminal (POS)",
       "Customer: Kwame Mensah",
       "",
       "",

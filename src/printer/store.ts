@@ -12,7 +12,7 @@ const listeners = new Set<() => void>();
 let state: PrinterState = {
   defaultPrinterId: null,
   printers: [],
-  autoPrint: false,
+  autoPrint: true,
 };
 
 let hydrated = false;
@@ -39,7 +39,7 @@ export async function hydratePrinterStore(): Promise<void> {
       state = {
         defaultPrinterId: parsed.defaultPrinterId ?? null,
         printers: Array.isArray(parsed.printers) ? parsed.printers : [],
-        autoPrint: !!parsed.autoPrint,
+        autoPrint: parsed.autoPrint === undefined ? true : !!parsed.autoPrint,
       };
       notify();
     }
