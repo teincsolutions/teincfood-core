@@ -50,7 +50,9 @@ export function usePOSOrdersQuery(filters?: Record<string,string>, enabled=true)
       return p.page < p.total_pages ? p.page+1 : undefined;
     },
     enabled: enabled && !!bid,
-    staleTime: 5*1000,
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: true,
+    refetchInterval: false,
     networkMode: "offlineFirst" as const,
     select: (data) => (data as { pages: { data: SellerOrder[]}[] }).pages.flatMap((p)=>p.data),
   });
@@ -91,7 +93,9 @@ export function useSellerOrdersQuery(enabled=true, filters?: SellerOrderFilters)
       return p.page < p.total_pages ? p.page+1 : undefined;
     },
     enabled: enabled && !!bid,
-    staleTime: 5*1000,
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: true,
+    refetchInterval: false,
     networkMode: "offlineFirst" as const,
     select: (data) => (data as { pages: { data: SellerOrder[]}[] }).pages.flatMap((p)=>p.data),
   });
